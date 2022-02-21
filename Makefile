@@ -9,7 +9,7 @@ ALL_TESTS=$(foreach COLLECTOR,$(COLLECTORS),$(addprefix $(COLLECTOR)-,$(TESTS)))
 all: $(ALL_TESTS)
 
 bdw-%: bdw.h %.c
-	$(CC) $(CFLAGS) -lpthread `pkg-config --libs --cflags bdw-gc` -I. -o $@ $*.c bdw.h
+	$(CC) $(CFLAGS) -lpthread `pkg-config --libs --cflags bdw-gc` -I. -DGC_BDW -o $@ $*.c
 
 check: $(addprefix test-$(TARGET),$(TARGETS))
 

@@ -42,27 +42,16 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
-#ifdef GC
-#  include "gc.h"
+#ifdef GC_BDW
+#include "bdw.h"
+#else
+#error unknown gc
 #endif
 
-#ifdef PROFIL
-  extern void init_profiling();
-  extern dump_profile();
-#endif
-
-//  These macros were a quick hack for the Macintosh.
-//
-//  #define currentTime() clock()
-//  #define elapsedTime(x) ((1000*(x))/CLOCKS_PER_SEC)
-
-#define currentTime() stats_rtclock()
 #define elapsedTime(x) (x)
 
 /* Get the current time in milliseconds */
-
-unsigned
-stats_rtclock( void )
+static unsigned currentTime(void)
 {
   struct timeval t;
   struct timezone tz;
@@ -84,30 +73,12 @@ typedef struct Node0_struct {
         int i, j;
 } Node0;
 
-#ifdef HOLES
-#   define HOLE() GC_NEW(Node0);
-#else
-#   define HOLE()
-#endif
-
 typedef Node0 *Node;
 
 void init_Node(Node me, Node l, Node r) {
     me -> left = l;
     me -> right = r;
 }
-
-#ifndef GC
-  void destroy_Node(Node me) {
-    if (me -> left) {
-	destroy_Node(me -> left);
-    }
-    if (me -> right) {
-	destroy_Node(me -> right);
-    }
-    free(me);
-  }
-#endif
 
 // Nodes used by a tree of a given size
 static int TreeSize(int i) {
@@ -125,13 +96,8 @@ static void Populate(int iDepth, Node thisNode) {
                 return;
         } else {
                 iDepth--;
-#		ifdef GC
-                  thisNode->left  = GC_NEW(Node0); HOLE();
-                  thisNode->right = GC_NEW(Node0); HOLE();
-#		else
-                  thisNode->left  = calloc(1, sizeof(Node0));
-                  thisNode->right = calloc(1, sizeof(Node0));
-#		endif
+                thisNode->left  = GC_NEW(Node0);
+                thisNode->right = GC_NEW(Node0);
                 Populate (iDepth, thisNode->left);
                 Populate (iDepth, thisNode->right);
         }
@@ -141,21 +107,13 @@ static void Populate(int iDepth, Node thisNode) {
 static Node MakeTree(int iDepth) {
 	Node result;
         if (iDepth<=0) {
-#	    ifndef GC
-		result = calloc(1, sizeof(Node0));
-#	    else
-		result = GC_NEW(Node0); HOLE();
-#	    endif
-	    /* result is implicitly initialized in both cases. */
-	    return result;
+          result = GC_NEW(Node0);
+          /* result is implicitly initialized in both cases. */
+          return result;
         } else {
 	    Node left = MakeTree(iDepth-1);
 	    Node right = MakeTree(iDepth-1);
-#	    ifndef GC
-		result = malloc(sizeof(Node0));
-#	    else
-		result = GC_NEW(Node0); HOLE();
-#	    endif
+            result = GC_NEW(Node0);
 	    init_Node(result, left, right);
 	    return result;
         }
@@ -182,32 +140,22 @@ static void TimeConstruction(int depth) {
         
         tStart = currentTime();
         for (i = 0; i < iNumIters; ++i) {
-#		ifndef GC
-                  tempTree = calloc(1, sizeof(Node0));
-#		else
-                  tempTree = GC_NEW(Node0);
-#		endif
+          tempTree = GC_NEW(Node0);
                 Populate(depth, tempTree);
-#		ifndef GC
-                  destroy_Node(tempTree);
-#		endif
                 tempTree = 0;
         }
         tFinish = currentTime();
         printf("\tTop down construction took %d msec\n",
-               elapsedTime(tFinish - tStart));
+               tFinish - tStart);
              
         tStart = currentTime();
         for (i = 0; i < iNumIters; ++i) {
                 tempTree = MakeTree(depth);
-#		ifndef GC
-                  destroy_Node(tempTree);
-#		endif
                 tempTree = 0;
         }
         tFinish = currentTime();
         printf("\tBottom up construction took %d msec\n",
-               elapsedTime(tFinish - tStart));
+               tFinish - tStart);
 
 }
 
@@ -220,11 +168,9 @@ int main() {
   	int	i, d;
 	double 	*array;
 
-#ifdef GC
  // GC_full_freq = 30;
  // GC_free_space_divisor = 16;
  // GC_enable_incremental();
-#endif
 	printf("Garbage Collector Test\n");
  	printf(" Live storage will peak at %d bytes.\n\n",
                2 * sizeof(Node0) * TreeSize(kLongLivedTreeDepth) +
@@ -240,32 +186,17 @@ int main() {
         
         // Stretch the memory space quickly
         tempTree = MakeTree(kStretchTreeDepth);
-#	ifndef GC
-          destroy_Node(tempTree);
-#	endif
         tempTree = 0;
 
         // Create a long lived object
         printf(" Creating a long-lived binary tree of depth %d\n",
                kLongLivedTreeDepth);
-#	ifndef GC
-          longLivedTree = calloc(1, sizeof(Node0));
-#	else 
-          longLivedTree = GC_NEW(Node0);
-#	endif
+        longLivedTree = GC_NEW(Node0);
         Populate(kLongLivedTreeDepth, longLivedTree);
 
         // Create long-lived array, filling half of it
 	printf(" Creating a long-lived array of %d doubles\n", kArraySize);
-#	ifndef GC
-          array = malloc(kArraySize * sizeof(double));
-#	else
-#	  ifndef NO_PTRFREE
-            array = GC_MALLOC_ATOMIC(sizeof(double) * kArraySize);
-#	  else
-            array = GC_MALLOC(sizeof(double) * kArraySize);
-#	  endif
-#	endif
+        array = GC_MALLOC_ATOMIC(sizeof(double) * kArraySize);
         for (i = 0; i < kArraySize/2; ++i) {
                 array[i] = 1.0/i;
         }
@@ -282,15 +213,10 @@ int main() {
                                 // to keep them from being optimized away
 
         tFinish = currentTime();
-        tElapsed = elapsedTime(tFinish-tStart);
+        tElapsed = tFinish - tStart;
         PrintDiagnostics();
         printf("Completed in %d msec\n", tElapsed);
-#	ifdef GC
 	  printf("Completed %d collections\n", GC_gc_no);
 	  printf("Heap size is %d\n", GC_get_heap_size());
-#       endif
-#	ifdef PROFIL
-	  dump_profile();
-#	endif
 }
 
