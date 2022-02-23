@@ -48,8 +48,6 @@
 #error unknown gc
 #endif
 
-#define elapsedTime(x) (x)
-
 /* Get the current time in milliseconds */
 static unsigned currentTime(void)
 {
@@ -68,155 +66,155 @@ static const int kMinTreeDepth = 4;
 static const int kMaxTreeDepth = 16;
 
 typedef struct Node0_struct {
-        struct Node0_struct * left;
-        struct Node0_struct * right;
-        int i, j;
+  struct Node0_struct * left;
+  struct Node0_struct * right;
+  int i, j;
 } Node0;
 
 typedef Node0 *Node;
 
 void init_Node(Node me, Node l, Node r) {
-    me -> left = l;
-    me -> right = r;
+  me -> left = l;
+  me -> right = r;
 }
 
 // Nodes used by a tree of a given size
 static int TreeSize(int i) {
-        return ((1 << (i + 1)) - 1);
+  return ((1 << (i + 1)) - 1);
 }
 
 // Number of iterations to use for a given tree depth
 static int NumIters(int i) {
-        return 2 * TreeSize(kStretchTreeDepth) / TreeSize(i);
+  return 2 * TreeSize(kStretchTreeDepth) / TreeSize(i);
 }
 
 // Build tree top down, assigning to older objects.
 static void Populate(int iDepth, Node thisNode) {
-        if (iDepth<=0) {
-                return;
-        } else {
-                iDepth--;
-                thisNode->left  = GC_NEW(Node0);
-                thisNode->right = GC_NEW(Node0);
-                Populate (iDepth, thisNode->left);
-                Populate (iDepth, thisNode->right);
-        }
+  if (iDepth<=0) {
+    return;
+  } else {
+    iDepth--;
+    thisNode->left  = GC_NEW(Node0);
+    thisNode->right = GC_NEW(Node0);
+    Populate (iDepth, thisNode->left);
+    Populate (iDepth, thisNode->right);
+  }
 }
 
 // Build tree bottom-up
 static Node MakeTree(int iDepth) {
-	Node result;
-        if (iDepth<=0) {
-          result = GC_NEW(Node0);
-          /* result is implicitly initialized in both cases. */
-          return result;
-        } else {
-	    Node left = MakeTree(iDepth-1);
-	    Node right = MakeTree(iDepth-1);
-            result = GC_NEW(Node0);
-	    init_Node(result, left, right);
-	    return result;
-        }
+  Node result;
+  if (iDepth<=0) {
+    result = GC_NEW(Node0);
+    /* result is implicitly initialized in both cases. */
+    return result;
+  } else {
+    Node left = MakeTree(iDepth-1);
+    Node right = MakeTree(iDepth-1);
+    result = GC_NEW(Node0);
+    init_Node(result, left, right);
+    return result;
+  }
 }
 
 static void PrintDiagnostics() {
 #if 0
-        long lFreeMemory = Runtime.getRuntime().freeMemory();
-        long lTotalMemory = Runtime.getRuntime().totalMemory();
+  long lFreeMemory = Runtime.getRuntime().freeMemory();
+  long lTotalMemory = Runtime.getRuntime().totalMemory();
 
-        System.out.print(" Total memory available="
-                         + lTotalMemory + " bytes");
-        System.out.println("  Free memory=" + lFreeMemory + " bytes");
+  System.out.print(" Total memory available="
+                   + lTotalMemory + " bytes");
+  System.out.println("  Free memory=" + lFreeMemory + " bytes");
 #endif
 }
 
 static void TimeConstruction(int depth) {
-        long    tStart, tFinish;
-        int     iNumIters = NumIters(depth);
-        Node    tempTree;
-	int 	i;
+  long    tStart, tFinish;
+  int     iNumIters = NumIters(depth);
+  Node    tempTree;
+  int 	i;
 
-	printf("Creating %d trees of depth %d\n", iNumIters, depth);
+  printf("Creating %d trees of depth %d\n", iNumIters, depth);
         
-        tStart = currentTime();
-        for (i = 0; i < iNumIters; ++i) {
-          tempTree = GC_NEW(Node0);
-                Populate(depth, tempTree);
-                tempTree = 0;
-        }
-        tFinish = currentTime();
-        printf("\tTop down construction took %d msec\n",
-               tFinish - tStart);
+  tStart = currentTime();
+  for (i = 0; i < iNumIters; ++i) {
+    tempTree = GC_NEW(Node0);
+    Populate(depth, tempTree);
+    tempTree = 0;
+  }
+  tFinish = currentTime();
+  printf("\tTop down construction took %d msec\n",
+         tFinish - tStart);
              
-        tStart = currentTime();
-        for (i = 0; i < iNumIters; ++i) {
-                tempTree = MakeTree(depth);
-                tempTree = 0;
-        }
-        tFinish = currentTime();
-        printf("\tBottom up construction took %d msec\n",
-               tFinish - tStart);
+  tStart = currentTime();
+  for (i = 0; i < iNumIters; ++i) {
+    tempTree = MakeTree(depth);
+    tempTree = 0;
+  }
+  tFinish = currentTime();
+  printf("\tBottom up construction took %d msec\n",
+         tFinish - tStart);
 
 }
 
 int main() {
-        Node    root;
-        Node    longLivedTree;
-        Node    tempTree;
-        long    tStart, tFinish;
-        long    tElapsed;
-  	int	i, d;
-	double 	*array;
+  Node    root;
+  Node    longLivedTree;
+  Node    tempTree;
+  long    tStart, tFinish;
+  long    tElapsed;
+  int	i, d;
+  double 	*array;
 
- // GC_full_freq = 30;
- // GC_free_space_divisor = 16;
- // GC_enable_incremental();
-	printf("Garbage Collector Test\n");
- 	printf(" Live storage will peak at %d bytes.\n\n",
-               2 * sizeof(Node0) * TreeSize(kLongLivedTreeDepth) +
-               sizeof(double) * kArraySize);
-        printf(" Stretching memory with a binary tree of depth %d\n",
-               kStretchTreeDepth);
-        PrintDiagnostics();
+  // GC_full_freq = 30;
+  // GC_free_space_divisor = 16;
+  // GC_enable_incremental();
+  printf("Garbage Collector Test\n");
+  printf(" Live storage will peak at %d bytes.\n\n",
+         2 * sizeof(Node0) * TreeSize(kLongLivedTreeDepth) +
+         sizeof(double) * kArraySize);
+  printf(" Stretching memory with a binary tree of depth %d\n",
+         kStretchTreeDepth);
+  PrintDiagnostics();
 #	ifdef PROFIL
-	    init_profiling();
+  init_profiling();
 #	endif
        
-        tStart = currentTime();
+  tStart = currentTime();
         
-        // Stretch the memory space quickly
-        tempTree = MakeTree(kStretchTreeDepth);
-        tempTree = 0;
+  // Stretch the memory space quickly
+  tempTree = MakeTree(kStretchTreeDepth);
+  tempTree = 0;
 
-        // Create a long lived object
-        printf(" Creating a long-lived binary tree of depth %d\n",
-               kLongLivedTreeDepth);
-        longLivedTree = GC_NEW(Node0);
-        Populate(kLongLivedTreeDepth, longLivedTree);
+  // Create a long lived object
+  printf(" Creating a long-lived binary tree of depth %d\n",
+         kLongLivedTreeDepth);
+  longLivedTree = GC_NEW(Node0);
+  Populate(kLongLivedTreeDepth, longLivedTree);
 
-        // Create long-lived array, filling half of it
-	printf(" Creating a long-lived array of %d doubles\n", kArraySize);
-        array = GC_MALLOC_ATOMIC(sizeof(double) * kArraySize);
-        for (i = 0; i < kArraySize/2; ++i) {
-                array[i] = 1.0/i;
-        }
-        PrintDiagnostics();
+  // Create long-lived array, filling half of it
+  printf(" Creating a long-lived array of %d doubles\n", kArraySize);
+  array = GC_MALLOC_ATOMIC(sizeof(double) * kArraySize);
+  for (i = 0; i < kArraySize/2; ++i) {
+    array[i] = 1.0/i;
+  }
+  PrintDiagnostics();
 
-        for (d = kMinTreeDepth; d <= kMaxTreeDepth; d += 2) {
-                TimeConstruction(d);
-        }
+  for (d = kMinTreeDepth; d <= kMaxTreeDepth; d += 2) {
+    TimeConstruction(d);
+  }
 
-        if (longLivedTree == 0 || array[1000] != 1.0/1000)
-		fprintf(stderr, "Failed\n");
-                                // fake reference to LongLivedTree
-                                // and array
-                                // to keep them from being optimized away
+  if (longLivedTree == 0 || array[1000] != 1.0/1000)
+    fprintf(stderr, "Failed\n");
+  // fake reference to LongLivedTree
+  // and array
+  // to keep them from being optimized away
 
-        tFinish = currentTime();
-        tElapsed = tFinish - tStart;
-        PrintDiagnostics();
-        printf("Completed in %d msec\n", tElapsed);
-	  printf("Completed %d collections\n", GC_gc_no);
-	  printf("Heap size is %d\n", GC_get_heap_size());
+  tFinish = currentTime();
+  tElapsed = tFinish - tStart;
+  PrintDiagnostics();
+  printf("Completed in %d msec\n", tElapsed);
+  printf("Completed %d collections\n", GC_gc_no);
+  printf("Heap size is %d\n", GC_get_heap_size());
 }
 
