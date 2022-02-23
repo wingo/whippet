@@ -42,6 +42,12 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
+typedef struct Node {
+  struct Node * left;
+  struct Node * right;
+  int i, j;
+} Node;
+
 #ifdef GC_BDW
 #include "bdw.h"
 #else
@@ -65,17 +71,9 @@ static const int kArraySize  = 500000;  // about 4Mb
 static const int kMinTreeDepth = 4;
 static const int kMaxTreeDepth = 16;
 
-typedef struct Node0_struct {
-  struct Node0_struct * left;
-  struct Node0_struct * right;
-  int i, j;
-} Node0;
-
-typedef Node0 *Node;
-
-void init_Node(Node me, Node l, Node r) {
-  me -> left = l;
-  me -> right = r;
+void init_Node(Node *me, Node *l, Node *r) {
+  init_field((void**)&me->left, l);
+  init_field((void**)&me->right, r);
 }
 
 // Nodes used by a tree of a given size
@@ -89,132 +87,136 @@ static int NumIters(int i) {
 }
 
 // Build tree top down, assigning to older objects.
-static void Populate(int iDepth, Node thisNode) {
+static void Populate(int iDepth, Node *node) {
   if (iDepth<=0) {
     return;
   } else {
     iDepth--;
-    thisNode->left  = GC_NEW(Node0);
-    thisNode->right = GC_NEW(Node0);
-    Populate (iDepth, thisNode->left);
-    Populate (iDepth, thisNode->right);
+    
+    NodeHandle self = { node };
+    PUSH_HANDLE(self);
+    NodeHandle l = { allocate_node() };
+    PUSH_HANDLE(l);
+    NodeHandle r = { allocate_node() };
+    PUSH_HANDLE(r);
+    set_field((void**)&HANDLE_REF(self)->left, HANDLE_REF(l));
+    set_field((void**)&HANDLE_REF(self)->right, HANDLE_REF(r));
+    Populate (iDepth, HANDLE_REF(self)->left);
+    Populate (iDepth, HANDLE_REF(self)->right);
+    POP_HANDLE(r);
+    POP_HANDLE(l);
+    POP_HANDLE(self);
   }
 }
 
 // Build tree bottom-up
-static Node MakeTree(int iDepth) {
-  Node result;
+static Node* MakeTree(int iDepth) {
   if (iDepth<=0) {
-    result = GC_NEW(Node0);
-    /* result is implicitly initialized in both cases. */
-    return result;
+    return allocate_node();
   } else {
-    Node left = MakeTree(iDepth-1);
-    Node right = MakeTree(iDepth-1);
-    result = GC_NEW(Node0);
-    init_Node(result, left, right);
+    NodeHandle left = { MakeTree(iDepth-1) };
+    PUSH_HANDLE(left);
+    NodeHandle right = { MakeTree(iDepth-1) };
+    PUSH_HANDLE(right);
+    Node *result = allocate_node();
+    init_Node(result, HANDLE_REF(left), HANDLE_REF(right));
+    POP_HANDLE(left);
+    POP_HANDLE(right);
     return result;
   }
-}
-
-static void PrintDiagnostics() {
-#if 0
-  long lFreeMemory = Runtime.getRuntime().freeMemory();
-  long lTotalMemory = Runtime.getRuntime().totalMemory();
-
-  System.out.print(" Total memory available="
-                   + lTotalMemory + " bytes");
-  System.out.println("  Free memory=" + lFreeMemory + " bytes");
-#endif
 }
 
 static void TimeConstruction(int depth) {
-  long    tStart, tFinish;
-  int     iNumIters = NumIters(depth);
-  Node    tempTree;
-  int 	i;
+  int iNumIters = NumIters(depth);
+  NodeHandle tempTree = { NULL };
+  PUSH_HANDLE(tempTree);
 
   printf("Creating %d trees of depth %d\n", iNumIters, depth);
-        
-  tStart = currentTime();
-  for (i = 0; i < iNumIters; ++i) {
-    tempTree = GC_NEW(Node0);
-    Populate(depth, tempTree);
-    tempTree = 0;
-  }
-  tFinish = currentTime();
-  printf("\tTop down construction took %d msec\n",
-         tFinish - tStart);
-             
-  tStart = currentTime();
-  for (i = 0; i < iNumIters; ++i) {
-    tempTree = MakeTree(depth);
-    tempTree = 0;
-  }
-  tFinish = currentTime();
-  printf("\tBottom up construction took %d msec\n",
-         tFinish - tStart);
 
+  {
+    long tStart = currentTime();
+    for (int i = 0; i < iNumIters; ++i) {
+      HANDLE_SET(tempTree, allocate_node());
+      Populate(depth, HANDLE_REF(tempTree));
+      HANDLE_SET(tempTree, NULL);
+    }
+    long tFinish = currentTime();
+    printf("\tTop down construction took %ld msec\n",
+           tFinish - tStart);
+  }
+
+  {
+    long tStart = currentTime();
+    for (int i = 0; i < iNumIters; ++i) {
+      HANDLE_SET(tempTree, MakeTree(depth));
+      HANDLE_SET(tempTree, NULL);
+    }
+    long tFinish = currentTime();
+    printf("\tBottom up construction took %ld msec\n",
+           tFinish - tStart);
+  }
+
+  POP_HANDLE(tempTree);
 }
 
 int main() {
-  Node    root;
-  Node    longLivedTree;
-  Node    tempTree;
-  long    tStart, tFinish;
-  long    tElapsed;
-  int	i, d;
-  double 	*array;
+  NodeHandle root = { NULL };
+  NodeHandle longLivedTree = { NULL };
+  NodeHandle tempTree = { NULL };
+  HANDLE_TO(double) array = { NULL };
 
-  // GC_full_freq = 30;
-  // GC_free_space_divisor = 16;
-  // GC_enable_incremental();
+  PUSH_HANDLE(root);
+  PUSH_HANDLE(longLivedTree);
+  PUSH_HANDLE(tempTree);
+  PUSH_HANDLE(array);
+
+  initialize_gc();
+
   printf("Garbage Collector Test\n");
-  printf(" Live storage will peak at %d bytes.\n\n",
-         2 * sizeof(Node0) * TreeSize(kLongLivedTreeDepth) +
+  printf(" Live storage will peak at %zd bytes.\n\n",
+         2 * sizeof(struct Node) * TreeSize(kLongLivedTreeDepth) +
          sizeof(double) * kArraySize);
   printf(" Stretching memory with a binary tree of depth %d\n",
          kStretchTreeDepth);
-  PrintDiagnostics();
-#	ifdef PROFIL
-  init_profiling();
-#	endif
+  print_start_gc_stats();
        
-  tStart = currentTime();
+  long tStart = currentTime();
         
   // Stretch the memory space quickly
-  tempTree = MakeTree(kStretchTreeDepth);
-  tempTree = 0;
+  HANDLE_SET(tempTree, MakeTree(kStretchTreeDepth));
+  HANDLE_SET(tempTree, NULL);
 
   // Create a long lived object
   printf(" Creating a long-lived binary tree of depth %d\n",
          kLongLivedTreeDepth);
-  longLivedTree = GC_NEW(Node0);
-  Populate(kLongLivedTreeDepth, longLivedTree);
+  HANDLE_SET(longLivedTree, allocate_node());
+  Populate(kLongLivedTreeDepth, HANDLE_REF(longLivedTree));
 
   // Create long-lived array, filling half of it
   printf(" Creating a long-lived array of %d doubles\n", kArraySize);
-  array = GC_MALLOC_ATOMIC(sizeof(double) * kArraySize);
-  for (i = 0; i < kArraySize/2; ++i) {
-    array[i] = 1.0/i;
+  HANDLE_SET(array, allocate_double_array(kArraySize));
+  for (int i = 0; i < kArraySize/2; ++i) {
+    HANDLE_REF(array)[i] = 1.0/i;
   }
-  PrintDiagnostics();
 
-  for (d = kMinTreeDepth; d <= kMaxTreeDepth; d += 2) {
+  for (int d = kMinTreeDepth; d <= kMaxTreeDepth; d += 2) {
     TimeConstruction(d);
   }
 
-  if (longLivedTree == 0 || array[1000] != 1.0/1000)
+  if (HANDLE_REF(longLivedTree) == 0 || HANDLE_REF(array)[1000] != 1.0/1000)
     fprintf(stderr, "Failed\n");
   // fake reference to LongLivedTree
   // and array
   // to keep them from being optimized away
 
-  tFinish = currentTime();
-  tElapsed = tFinish - tStart;
-  PrintDiagnostics();
-  printf("Completed in %d msec\n", tElapsed);
-  printf("Completed %d collections\n", GC_gc_no);
-  printf("Heap size is %d\n", GC_get_heap_size());
+  long tFinish = currentTime();
+  long tElapsed = tFinish - tStart;
+  printf("Completed in %ld msec\n", tElapsed);
+  print_end_gc_stats();
+
+  POP_HANDLE(array);
+  POP_HANDLE(tempTree);
+  POP_HANDLE(longLivedTree);
+  POP_HANDLE(root);
 }
 
