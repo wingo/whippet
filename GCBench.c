@@ -42,17 +42,65 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
+#ifdef GC_BDW
+#include "bdw.h"
+#elif defined(GC_SEMI)
+#include "semi.h"
+#else
+#error unknown gc
+#endif
+
+static const int kStretchTreeDepth    = 18;      // about 16Mb
+static const int kLongLivedTreeDepth  = 16;  // about 4Mb
+static const int kArraySize  = 500000;  // about 4Mb
+static const int kMinTreeDepth = 4;
+static const int kMaxTreeDepth = 16;
+
 typedef struct Node {
+  GC_HEADER;
   struct Node * left;
   struct Node * right;
   int i, j;
 } Node;
 
-#ifdef GC_BDW
-#include "bdw.h"
-#else
-#error unknown gc
-#endif
+typedef struct DoubleArray {
+  GC_HEADER;
+  size_t length;
+  double values[0];
+} DoubleArray;
+
+static inline size_t node_size(void *obj) {
+  return sizeof(Node);
+}
+static inline size_t double_array_size(void *obj) {
+  DoubleArray *array = obj;
+  return sizeof(*array) + array->length * sizeof(double);
+}
+static inline void visit_node_fields(struct context *cx, void *obj,
+                                     field_visitor visit) {
+  Node *node = obj;
+  visit(cx, (void**)&node->left);
+  visit(cx, (void**)&node->right);
+}
+static inline void visit_double_array_fields(struct context *cx, void *obj,
+                                             field_visitor visit) {
+}
+
+typedef HANDLE_TO(Node) NodeHandle;
+typedef HANDLE_TO(DoubleArray) DoubleArrayHandle;
+
+static Node* allocate_node(struct context *cx) {
+  // memset to 0 by the collector.
+  return allocate(cx, NODE, sizeof (Node));
+}
+
+static struct DoubleArray* allocate_double_array(struct context *cx,
+                                                 size_t size) {
+  // note, not memset to 0 by the collector.
+  DoubleArray *ret = allocate(cx, DOUBLE_ARRAY, sizeof (double) * size);
+  ret->length = size;
+  return ret;
+}
 
 /* Get the current time in milliseconds */
 static unsigned currentTime(void)
@@ -64,12 +112,6 @@ static unsigned currentTime(void)
     return 0;
   return (t.tv_sec * 1000 + t.tv_usec / 1000);
 }
-
-static const int kStretchTreeDepth    = 18;      // about 16Mb
-static const int kLongLivedTreeDepth  = 16;  // about 4Mb
-static const int kArraySize  = 500000;  // about 4Mb
-static const int kMinTreeDepth = 4;
-static const int kMaxTreeDepth = 16;
 
 void init_Node(Node *me, Node *l, Node *r) {
   init_field((void**)&me->left, l);
@@ -87,57 +129,57 @@ static int NumIters(int i) {
 }
 
 // Build tree top down, assigning to older objects.
-static void Populate(int iDepth, Node *node) {
+static void Populate(struct context *cx, int iDepth, Node *node) {
   if (iDepth<=0) {
     return;
   } else {
     iDepth--;
     
     NodeHandle self = { node };
-    PUSH_HANDLE(self);
-    NodeHandle l = { allocate_node() };
-    PUSH_HANDLE(l);
-    NodeHandle r = { allocate_node() };
-    PUSH_HANDLE(r);
+    PUSH_HANDLE(cx, self);
+    NodeHandle l = { allocate_node(cx) };
+    PUSH_HANDLE(cx, l);
+    NodeHandle r = { allocate_node(cx) };
+    PUSH_HANDLE(cx, r);
     set_field((void**)&HANDLE_REF(self)->left, HANDLE_REF(l));
     set_field((void**)&HANDLE_REF(self)->right, HANDLE_REF(r));
-    Populate (iDepth, HANDLE_REF(self)->left);
-    Populate (iDepth, HANDLE_REF(self)->right);
-    POP_HANDLE(r);
-    POP_HANDLE(l);
-    POP_HANDLE(self);
+    Populate (cx, iDepth, HANDLE_REF(self)->left);
+    Populate (cx, iDepth, HANDLE_REF(self)->right);
+    POP_HANDLE(cx, r);
+    POP_HANDLE(cx, l);
+    POP_HANDLE(cx, self);
   }
 }
 
 // Build tree bottom-up
-static Node* MakeTree(int iDepth) {
+static Node* MakeTree(struct context *cx, int iDepth) {
   if (iDepth<=0) {
-    return allocate_node();
+    return allocate_node(cx);
   } else {
-    NodeHandle left = { MakeTree(iDepth-1) };
-    PUSH_HANDLE(left);
-    NodeHandle right = { MakeTree(iDepth-1) };
-    PUSH_HANDLE(right);
-    Node *result = allocate_node();
+    NodeHandle left = { MakeTree(cx, iDepth-1) };
+    PUSH_HANDLE(cx, left);
+    NodeHandle right = { MakeTree(cx, iDepth-1) };
+    PUSH_HANDLE(cx, right);
+    Node *result = allocate_node(cx);
     init_Node(result, HANDLE_REF(left), HANDLE_REF(right));
-    POP_HANDLE(left);
-    POP_HANDLE(right);
+    POP_HANDLE(cx, right);
+    POP_HANDLE(cx, left);
     return result;
   }
 }
 
-static void TimeConstruction(int depth) {
+static void TimeConstruction(struct context *cx, int depth) {
   int iNumIters = NumIters(depth);
   NodeHandle tempTree = { NULL };
-  PUSH_HANDLE(tempTree);
+  PUSH_HANDLE(cx, tempTree);
 
   printf("Creating %d trees of depth %d\n", iNumIters, depth);
 
   {
     long tStart = currentTime();
     for (int i = 0; i < iNumIters; ++i) {
-      HANDLE_SET(tempTree, allocate_node());
-      Populate(depth, HANDLE_REF(tempTree));
+      HANDLE_SET(tempTree, allocate_node(cx));
+      Populate(cx, depth, HANDLE_REF(tempTree));
       HANDLE_SET(tempTree, NULL);
     }
     long tFinish = currentTime();
@@ -148,7 +190,7 @@ static void TimeConstruction(int depth) {
   {
     long tStart = currentTime();
     for (int i = 0; i < iNumIters; ++i) {
-      HANDLE_SET(tempTree, MakeTree(depth));
+      HANDLE_SET(tempTree, MakeTree(cx, depth));
       HANDLE_SET(tempTree, NULL);
     }
     long tFinish = currentTime();
@@ -156,54 +198,61 @@ static void TimeConstruction(int depth) {
            tFinish - tStart);
   }
 
-  POP_HANDLE(tempTree);
+  POP_HANDLE(cx, tempTree);
 }
 
 int main() {
+  size_t kHeapMaxLive =
+    2 * sizeof(struct Node) * TreeSize(kLongLivedTreeDepth) +
+    sizeof(double) * kArraySize;
+  double kHeapMultiplier = 3;
+  size_t kHeapSize = kHeapMaxLive * kHeapMultiplier;
+
+  struct context _cx;
+  struct context *cx = &_cx;
+  initialize_gc(cx, kHeapSize);
+
   NodeHandle root = { NULL };
   NodeHandle longLivedTree = { NULL };
   NodeHandle tempTree = { NULL };
-  HANDLE_TO(double) array = { NULL };
+  DoubleArrayHandle array = { NULL };
 
-  PUSH_HANDLE(root);
-  PUSH_HANDLE(longLivedTree);
-  PUSH_HANDLE(tempTree);
-  PUSH_HANDLE(array);
-
-  initialize_gc();
+  PUSH_HANDLE(cx, root);
+  PUSH_HANDLE(cx, longLivedTree);
+  PUSH_HANDLE(cx, tempTree);
+  PUSH_HANDLE(cx, array);
 
   printf("Garbage Collector Test\n");
-  printf(" Live storage will peak at %zd bytes.\n\n",
-         2 * sizeof(struct Node) * TreeSize(kLongLivedTreeDepth) +
-         sizeof(double) * kArraySize);
+  printf(" Live storage will peak at %zd bytes.\n\n", kHeapMaxLive);
   printf(" Stretching memory with a binary tree of depth %d\n",
          kStretchTreeDepth);
-  print_start_gc_stats();
+  print_start_gc_stats(cx);
        
   long tStart = currentTime();
         
   // Stretch the memory space quickly
-  HANDLE_SET(tempTree, MakeTree(kStretchTreeDepth));
+  HANDLE_SET(tempTree, MakeTree(cx, kStretchTreeDepth));
   HANDLE_SET(tempTree, NULL);
 
   // Create a long lived object
   printf(" Creating a long-lived binary tree of depth %d\n",
          kLongLivedTreeDepth);
-  HANDLE_SET(longLivedTree, allocate_node());
-  Populate(kLongLivedTreeDepth, HANDLE_REF(longLivedTree));
+  HANDLE_SET(longLivedTree, allocate_node(cx));
+  Populate(cx, kLongLivedTreeDepth, HANDLE_REF(longLivedTree));
 
   // Create long-lived array, filling half of it
   printf(" Creating a long-lived array of %d doubles\n", kArraySize);
-  HANDLE_SET(array, allocate_double_array(kArraySize));
+  HANDLE_SET(array, allocate_double_array(cx, kArraySize));
   for (int i = 0; i < kArraySize/2; ++i) {
-    HANDLE_REF(array)[i] = 1.0/i;
+    HANDLE_REF(array)->values[i] = 1.0/i;
   }
 
   for (int d = kMinTreeDepth; d <= kMaxTreeDepth; d += 2) {
-    TimeConstruction(d);
+    TimeConstruction(cx, d);
   }
 
-  if (HANDLE_REF(longLivedTree) == 0 || HANDLE_REF(array)[1000] != 1.0/1000)
+  if (HANDLE_REF(longLivedTree) == 0
+      || HANDLE_REF(array)->values[1000] != 1.0/1000)
     fprintf(stderr, "Failed\n");
   // fake reference to LongLivedTree
   // and array
@@ -212,11 +261,11 @@ int main() {
   long tFinish = currentTime();
   long tElapsed = tFinish - tStart;
   printf("Completed in %ld msec\n", tElapsed);
-  print_end_gc_stats();
+  print_end_gc_stats(cx);
 
-  POP_HANDLE(array);
-  POP_HANDLE(tempTree);
-  POP_HANDLE(longLivedTree);
-  POP_HANDLE(root);
+  POP_HANDLE(cx, array);
+  POP_HANDLE(cx, tempTree);
+  POP_HANDLE(cx, longLivedTree);
+  POP_HANDLE(cx, root);
 }
 

@@ -12,14 +12,24 @@
 
 #include <gc/gc.h>
 
-static Node* allocate_node(void) {
-  // memset to 0 by the collector.
-  return GC_malloc (sizeof (Node));
-}
+struct context {};
 
-static double* allocate_double_array(size_t size) {
-  // note, not memset to 0 by the collector.
-  return GC_malloc_atomic (sizeof (double) * size);
+enum alloc_kind { NODE, DOUBLE_ARRAY };
+
+typedef void (*field_visitor)(struct context *, void **ref);
+
+#define GC_HEADER /**/
+
+static inline void* allocate(struct context *cx, enum alloc_kind kind,
+                             size_t size) {
+  // memset to 0 by the collector.
+  switch (kind) {
+  case NODE:
+    return GC_malloc(size);
+  case DOUBLE_ARRAY:
+    return GC_malloc_atomic(size);
+  }
+  abort();
 }
 
 struct handle {
@@ -29,15 +39,13 @@ struct handle {
 #define HANDLE_TO(T) union { T* v; struct handle handle; }
 #define HANDLE_REF(h) h.v
 #define HANDLE_SET(h,val) do { h.v = val; } while (0)
-#define PUSH_HANDLE(h) push_handle(&h.handle)
-#define POP_HANDLE(h) pop_handle(&h.handle)
+#define PUSH_HANDLE(cx, h) push_handle(cx, &h.handle)
+#define POP_HANDLE(cx, h) pop_handle(cx, &h.handle)
 
-typedef HANDLE_TO(Node) NodeHandle;
-
-static inline void push_handle(struct handle *handle) {
+static inline void push_handle(struct context *cx, struct handle *handle) {
 }
 
-static inline void pop_handle(struct handle *handle) {
+static inline void pop_handle(struct context *cx, struct handle *handle) {
 }
 
 static inline void init_field(void **addr, void *val) {
@@ -50,16 +58,22 @@ static inline void* get_field(void **addr) {
   return *addr;
 }
 
-static inline void initialize_gc(void) {
+static inline void initialize_gc(struct context* cx, size_t heap_size) {
   // GC_full_freq = 30;
   // GC_free_space_divisor = 16;
   // GC_enable_incremental();
+  GC_INIT();
+  size_t current_heap_size = GC_get_heap_size();
+  if (heap_size > current_heap_size) {
+    GC_set_max_heap_size (heap_size);
+    GC_expand_hp(heap_size - current_heap_size);
+  }
 }
 
-static inline void print_start_gc_stats(void) {
+static inline void print_start_gc_stats(struct context *cx) {
 }
 
-static inline void print_end_gc_stats(void) {
+static inline void print_end_gc_stats(struct context *cx) {
   printf("Completed %ld collections\n", (long)GC_get_gc_no());
   printf("Heap size is %ld\n", (long)GC_get_heap_size());
 }

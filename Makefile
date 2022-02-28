@@ -1,5 +1,5 @@
 TESTS=GCBench MT_GCBench MT_GCBench2
-COLLECTORS=bdw
+COLLECTORS=bdw semi
 
 CC=gcc
 CFLAGS=-Wall -O2 -g
@@ -10,6 +10,9 @@ all: $(ALL_TESTS)
 
 bdw-%: bdw.h %.c
 	$(CC) $(CFLAGS) -lpthread `pkg-config --libs --cflags bdw-gc` -I. -DGC_BDW -o $@ $*.c
+
+semi-%: semi.h %.c
+	$(CC) $(CFLAGS) -I. -DGC_SEMI -o $@ $*.c
 
 check: $(addprefix test-$(TARGET),$(TARGETS))
 
