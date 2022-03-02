@@ -1,4 +1,4 @@
-TESTS=GCBench MT_GCBench MT_GCBench2
+TESTS=GCBench # MT_GCBench MT_GCBench2
 COLLECTORS=bdw semi
 
 CC=gcc
