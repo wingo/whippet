@@ -4,10 +4,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-struct handle {
-  void *v;
-  struct handle *next;
-};
+#include "precise-roots.h"
 
 struct context {
   uintptr_t hp;
@@ -141,21 +138,6 @@ static inline void* allocate(struct context *cx, enum alloc_kind kind,
       clear_memory(addr + sizeof(uintptr_t), size - sizeof(uintptr_t));
     return ret;
   }
-}
-
-#define HANDLE_TO(T) union { T* v; struct handle handle; }
-#define HANDLE_REF(h) h.v
-#define HANDLE_SET(h,val) do { h.v = val; } while (0)
-#define PUSH_HANDLE(cx, h) push_handle(cx, &h.handle)
-#define POP_HANDLE(cx, h) pop_handle(cx, &h.handle)
-
-static inline void push_handle(struct context *cx, struct handle *handle) {
-  handle->next = cx->roots;
-  cx->roots = handle;
-}
-
-static inline void pop_handle(struct context *cx, struct handle *handle) {
-  cx->roots = handle->next;
 }
 
 static inline void init_field(void **addr, void *val) {

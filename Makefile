@@ -8,10 +8,10 @@ ALL_TESTS=$(foreach COLLECTOR,$(COLLECTORS),$(addprefix $(COLLECTOR)-,$(TESTS)))
 
 all: $(ALL_TESTS)
 
-bdw-%: bdw.h %.c
+bdw-%: bdw.h conservative-roots.h %.c
 	$(CC) $(CFLAGS) -lpthread `pkg-config --libs --cflags bdw-gc` -I. -DGC_BDW -o $@ $*.c
 
-semi-%: semi.h %.c
+semi-%: semi.h precise-roots.h %.c
 	$(CC) $(CFLAGS) -I. -DGC_SEMI -o $@ $*.c
 
 check: $(addprefix test-$(TARGET),$(TARGETS))

@@ -1,3 +1,5 @@
+#include "conservative-roots.h"
+
 // When pthreads are used, let `libgc' know about it and redirect
 // allocation calls such as `GC_MALLOC ()' to (contention-free, faster)
 // thread-local allocation.
@@ -30,22 +32,6 @@ static inline void* allocate(struct context *cx, enum alloc_kind kind,
     return GC_malloc_atomic(size);
   }
   abort();
-}
-
-struct handle {
-  void *v;
-};
-
-#define HANDLE_TO(T) union { T* v; struct handle handle; }
-#define HANDLE_REF(h) h.v
-#define HANDLE_SET(h,val) do { h.v = val; } while (0)
-#define PUSH_HANDLE(cx, h) push_handle(cx, &h.handle)
-#define POP_HANDLE(cx, h) pop_handle(cx, &h.handle)
-
-static inline void push_handle(struct context *cx, struct handle *handle) {
-}
-
-static inline void pop_handle(struct context *cx, struct handle *handle) {
 }
 
 static inline void init_field(void **addr, void *val) {
