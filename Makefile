@@ -1,5 +1,5 @@
 TESTS=GCBench # MT_GCBench MT_GCBench2
-COLLECTORS=bdw semi
+COLLECTORS=bdw semi mark-sweep
 
 CC=gcc
 CFLAGS=-Wall -O2 -g
@@ -13,6 +13,9 @@ bdw-%: bdw.h conservative-roots.h %.c
 
 semi-%: semi.h precise-roots.h %.c
 	$(CC) $(CFLAGS) -I. -DGC_SEMI -o $@ $*.c
+
+mark-sweep-%: mark-sweep.h precise-roots.h %.c
+	$(CC) $(CFLAGS) -I. -DGC_MARK_SWEEP -o $@ $*.c
 
 check: $(addprefix test-$(TARGET),$(TARGETS))
 

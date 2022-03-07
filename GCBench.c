@@ -42,10 +42,12 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
-#ifdef GC_BDW
+#if defined(GC_BDW)
 #include "bdw.h"
 #elif defined(GC_SEMI)
 #include "semi.h"
+#elif defined(GC_MARK_SWEEP)
+#include "mark-sweep.h"
 #else
 #error unknown gc
 #endif
