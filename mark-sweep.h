@@ -4,16 +4,9 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "assert.h"
 #include "precise-roots.h"
-
-#define STATIC_ASSERT_EQ(a, b) _Static_assert((a) == (b), "eq")
-
-#ifndef NDEBUG
-#define ASSERT(x) do { if (!(x)) __builtin_trap(); } while (0)
-#else
-#define ASSERT(x) do { } while (0)
-#endif
-#define ASSERT_EQ(a,b) ASSERT((a) == (b))
+#include "serial-marker.h"
 
 #define GRANULE_SIZE 8
 #define GRANULE_SIZE_LOG_2 3
@@ -163,7 +156,12 @@ struct context {
   uintptr_t sweep;
   struct handle *roots;
   long count;
+  struct marker marker;
 };
+
+static inline struct marker* context_marker(struct context *cx) {
+  return &cx->marker;
+}
 
 static inline struct gcobj_free**
 get_small_object_freelist(struct context *cx, enum small_object_size kind) {
@@ -187,27 +185,21 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
 }
 
 static void collect(struct context *cx) __attribute__((noinline));
-static void mark(struct context *cx, void *p);
 
-static inline void visit(struct context *cx, void **loc) {
-  mark(cx, *loc);
+static inline int mark_object(struct gcobj *obj) {
+  if (tag_marked(obj->tag))
+    return 0;
+  tag_set_marked(&obj->tag);
+  return 1;
 }
 
-static void mark(struct context *cx, void *p) {
-  // A production mark implementation would use a worklist, to avoid
-  // stack overflow.  This implementation just uses the call stack.
-  struct gcobj *obj = p;
-  if (obj == NULL)
-    return;
-  if (tag_marked(obj->tag))
-    return;
-  tag_set_marked(&obj->tag);
+static void process(struct context *cx, struct gcobj *obj) {
   switch (tag_live_alloc_kind(obj->tag)) {
   case NODE:
-    visit_node_fields(cx, obj, visit);
+    visit_node_fields(cx, obj, marker_visit);
     break;
   case DOUBLE_ARRAY:
-    visit_double_array_fields(cx, obj, visit);
+    visit_double_array_fields(cx, obj, marker_visit);
     break;
   default:
     abort ();
@@ -223,8 +215,11 @@ static void clear_freelists(struct context *cx) {
 
 static void collect(struct context *cx) {
   // fprintf(stderr, "start collect #%ld:\n", cx->count);
+  marker_prepare(cx);
   for (struct handle *h = cx->roots; h; h = h->next)
-    mark(cx, h->v);
+    marker_visit_root(cx, &h->v);
+  marker_trace(cx, process);
+  marker_release(cx);
   // fprintf(stderr, "done marking\n");
   cx->sweep = cx->base;
   clear_freelists(cx);
@@ -513,6 +508,8 @@ static inline void initialize_gc(struct context *cx, size_t size) {
   cx->sweep = cx->base + cx->size;
   cx->roots = NULL;
   cx->count = 0;
+  if (!marker_init(cx))
+    abort();
   reclaim(cx, mem, size_to_granules(size));
 }
 
