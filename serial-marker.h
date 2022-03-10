@@ -32,7 +32,7 @@ mark_queue_alloc(size_t size) {
 
 static int
 mark_queue_init(struct mark_queue *q) {
-  q->size = getpagesize();
+  q->size = getpagesize() / sizeof(uintptr_t);
   q->read = 0;
   q->write = 0;
   q->buf = mark_queue_alloc(q->size);
@@ -48,6 +48,8 @@ static inline void
 mark_queue_put(struct mark_queue *q, size_t idx, uintptr_t x) {
   q->buf[idx & (q->size - 1)] = x;
 }
+
+static int mark_queue_grow(struct mark_queue *q) __attribute__((noinline));
 
 static int
 mark_queue_grow(struct mark_queue *q) {
@@ -134,10 +136,8 @@ static inline int mark_object(struct gcobj *obj) __attribute__((always_inline));
 static inline void
 marker_visit(struct context *cx, void **loc) {
   struct gcobj *obj = *loc;
-  if (obj) {
-    __builtin_prefetch(obj);
+  if (obj && mark_object(obj))
     mark_queue_push(&context_marker(cx)->queue, obj);
-  }
 }
 static inline void
 marker_visit_root(struct context *cx, void **loc) {
@@ -148,8 +148,7 @@ marker_trace(struct context *cx,
              void (*process)(struct context *, struct gcobj *)) {
   struct gcobj *obj;
   while ((obj = mark_queue_pop(&context_marker(cx)->queue)))
-    if (mark_object(obj))
-      process(cx, obj);
+    process(cx, obj);
 }
 
 #endif // SERIAL_MARK_H
