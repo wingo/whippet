@@ -36,12 +36,21 @@ static const uint8_t small_object_granule_sizes[] =
 #undef SMALL_OBJECT_GRANULE_SIZE
 };
 
+static const enum small_object_size small_object_sizes_for_granules[LARGE_OBJECT_GRANULE_THRESHOLD + 1] = {
+  NOT_SMALL_OBJECT, NOT_SMALL_OBJECT, SMALL_OBJECT_2,  SMALL_OBJECT_3,
+  SMALL_OBJECT_4,   SMALL_OBJECT_5,   SMALL_OBJECT_6,  SMALL_OBJECT_8,
+  SMALL_OBJECT_8,   SMALL_OBJECT_10,  SMALL_OBJECT_10, SMALL_OBJECT_16,
+  SMALL_OBJECT_16,  SMALL_OBJECT_16,  SMALL_OBJECT_16, SMALL_OBJECT_16,
+  SMALL_OBJECT_16,  SMALL_OBJECT_32,  SMALL_OBJECT_32, SMALL_OBJECT_32,
+  SMALL_OBJECT_32,  SMALL_OBJECT_32,  SMALL_OBJECT_32, SMALL_OBJECT_32,
+  SMALL_OBJECT_32,  SMALL_OBJECT_32,  SMALL_OBJECT_32, SMALL_OBJECT_32,
+  SMALL_OBJECT_32,  SMALL_OBJECT_32,  SMALL_OBJECT_32, SMALL_OBJECT_32,
+  SMALL_OBJECT_32
+};
+
 static enum small_object_size granules_to_small_object_size(unsigned granules) {
-  if (granules <= 1) return NOT_SMALL_OBJECT;
-#define TEST_GRANULE_SIZE(i) if (granules <= i) return SMALL_OBJECT_##i;
-  FOR_EACH_SMALL_OBJECT_GRANULES(TEST_GRANULE_SIZE);
-#undef TEST_GRANULE_SIZE
-  return NOT_SMALL_OBJECT;
+  ASSERT(granules <= LARGE_OBJECT_GRANULE_THRESHOLD);
+  return small_object_sizes_for_granules[granules];
 }
   
 static uintptr_t align_up(uintptr_t addr, size_t align) {
@@ -494,6 +503,14 @@ static inline void* get_field(void **addr) {
 }
 
 static inline void initialize_gc(struct context *cx, size_t size) {
+#define SMALL_OBJECT_GRANULE_SIZE(i) \
+    ASSERT_EQ(SMALL_OBJECT_##i, small_object_sizes_for_granules[i]);
+  FOR_EACH_SMALL_OBJECT_GRANULES(SMALL_OBJECT_GRANULE_SIZE);
+#undef SMALL_OBJECT_GRANULE_SIZE
+
+  ASSERT_EQ(SMALL_OBJECT_SIZES - 1,
+            small_object_sizes_for_granules[LARGE_OBJECT_GRANULE_THRESHOLD]);
+
   size = align_up(size, getpagesize());
 
   void *mem = mmap(NULL, size, PROT_READ|PROT_WRITE,
