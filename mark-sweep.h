@@ -7,7 +7,11 @@
 #include "assert.h"
 #include "debug.h"
 #include "precise-roots.h"
+#ifdef GC_PARALLEL_MARK
+#include "parallel-marker.h"
+#else
 #include "serial-marker.h"
+#endif
 
 #define GRANULE_SIZE 8
 #define GRANULE_SIZE_LOG_2 3

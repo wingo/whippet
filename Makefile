@@ -1,5 +1,5 @@
 TESTS=GCBench # MT_GCBench MT_GCBench2
-COLLECTORS=bdw semi mark-sweep
+COLLECTORS=bdw semi mark-sweep parallel-mark-sweep
 
 CC=gcc
 CFLAGS=-Wall -O2 -g
@@ -16,6 +16,9 @@ semi-%: semi.h precise-roots.h %.c
 
 mark-sweep-%: mark-sweep.h precise-roots.h serial-marker.h assert.h debug.h %.c
 	$(CC) $(CFLAGS) -I. -DNDEBUG -DGC_MARK_SWEEP -o $@ $*.c
+
+parallel-mark-sweep-%: mark-sweep.h precise-roots.h parallel-marker.h assert.h debug.h %.c
+	$(CC) $(CFLAGS) -I. -DNDEBUG -DGC_PARALLEL_MARK_SWEEP -o $@ $*.c
 
 check: $(addprefix test-$(TARGET),$(TARGETS))
 
