@@ -7,22 +7,23 @@
 #include "assert.h"
 #include "debug.h"
 
-struct mark_stack {
+struct mark_queue {
   size_t size;
-  size_t next;
+  size_t read;
+  size_t write;
   uintptr_t *buf;
 };
 
-static const size_t mark_stack_max_size =
+static const size_t mark_queue_max_size =
   (1ULL << (sizeof(uintptr_t) * 8 - 1)) / sizeof(uintptr_t);
-static const size_t mark_stack_release_byte_threshold = 1 * 1024 * 1024;
+static const size_t mark_queue_release_byte_threshold = 1 * 1024 * 1024;
 
 static void*
-mark_stack_alloc(size_t size) {
-  void *mem = mmap(NULL, size, PROT_READ|PROT_WRITE,
+mark_queue_alloc(size_t size) {
+  void *mem = mmap(NULL, size * sizeof(uintptr_t), PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
-    perror("Failed to grow mark stack");
+    perror("Failed to grow mark queue");
     DEBUG("Failed to allocate %zu bytes", size);
     return NULL;
   }
@@ -30,67 +31,85 @@ mark_stack_alloc(size_t size) {
 }
 
 static int
-mark_stack_init(struct mark_stack *stack) {
-  stack->size = getpagesize();
-  stack->next = 0;
-  stack->buf = mark_stack_alloc(stack->size);
-  return !!stack->buf;
+mark_queue_init(struct mark_queue *q) {
+  q->size = getpagesize();
+  q->read = 0;
+  q->write = 0;
+  q->buf = mark_queue_alloc(q->size);
+  return !!q->buf;
 }
   
+static inline uintptr_t
+mark_queue_get(struct mark_queue *q, size_t idx) {
+  return q->buf[idx & (q->size - 1)];
+}
+
+static inline void
+mark_queue_put(struct mark_queue *q, size_t idx, uintptr_t x) {
+  q->buf[idx & (q->size - 1)] = x;
+}
+
 static int
-mark_stack_grow(struct mark_stack *stack) {
-  uintptr_t size = stack->size;
-  if (size >= mark_stack_max_size) {
-    DEBUG("mark stack already at max size of %zu bytes", size);
+mark_queue_grow(struct mark_queue *q) {
+  uintptr_t old_size = q->size;
+  size_t old_read = q->read;
+  size_t old_write = q->write;
+  uintptr_t *old_buf = q->buf;
+  if (old_size >= mark_queue_max_size) {
+    DEBUG("mark queue already at max size of %zu bytes", old_size);
     return 0;
   }
-  size *= 2;
-  uintptr_t *buf = mark_stack_alloc(size);
-  if (!buf)
+  uintptr_t new_size = old_size * 2;
+  size_t new_read = 0;
+  size_t new_write = 0;
+  uintptr_t *new_buf = mark_queue_alloc(new_size);
+  if (!new_buf)
     return 0;
-  memcpy(buf, stack->buf, stack->next * sizeof(uintptr_t));
-  munmap(stack->buf, stack->size * sizeof(uintptr_t));
-  stack->size = size;
-  stack->buf = buf;
+
+  while (old_read < old_write)
+    new_buf[new_write++] = mark_queue_get(q, old_read++);
+
+  munmap(old_buf, old_size * sizeof(uintptr_t));
+
+  q->size = new_size;
+  q->read = new_read;
+  q->write = new_write;
+  q->buf = new_buf;
   return 1;
 }
   
 static inline void
-mark_stack_push(struct mark_stack *stack, void *p) {
-  size_t next = stack->next;
-  if (UNLIKELY(next == stack->size)) {
-    if (!mark_stack_grow(stack))
+mark_queue_push(struct mark_queue *q, void *p) {
+  if (UNLIKELY(q->write - q->read == q->size)) {
+    if (!mark_queue_grow(q))
       abort();
   }
-  stack->buf[next] = (uintptr_t)p;
-  stack->next = next + 1;
+  mark_queue_put(q, q->write++, (uintptr_t)p);
 }
 
 static inline void*
-mark_stack_pop(struct mark_stack *stack) {
-  size_t next = stack->next;
-  if (UNLIKELY(next == 0))
+mark_queue_pop(struct mark_queue *q) {
+  if (UNLIKELY(q->read == q->write))
     return NULL;
-  uintptr_t ret = stack->buf[next - 1];
-  stack->next = next - 1;
-  return (void*)ret;
+  return (void*)mark_queue_get(q, q->read++);
 }
 
 static void
-mark_stack_release(struct mark_stack *stack) {
-  size_t byte_size = stack->size * sizeof(uintptr_t);
-  if (byte_size >= mark_stack_release_byte_threshold)
-    madvise(stack->buf, byte_size, MADV_DONTNEED);
+mark_queue_release(struct mark_queue *q) {
+  size_t byte_size = q->size * sizeof(uintptr_t);
+  if (byte_size >= mark_queue_release_byte_threshold)
+    madvise(q->buf, byte_size, MADV_DONTNEED);
+  q->read = q->write = 0;
 }
 
 static void
-mark_stack_destroy(struct mark_stack *stack) {
-  size_t byte_size = stack->size * sizeof(uintptr_t);
-  munmap(stack->buf, byte_size);
+mark_queue_destroy(struct mark_queue *q) {
+  size_t byte_size = q->size * sizeof(uintptr_t);
+  munmap(q->buf, byte_size);
 }
 
 struct marker {
-  struct mark_stack stack;
+  struct mark_queue queue;
 };
 
 struct context;
@@ -98,11 +117,11 @@ static inline struct marker* context_marker(struct context *cx);
 
 static int
 marker_init(struct context *cx) {
-  return mark_stack_init(&context_marker(cx)->stack);
+  return mark_queue_init(&context_marker(cx)->queue);
 }
 static void marker_prepare(struct context *cx) {}
 static void marker_release(struct context *cx) {
-  mark_stack_release(&context_marker(cx)->stack);
+  mark_queue_release(&context_marker(cx)->queue);
 }
 
 struct gcobj;
@@ -117,7 +136,7 @@ marker_visit(struct context *cx, void **loc) {
   struct gcobj *obj = *loc;
   if (obj) {
     __builtin_prefetch(obj);
-    mark_stack_push(&context_marker(cx)->stack, obj);
+    mark_queue_push(&context_marker(cx)->queue, obj);
   }
 }
 static inline void
@@ -128,7 +147,7 @@ static inline void
 marker_trace(struct context *cx,
              void (*process)(struct context *, struct gcobj *)) {
   struct gcobj *obj;
-  while ((obj = mark_stack_pop(&context_marker(cx)->stack)))
+  while ((obj = mark_queue_pop(&context_marker(cx)->queue)))
     if (mark_object(obj))
       process(cx, obj);
 }
