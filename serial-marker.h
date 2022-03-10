@@ -53,29 +53,27 @@ static int mark_queue_grow(struct mark_queue *q) __attribute__((noinline));
 
 static int
 mark_queue_grow(struct mark_queue *q) {
-  uintptr_t old_size = q->size;
-  size_t old_read = q->read;
-  size_t old_write = q->write;
+  size_t old_size = q->size;
   uintptr_t *old_buf = q->buf;
   if (old_size >= mark_queue_max_size) {
     DEBUG("mark queue already at max size of %zu bytes", old_size);
     return 0;
   }
-  uintptr_t new_size = old_size * 2;
-  size_t new_read = 0;
-  size_t new_write = 0;
+
+  size_t new_size = old_size * 2;
   uintptr_t *new_buf = mark_queue_alloc(new_size);
   if (!new_buf)
     return 0;
 
-  while (old_read < old_write)
-    new_buf[new_write++] = mark_queue_get(q, old_read++);
+  size_t old_mask = old_size - 1;
+  size_t new_mask = new_size - 1;
+
+  for (size_t i = q->read; i < q->write; i++)
+    new_buf[i & new_mask] = old_buf[i & old_mask];
 
   munmap(old_buf, old_size * sizeof(uintptr_t));
 
   q->size = new_size;
-  q->read = new_read;
-  q->write = new_write;
   q->buf = new_buf;
   return 1;
 }
