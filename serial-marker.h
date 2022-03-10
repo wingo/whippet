@@ -129,12 +129,13 @@ static inline void marker_visit(struct context *cx, void **loc) __attribute__((a
 static inline void marker_trace(struct context *cx,
                                 void (*)(struct context *, struct gcobj *))
   __attribute__((always_inline));
-static inline int mark_object(struct gcobj *obj) __attribute__((always_inline));
+static inline int mark_object(struct context *cx,
+                              struct gcobj *obj) __attribute__((always_inline));
 
 static inline void
 marker_visit(struct context *cx, void **loc) {
   struct gcobj *obj = *loc;
-  if (obj && mark_object(obj))
+  if (obj && mark_object(cx, obj))
     mark_queue_push(&context_marker(cx)->queue, obj);
 }
 static inline void

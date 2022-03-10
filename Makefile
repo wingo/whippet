@@ -9,13 +9,13 @@ ALL_TESTS=$(foreach COLLECTOR,$(COLLECTORS),$(addprefix $(COLLECTOR)-,$(TESTS)))
 all: $(ALL_TESTS)
 
 bdw-%: bdw.h conservative-roots.h %.c
-	$(CC) $(CFLAGS) -lpthread `pkg-config --libs --cflags bdw-gc` -I. -DGC_BDW -o $@ $*.c
+	$(CC) $(CFLAGS) -DNDEBUG -lpthread `pkg-config --libs --cflags bdw-gc` -I. -DGC_BDW -o $@ $*.c
 
 semi-%: semi.h precise-roots.h %.c
-	$(CC) $(CFLAGS) -I. -DGC_SEMI -o $@ $*.c
+	$(CC) $(CFLAGS) -I. -DNDEBUG -DGC_SEMI -o $@ $*.c
 
 mark-sweep-%: mark-sweep.h precise-roots.h serial-marker.h assert.h debug.h %.c
-	$(CC) $(CFLAGS) -I. -DGC_MARK_SWEEP -o $@ $*.c
+	$(CC) $(CFLAGS) -I. -DNDEBUG -DGC_MARK_SWEEP -o $@ $*.c
 
 check: $(addprefix test-$(TARGET),$(TARGETS))
 

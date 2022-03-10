@@ -72,40 +72,16 @@ static inline enum gcobj_kind tag_gcobj_kind(uintptr_t tag) {
   return tag & gcobj_kind_bit;
 }
 
-// If bit 1 of a tag is set, the object is potentially live.  allocate()
-// returns objects with this flag set.  When sweep() adds an object to
-// the freelist, it gets added as dead (with this flag unset).  If
-// sweep() ever sees a dead object, then the object represents wasted
-// space in the form of fragmentation.
-static const uintptr_t gcobj_live_bit = (1 << 1);
-static inline int tag_maybe_live(uintptr_t tag) {
-  return tag & gcobj_live_bit;
-}
-
-// The mark bit is bit 2, and can only ever be set on allocated object
-// (i.e. never for objects on a free list).  It is cleared by the
-// sweeper before the next collection.
-static const uintptr_t gcobj_mark_bit = (1 << 2);
-static inline int tag_marked(uintptr_t tag) {
-  return tag & gcobj_mark_bit;
-}
-static inline void tag_set_marked(uintptr_t *tag_loc) {
-  *tag_loc |= gcobj_mark_bit;
-}
-static inline void tag_clear_marked(uintptr_t *tag_loc) {
-  *tag_loc &= ~gcobj_mark_bit;
-}
-
-// Alloc kind is in bits 3-10, for live objects.
+// Alloc kind is in bits 1-8, for live objects.
 static const uintptr_t gcobj_alloc_kind_mask = 0xff;
-static const uintptr_t gcobj_alloc_kind_shift = 3;
+static const uintptr_t gcobj_alloc_kind_shift = 1;
 static inline uint8_t tag_live_alloc_kind(uintptr_t tag) {
   return (tag >> gcobj_alloc_kind_shift) & gcobj_alloc_kind_mask;
 }
 
-// For free objects, bits 2 and up are free.  Non-tiny objects store the
+// For free objects, bits 1 and up are free.  Non-tiny objects store the
 // object size in granules there.
-static const uintptr_t gcobj_free_granules_shift = 2;
+static const uintptr_t gcobj_free_granules_shift = 1;
 static inline uintptr_t tag_free_granules(uintptr_t tag) {
   return tag >> gcobj_free_granules_shift;
 }
@@ -114,8 +90,7 @@ static inline uintptr_t tag_free(enum gcobj_kind kind, size_t granules) {
   return kind | (granules << gcobj_free_granules_shift);
 }
 static inline uintptr_t tag_live(enum gcobj_kind kind, uint8_t alloc_kind) {
-  return kind | gcobj_live_bit |
-    ((uintptr_t)alloc_kind << gcobj_alloc_kind_shift);
+  return kind | ((uintptr_t)alloc_kind << gcobj_alloc_kind_shift);
 }
 static inline uintptr_t tag_free_tiny(void) {
   return tag_free(GCOBJ_TINY, 0);
@@ -162,6 +137,8 @@ struct context {
   // Unordered list of large objects.
   struct gcobj_free *large_objects;
   uintptr_t base;
+  uint8_t *mark_bytes;
+  uintptr_t heap_base;
   size_t size;
   uintptr_t sweep;
   struct handle *roots;
@@ -196,10 +173,17 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
 
 static void collect(struct context *cx) __attribute__((noinline));
 
-static inline int mark_object(struct gcobj *obj) {
-  if (tag_marked(obj->tag))
+static inline uint8_t* mark_byte(struct context *cx, struct gcobj *obj) {
+  uintptr_t granule = (((uintptr_t) obj) - cx->heap_base)  / GRANULE_SIZE;
+  ASSERT(granule < (cx->heap_base - cx->base));
+  return &cx->mark_bytes[granule];
+}
+
+static inline int mark_object(struct context *cx, struct gcobj *obj) {
+  uint8_t *byte = mark_byte(cx, obj);
+  if (*byte)
     return 0;
-  tag_set_marked(&obj->tag);
+  *byte = 1;
   return 1;
 }
 
@@ -231,7 +215,7 @@ static void collect(struct context *cx) {
   marker_trace(cx, process);
   marker_release(cx);
   DEBUG("done marking\n");
-  cx->sweep = cx->base;
+  cx->sweep = cx->heap_base;
   clear_freelists(cx);
   cx->count++;
 }
@@ -328,13 +312,6 @@ static size_t live_object_granules(struct gcobj *obj) {
   return small_object_granule_sizes[granules_to_small_object_size(granules)];
 }  
 
-static size_t free_object_granules(struct gcobj *obj) {
-  enum gcobj_kind size_kind = tag_gcobj_kind(obj->tag);
-  if (size_kind == GCOBJ_TINY)
-    return 1;
-  return tag_free_granules(obj->tag);
-}  
-
 // Sweep some heap to reclaim free space.  Return 1 if there is more
 // heap to sweep, or 0 if we reached the end.
 static int sweep(struct context *cx) {
@@ -345,29 +322,24 @@ static int sweep(struct context *cx) {
   uintptr_t limit = cx->base + cx->size;
 
   while (to_reclaim > 0 && sweep < limit) {
-    struct gcobj *obj = (struct gcobj*)sweep;
-    size_t obj_granules = tag_maybe_live(obj->tag)
-      ? live_object_granules(obj) : free_object_granules(obj);
-    sweep += obj_granules * GRANULE_SIZE;
-    if (tag_maybe_live(obj->tag) && tag_marked(obj->tag)) {
+    uintptr_t sweep_base = sweep;
+    struct gcobj *obj = (struct gcobj*)sweep_base;
+    uint8_t* mark = mark_byte(cx, obj);
+    if (*mark) {
       // Object survived collection; clear mark and continue sweeping.
-      tag_clear_marked(&obj->tag);
+      ASSERT(*mark == 1);
+      *mark = 0;
+      sweep += live_object_granules(obj) * GRANULE_SIZE;
     } else {
-      // Found a free object.  Combine with any following free objects.
+      // Found a free object.  Combine with any following free space.
       // To avoid fragmentation, don't limit the amount to reclaim.
-      to_reclaim -= obj_granules;
-      while (sweep < limit) {
-        struct gcobj *next = (struct gcobj*)sweep;
-        if (tag_maybe_live(next->tag) && tag_marked(next->tag))
-          break;
-        size_t next_granules = tag_maybe_live(next->tag)
-          ? live_object_granules(next) : free_object_granules(next);
-        sweep += next_granules * GRANULE_SIZE;
-        to_reclaim -= next_granules;
-        obj_granules += next_granules;
-      }
-      memset(((char*)obj) + GRANULE_SIZE, 0, (obj_granules - 1) * GRANULE_SIZE);
-      reclaim(cx, obj, obj_granules);
+      do {
+        sweep += GRANULE_SIZE, to_reclaim--, mark++;
+      } while (sweep < limit && !*mark);
+      memset((void*)(sweep_base + GRANULE_SIZE),
+             0,
+             sweep - sweep_base - GRANULE_SIZE);
+      reclaim(cx, obj, (sweep - sweep_base) >> GRANULE_SIZE_LOG_2);
     }
   }
 
@@ -523,13 +495,16 @@ static inline void initialize_gc(struct context *cx, size_t size) {
   }
   clear_freelists(cx);
   cx->base = (uintptr_t) mem;
+  cx->mark_bytes = mem;
+  size_t heap_admin_size = align_up(size / GRANULE_SIZE, GRANULE_SIZE);
+  cx->heap_base = cx->base + heap_admin_size;
   cx->size = size;
   cx->sweep = cx->base + cx->size;
   cx->roots = NULL;
   cx->count = 0;
   if (!marker_init(cx))
     abort();
-  reclaim(cx, mem, size_to_granules(size));
+  reclaim(cx, (void*)cx->heap_base, size_to_granules(size - heap_admin_size));
 }
 
 static inline void print_start_gc_stats(struct context *cx) {
