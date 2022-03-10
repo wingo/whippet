@@ -312,6 +312,21 @@ static size_t live_object_granules(struct gcobj *obj) {
   return small_object_granule_sizes[granules_to_small_object_size(granules)];
 }  
 
+static size_t next_mark(const uint8_t *mark, size_t limit) {
+  size_t n = 0;
+  for (; (((uintptr_t)mark) & 7) && n < limit; n++)
+    if (mark[n])
+      return n;
+  uintptr_t *word_mark = (uintptr_t *)(mark + n);
+  for (; n < limit; n += sizeof(uintptr_t), word_mark++)
+    if (word_mark)
+      break;
+  for (; n < limit; n++)
+    if (mark[n])
+      return n;
+  return limit;
+}
+
 // Sweep some heap to reclaim free space.  Return 1 if there is more
 // heap to sweep, or 0 if we reached the end.
 static int sweep(struct context *cx) {
@@ -322,25 +337,26 @@ static int sweep(struct context *cx) {
   uintptr_t limit = cx->base + cx->size;
 
   while (to_reclaim > 0 && sweep < limit) {
-    uintptr_t sweep_base = sweep;
-    struct gcobj *obj = (struct gcobj*)sweep_base;
-    uint8_t* mark = mark_byte(cx, obj);
-    if (*mark) {
-      // Object survived collection; clear mark and continue sweeping.
-      ASSERT(*mark == 1);
-      *mark = 0;
-      sweep += live_object_granules(obj) * GRANULE_SIZE;
-    } else {
-      // Found a free object.  Combine with any following free space.
-      // To avoid fragmentation, don't limit the amount to reclaim.
-      do {
-        sweep += GRANULE_SIZE, to_reclaim--, mark++;
-      } while (sweep < limit && !*mark);
-      memset((void*)(sweep_base + GRANULE_SIZE),
+    uint8_t* mark = mark_byte(cx, (struct gcobj*)sweep);
+    size_t free_granules = next_mark(mark,
+                                     (limit - sweep) >> GRANULE_SIZE_LOG_2);
+    if (free_granules) {
+      size_t free_bytes = free_granules * GRANULE_SIZE;
+      memset((void*)(sweep + GRANULE_SIZE),
              0,
-             sweep - sweep_base - GRANULE_SIZE);
-      reclaim(cx, obj, (sweep - sweep_base) >> GRANULE_SIZE_LOG_2);
+             free_bytes - GRANULE_SIZE);
+      reclaim(cx, (void*)sweep, free_granules);
+      sweep += free_bytes;
+      to_reclaim -= free_granules;
+
+      mark += free_granules;
+      if (sweep == limit)
+        break;
     }
+    // Object survived collection; clear mark and continue sweeping.
+    ASSERT(*mark == 1);
+    *mark = 0;
+    sweep += live_object_granules((struct gcobj *)sweep) * GRANULE_SIZE;
   }
 
   cx->sweep = sweep;
