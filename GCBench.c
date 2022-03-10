@@ -230,6 +230,13 @@ int main() {
   double kHeapMultiplier = 3;
   size_t kHeapSize = kHeapMaxLive * kHeapMultiplier;
 
+  if (getenv("HEAP_SIZE"))
+    kHeapSize = atol(getenv("HEAP_SIZE"));
+  if (!kHeapSize) {
+    fprintf(stderr, "Failed to parse HEAP_SIZE='%s'\n", getenv("HEAP_SIZE"));
+    return 1;
+  }
+
   struct context _cx;
   struct context *cx = &_cx;
   initialize_gc(cx, kHeapSize);
