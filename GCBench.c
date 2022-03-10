@@ -42,6 +42,8 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
+#include "assert.h"
+
 #if defined(GC_BDW)
 #include "bdw.h"
 #elif defined(GC_SEMI)
@@ -170,6 +172,22 @@ static Node* MakeTree(struct context *cx, int iDepth) {
   }
 }
 
+static void ValidateTree(Node *tree, int depth) {
+#ifndef NDEBUG
+  ASSERT_EQ(tree->i, 0);
+  ASSERT_EQ(tree->j, 0);
+  if (depth == 0) {
+    ASSERT(!tree->left);
+    ASSERT(!tree->right);
+  } else {
+    ASSERT(tree->left);
+    ASSERT(tree->right);
+    ValidateTree(tree->left, depth - 1);
+    ValidateTree(tree->right, depth - 1);
+  }
+#endif
+}
+
 static void TimeConstruction(struct context *cx, int depth) {
   int iNumIters = NumIters(depth);
   NodeHandle tempTree = { NULL };
@@ -182,6 +200,7 @@ static void TimeConstruction(struct context *cx, int depth) {
     for (int i = 0; i < iNumIters; ++i) {
       HANDLE_SET(tempTree, allocate_node(cx));
       Populate(cx, depth, HANDLE_REF(tempTree));
+      ValidateTree(HANDLE_REF(tempTree), depth);
       HANDLE_SET(tempTree, NULL);
     }
     long tFinish = currentTime();
@@ -193,6 +212,7 @@ static void TimeConstruction(struct context *cx, int depth) {
     long tStart = currentTime();
     for (int i = 0; i < iNumIters; ++i) {
       HANDLE_SET(tempTree, MakeTree(cx, depth));
+      ValidateTree(HANDLE_REF(tempTree), depth);
       HANDLE_SET(tempTree, NULL);
     }
     long tFinish = currentTime();
@@ -234,6 +254,7 @@ int main() {
         
   // Stretch the memory space quickly
   HANDLE_SET(tempTree, MakeTree(cx, kStretchTreeDepth));
+  ValidateTree(HANDLE_REF(tempTree), kStretchTreeDepth);
   HANDLE_SET(tempTree, NULL);
 
   // Create a long lived object
@@ -252,6 +273,8 @@ int main() {
   for (int d = kMinTreeDepth; d <= kMaxTreeDepth; d += 2) {
     TimeConstruction(cx, d);
   }
+
+  ValidateTree(HANDLE_REF(longLivedTree), kLongLivedTreeDepth);
 
   if (HANDLE_REF(longLivedTree) == 0
       || HANDLE_REF(array)->values[1000] != 1.0/1000)
