@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include "assert.h"
+#include "debug.h"
 #include "precise-roots.h"
 #include "serial-marker.h"
 
@@ -36,7 +37,7 @@ static const uint8_t small_object_granule_sizes[] =
 #undef SMALL_OBJECT_GRANULE_SIZE
 };
 
-static const enum small_object_size small_object_sizes_for_granules[LARGE_OBJECT_GRANULE_THRESHOLD + 1] = {
+static const enum small_object_size small_object_sizes_for_granules[LARGE_OBJECT_GRANULE_THRESHOLD + 2] = {
   NOT_SMALL_OBJECT, NOT_SMALL_OBJECT, SMALL_OBJECT_2,  SMALL_OBJECT_3,
   SMALL_OBJECT_4,   SMALL_OBJECT_5,   SMALL_OBJECT_6,  SMALL_OBJECT_8,
   SMALL_OBJECT_8,   SMALL_OBJECT_10,  SMALL_OBJECT_10, SMALL_OBJECT_16,
@@ -45,7 +46,7 @@ static const enum small_object_size small_object_sizes_for_granules[LARGE_OBJECT
   SMALL_OBJECT_32,  SMALL_OBJECT_32,  SMALL_OBJECT_32, SMALL_OBJECT_32,
   SMALL_OBJECT_32,  SMALL_OBJECT_32,  SMALL_OBJECT_32, SMALL_OBJECT_32,
   SMALL_OBJECT_32,  SMALL_OBJECT_32,  SMALL_OBJECT_32, SMALL_OBJECT_32,
-  SMALL_OBJECT_32
+  SMALL_OBJECT_32,  NOT_SMALL_OBJECT
 };
 
 static enum small_object_size granules_to_small_object_size(unsigned granules) {
@@ -223,13 +224,13 @@ static void clear_freelists(struct context *cx) {
 }
 
 static void collect(struct context *cx) {
-  // fprintf(stderr, "start collect #%ld:\n", cx->count);
+  DEBUG("start collect #%ld:\n", cx->count);
   marker_prepare(cx);
   for (struct handle *h = cx->roots; h; h = h->next)
     marker_visit_root(cx, &h->v);
   marker_trace(cx, process);
   marker_release(cx);
-  // fprintf(stderr, "done marking\n");
+  DEBUG("done marking\n");
   cx->sweep = cx->base;
   clear_freelists(cx);
   cx->count++;
@@ -504,7 +505,8 @@ static inline void* get_field(void **addr) {
 
 static inline void initialize_gc(struct context *cx, size_t size) {
 #define SMALL_OBJECT_GRANULE_SIZE(i) \
-    ASSERT_EQ(SMALL_OBJECT_##i, small_object_sizes_for_granules[i]);
+    ASSERT_EQ(SMALL_OBJECT_##i, small_object_sizes_for_granules[i]); \
+    ASSERT_EQ(SMALL_OBJECT_##i + 1, small_object_sizes_for_granules[i+1]);
   FOR_EACH_SMALL_OBJECT_GRANULES(SMALL_OBJECT_GRANULE_SIZE);
 #undef SMALL_OBJECT_GRANULE_SIZE
 
