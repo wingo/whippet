@@ -7,6 +7,7 @@
 
 #include "assert.h"
 #include "debug.h"
+#include "inline.h"
 
 // The Chase-Lev work-stealing deque, as initially described in "Dynamic
 // Circular Work-Stealing Deque" (Chase and Lev, SPAA'05)
@@ -236,22 +237,23 @@ static void marker_release(struct context *cx) {
 }
 
 struct gcobj;
-static inline void marker_visit(struct context *cx, void **loc) __attribute__((always_inline));
+static inline void marker_visit(void **loc, void *mark_data) ALWAYS_INLINE;
 static inline void marker_trace(struct context *cx,
                                 void (*)(struct context *, struct gcobj *))
-  __attribute__((always_inline));
+  ALWAYS_INLINE;
 static inline int mark_object(struct context *cx,
-                              struct gcobj *obj) __attribute__((always_inline));
+                              struct gcobj *obj) ALWAYS_INLINE;
 
 static inline void
-marker_visit(struct context *cx, void **loc) {
+marker_visit(void **loc, void *mark_data) {
+  struct context *cx = mark_data;
   struct gcobj *obj = *loc;
   if (obj && mark_object(cx, obj))
     mark_deque_push(&context_marker(cx)->deque, (uintptr_t)obj);
 }
 static inline void
-marker_visit_root(struct context *cx, void **loc) {
-  marker_visit(cx, loc);
+marker_visit_root(void **loc, struct context *cx) {
+  marker_visit(loc, cx);
 }
 static inline void
 marker_trace(struct context *cx,

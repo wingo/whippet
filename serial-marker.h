@@ -49,7 +49,7 @@ mark_queue_put(struct mark_queue *q, size_t idx, uintptr_t x) {
   q->buf[idx & (q->size - 1)] = x;
 }
 
-static int mark_queue_grow(struct mark_queue *q) __attribute__((noinline));
+static int mark_queue_grow(struct mark_queue *q) NEVER_INLINE;
 
 static int
 mark_queue_grow(struct mark_queue *q) {
@@ -125,22 +125,23 @@ static void marker_release(struct context *cx) {
 }
 
 struct gcobj;
-static inline void marker_visit(struct context *cx, void **loc) __attribute__((always_inline));
+static inline void marker_visit(void **loc, void *mark_data) ALWAYS_INLINE;
 static inline void marker_trace(struct context *cx,
                                 void (*)(struct context *, struct gcobj *))
-  __attribute__((always_inline));
+  ALWAYS_INLINE;
 static inline int mark_object(struct context *cx,
-                              struct gcobj *obj) __attribute__((always_inline));
+                              struct gcobj *obj) ALWAYS_INLINE;
 
 static inline void
-marker_visit(struct context *cx, void **loc) {
+marker_visit(void **loc, void *mark_data) {
+  struct context *cx = mark_data;
   struct gcobj *obj = *loc;
   if (obj && mark_object(cx, obj))
     mark_queue_push(&context_marker(cx)->queue, obj);
 }
 static inline void
-marker_visit_root(struct context *cx, void **loc) {
-  marker_visit(cx, loc);
+marker_visit_root(void **loc, struct context *cx) {
+  marker_visit(loc, cx);
 }
 static inline void
 marker_trace(struct context *cx,

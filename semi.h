@@ -23,22 +23,13 @@ static uintptr_t align_up(uintptr_t addr, size_t align) {
 
 #define GC_HEADER uintptr_t _gc_header
 
-enum alloc_kind { NODE, DOUBLE_ARRAY };
-
-typedef void (*field_visitor)(struct context *, void **ref);
-
-static inline size_t node_size(void *obj) __attribute__((always_inline));
-static inline size_t double_array_size(void *obj) __attribute__((always_inline));
-static inline void visit_node_fields(struct context *cx, void *obj, field_visitor visit) __attribute__((always_inline));
-static inline void visit_double_array_fields(struct context *cx, void *obj, field_visitor visit) __attribute__((always_inline));
-
 static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
 
-static void collect(struct context *cx, size_t bytes) __attribute__((noinline));
+static void collect(struct context *cx, size_t bytes) NEVER_INLINE;
 
-static void process(struct context *cx, void **loc);
+static void visit(void **loc, void *visit_data);
 
 static void flip(struct context *cx) {
   uintptr_t split = cx->base + (cx->size >> 1);
@@ -55,12 +46,12 @@ static void flip(struct context *cx) {
 static void* copy(struct context *cx, uintptr_t kind, void *obj) {
   size_t size;
   switch (kind) {
-  case NODE:
-    size = node_size(obj);
-    break;
-  case DOUBLE_ARRAY:
-    size = double_array_size(obj);
-    break;
+#define COMPUTE_SIZE(name, Name, NAME) \
+    case ALLOC_KIND_##NAME: \
+      size = name##_size(obj); \
+      break;
+    FOR_EACH_HEAP_OBJECT_KIND(COMPUTE_SIZE)
+#undef COMPUTE_SIZE
   default:
     abort ();
   }
@@ -75,14 +66,12 @@ static uintptr_t scan(struct context *cx, uintptr_t grey) {
   void *obj = (void*)grey;
   uintptr_t kind = *(uintptr_t*) obj;
   switch (kind) {
-  case NODE:
-    visit_node_fields(cx, obj, process);
-    return grey + align_up (node_size(obj), ALIGNMENT);
-    break;
-  case DOUBLE_ARRAY:
-    visit_double_array_fields(cx, obj, process);
-    return grey + align_up (double_array_size(obj), ALIGNMENT);
-    break;
+#define SCAN_OBJECT(name, Name, NAME) \
+    case ALLOC_KIND_##NAME: \
+      visit_##name##_fields((Name*)obj, visit, cx); \
+      return grey + align_up(name##_size((Name*)obj), ALIGNMENT);
+    FOR_EACH_HEAP_OBJECT_KIND(SCAN_OBJECT)
+#undef SCAN_OBJECT
   default:
     abort ();
   }
@@ -91,15 +80,18 @@ static uintptr_t scan(struct context *cx, uintptr_t grey) {
 static void* forward(struct context *cx, void *obj) {
   uintptr_t header_word = *(uintptr_t*)obj;
   switch (header_word) {
-  case NODE:
-  case DOUBLE_ARRAY:
+#define CASE_ALLOC_KIND(name, Name, NAME) \
+    case ALLOC_KIND_##NAME:
+    FOR_EACH_HEAP_OBJECT_KIND(CASE_ALLOC_KIND)
+#undef CASE_ALLOC_KIND
     return copy(cx, header_word, obj);
   default:
     return (void*)header_word;
   }
 }  
 
-static void process(struct context *cx, void **loc) {
+static void visit(void **loc, void *visit_data) {
+  struct context *cx = visit_data;
   void *obj = *loc;
   if (obj != NULL)
     *loc = forward(cx, obj);
@@ -109,7 +101,7 @@ static void collect(struct context *cx, size_t bytes) {
   flip(cx);
   uintptr_t grey = cx->hp;
   for (struct handle *h = cx->roots; h; h = h->next)
-    process(cx, &h->v);
+    visit(&h->v, cx);
   // fprintf(stderr, "pushed %zd bytes in roots\n", cx->hp - grey);
   while(grey < cx->hp)
     grey = scan(cx, grey);
@@ -134,8 +126,9 @@ static inline void* allocate(struct context *cx, enum alloc_kind kind,
     void *ret = (void *)addr;
     uintptr_t *header_word = ret;
     *header_word = kind;
-    if (kind == NODE)
-      clear_memory(addr + sizeof(uintptr_t), size - sizeof(uintptr_t));
+    // FIXME: Allow allocator to avoid initializing pointerless memory?
+    // if (kind == NODE)
+    clear_memory(addr + sizeof(uintptr_t), size - sizeof(uintptr_t));
     return ret;
   }
 }

@@ -16,19 +16,16 @@
 
 struct context {};
 
-enum alloc_kind { NODE, DOUBLE_ARRAY };
-
-typedef void (*field_visitor)(struct context *, void **ref);
-
 #define GC_HEADER /**/
 
 static inline void* allocate(struct context *cx, enum alloc_kind kind,
                              size_t size) {
-  // memset to 0 by the collector.
   switch (kind) {
-  case NODE:
+  case ALLOC_KIND_NODE:
+    // cleared to 0 by the collector.
     return GC_malloc(size);
-  case DOUBLE_ARRAY:
+  case ALLOC_KIND_DOUBLE_ARRAY:
+    // warning: not cleared!
     return GC_malloc_atomic(size);
   }
   abort();

@@ -43,19 +43,8 @@
 #include <sys/time.h>
 
 #include "assert.h"
-
-#if defined(GC_BDW)
-#include "bdw.h"
-#elif defined(GC_SEMI)
-#include "semi.h"
-#elif defined(GC_MARK_SWEEP)
-#include "mark-sweep.h"
-#elif defined(GC_PARALLEL_MARK_SWEEP)
-#define GC_PARALLEL_MARK 1
-#include "mark-sweep.h"
-#else
-#error unknown gc
-#endif
+#include "gcbench-types.h"
+#include "gc.h"
 
 static const int kStretchTreeDepth    = 18;      // about 16Mb
 static const int kLongLivedTreeDepth  = 16;  // about 4Mb
@@ -76,21 +65,23 @@ typedef struct DoubleArray {
   double values[0];
 } DoubleArray;
 
-static inline size_t node_size(void *obj) {
+static inline size_t node_size(Node *obj) {
   return sizeof(Node);
 }
-static inline size_t double_array_size(void *obj) {
-  DoubleArray *array = obj;
+static inline size_t double_array_size(DoubleArray *array) {
   return sizeof(*array) + array->length * sizeof(double);
 }
-static inline void visit_node_fields(struct context *cx, void *obj,
-                                     field_visitor visit) {
-  Node *node = obj;
-  visit(cx, (void**)&node->left);
-  visit(cx, (void**)&node->right);
+static inline void
+visit_node_fields(Node *node,
+                  void (*visit)(void **loc, void *visit_data),
+                  void *visit_data) {
+  visit((void**)&node->left, visit_data);
+  visit((void**)&node->right, visit_data);
 }
-static inline void visit_double_array_fields(struct context *cx, void *obj,
-                                             field_visitor visit) {
+static inline void
+visit_double_array_fields(DoubleArray *obj,
+                          void (*visit)(void **loc, void *visit_data),
+                          void *visit_data) {
 }
 
 typedef HANDLE_TO(Node) NodeHandle;
@@ -98,13 +89,14 @@ typedef HANDLE_TO(DoubleArray) DoubleArrayHandle;
 
 static Node* allocate_node(struct context *cx) {
   // memset to 0 by the collector.
-  return allocate(cx, NODE, sizeof (Node));
+  return allocate(cx, ALLOC_KIND_NODE, sizeof (Node));
 }
 
 static struct DoubleArray* allocate_double_array(struct context *cx,
                                                  size_t size) {
-  // note, not memset to 0 by the collector.
-  DoubleArray *ret = allocate(cx, DOUBLE_ARRAY, sizeof (double) * size);
+  // note, we might allow the collector to leave this data uninitialized.
+  DoubleArray *ret = allocate(cx, ALLOC_KIND_DOUBLE_ARRAY,
+                              sizeof(DoubleArray) + sizeof (double) * size);
   ret->length = size;
   return ret;
 }

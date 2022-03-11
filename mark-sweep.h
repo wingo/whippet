@@ -6,6 +6,7 @@
 
 #include "assert.h"
 #include "debug.h"
+#include "inline.h"
 #include "precise-roots.h"
 #ifdef GC_PARALLEL_MARK
 #include "parallel-marker.h"
@@ -162,20 +163,11 @@ get_small_object_freelist(struct context *cx, enum small_object_size kind) {
 
 #define GC_HEADER uintptr_t _gc_header
 
-enum alloc_kind { NODE, DOUBLE_ARRAY };
-
-typedef void (*field_visitor)(struct context *, void **ref);
-
-static inline size_t node_size(void *obj) __attribute__((always_inline));
-static inline size_t double_array_size(void *obj) __attribute__((always_inline));
-static inline void visit_node_fields(struct context *cx, void *obj, field_visitor visit) __attribute__((always_inline));
-static inline void visit_double_array_fields(struct context *cx, void *obj, field_visitor visit) __attribute__((always_inline));
-
 static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
 
-static void collect(struct context *cx) __attribute__((noinline));
+static void collect(struct context *cx) NEVER_INLINE;
 
 static inline uint8_t* mark_byte(struct context *cx, struct gcobj *obj) {
   uintptr_t granule = (((uintptr_t) obj) - cx->heap_base)  / GRANULE_SIZE;
@@ -193,12 +185,12 @@ static inline int mark_object(struct context *cx, struct gcobj *obj) {
 
 static void process(struct context *cx, struct gcobj *obj) {
   switch (tag_live_alloc_kind(obj->tag)) {
-  case NODE:
-    visit_node_fields(cx, obj, marker_visit);
-    break;
-  case DOUBLE_ARRAY:
-    visit_double_array_fields(cx, obj, marker_visit);
-    break;
+#define SCAN_OBJECT(name, Name, NAME) \
+    case ALLOC_KIND_##NAME: \
+      visit_##name##_fields((Name*)obj, marker_visit, cx); \
+      break;
+    FOR_EACH_HEAP_OBJECT_KIND(SCAN_OBJECT)
+#undef SCAN_OBJECT
   default:
     abort ();
   }
@@ -215,7 +207,7 @@ static void collect(struct context *cx) {
   DEBUG("start collect #%ld:\n", cx->count);
   marker_prepare(cx);
   for (struct handle *h = cx->roots; h; h = h->next)
-    marker_visit_root(cx, &h->v);
+    marker_visit_root(&h->v, cx);
   marker_trace(cx, process);
   marker_release(cx);
   DEBUG("done marking\n");
@@ -301,12 +293,12 @@ static size_t live_object_granules(struct gcobj *obj) {
     return 1;
   size_t bytes;
   switch (tag_live_alloc_kind (obj->tag)) {
-  case NODE:
-    bytes = node_size(obj);
-    break;
-  case DOUBLE_ARRAY:
-    bytes = double_array_size(obj);
-    break;
+#define COMPUTE_SIZE(name, Name, NAME) \
+    case ALLOC_KIND_##NAME:            \
+      bytes = name##_size((Name*)obj); \
+      break;
+    FOR_EACH_HEAP_OBJECT_KIND(COMPUTE_SIZE)
+#undef COMPUTE_SIZE
   default:
     abort ();
   }
