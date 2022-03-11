@@ -384,6 +384,7 @@ static void* allocate_large(struct context *cx, enum alloc_kind kind,
           unlink_large_object(prev, large);
           split_large_object(cx, large, granules);
           large->tag = tag_live(GCOBJ, kind);
+          large->next = NULL;
           return large;
         }
       }
@@ -451,6 +452,7 @@ static inline void* allocate_small(struct context *cx,
   struct gcobj_free *ret = *loc;
   *loc = ret->next;
   ret->tag = tag_live(GCOBJ, alloc_kind);
+  ret->next = NULL;
   return (void *) ret;
 }
 
