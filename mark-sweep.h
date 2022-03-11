@@ -25,7 +25,7 @@ STATIC_ASSERT_EQ(LARGE_OBJECT_THRESHOLD,
 
 // There are small object pages for allocations of these sizes.
 #define FOR_EACH_SMALL_OBJECT_GRANULES(M) \
-  M(2) M(3) M(4) M(5) M(6) M(8) M(10) M(16) M(32)
+  M(1) M(2) M(3) M(4) M(5) M(6) M(8) M(10) M(16) M(32)
 
 enum small_object_size {
 #define SMALL_OBJECT_GRANULE_SIZE(i) SMALL_OBJECT_##i,
@@ -43,7 +43,7 @@ static const uint8_t small_object_granule_sizes[] =
 };
 
 static const enum small_object_size small_object_sizes_for_granules[LARGE_OBJECT_GRANULE_THRESHOLD + 2] = {
-  NOT_SMALL_OBJECT, NOT_SMALL_OBJECT, SMALL_OBJECT_2,  SMALL_OBJECT_3,
+  SMALL_OBJECT_1,   SMALL_OBJECT_1, SMALL_OBJECT_2,  SMALL_OBJECT_3,
   SMALL_OBJECT_4,   SMALL_OBJECT_5,   SMALL_OBJECT_6,  SMALL_OBJECT_8,
   SMALL_OBJECT_8,   SMALL_OBJECT_10,  SMALL_OBJECT_10, SMALL_OBJECT_16,
   SMALL_OBJECT_16,  SMALL_OBJECT_16,  SMALL_OBJECT_16, SMALL_OBJECT_16,
@@ -67,80 +67,41 @@ static inline size_t size_to_granules(size_t size) {
   return (size + GRANULE_SIZE - 1) >> GRANULE_SIZE_LOG_2;
 }
 
-// Object kind is stored in low bits of first word of all heap objects
-// (allocated or free).
-enum gcobj_kind { GCOBJ_TINY, GCOBJ };
-
-// gcobj_kind is in the low bit of tag.
-static const uintptr_t gcobj_kind_bit = (1 << 0);
-static inline enum gcobj_kind tag_gcobj_kind(uintptr_t tag) {
-  return tag & gcobj_kind_bit;
-}
-
-// Alloc kind is in bits 1-8, for live objects.
+// Alloc kind is in bits 0-7, for live objects.
 static const uintptr_t gcobj_alloc_kind_mask = 0xff;
-static const uintptr_t gcobj_alloc_kind_shift = 1;
+static const uintptr_t gcobj_alloc_kind_shift = 0;
 static inline uint8_t tag_live_alloc_kind(uintptr_t tag) {
   return (tag >> gcobj_alloc_kind_shift) & gcobj_alloc_kind_mask;
 }
-
-// For free objects, bits 1 and up are free.  Non-tiny objects store the
-// object size in granules there.
-static const uintptr_t gcobj_free_granules_shift = 1;
-static inline uintptr_t tag_free_granules(uintptr_t tag) {
-  return tag >> gcobj_free_granules_shift;
+static inline uintptr_t tag_live(uint8_t alloc_kind) {
+  return ((uintptr_t)alloc_kind << gcobj_alloc_kind_shift);
 }
 
-static inline uintptr_t tag_free(enum gcobj_kind kind, size_t granules) {
-  return kind | (granules << gcobj_free_granules_shift);
-}
-static inline uintptr_t tag_live(enum gcobj_kind kind, uint8_t alloc_kind) {
-  return kind | ((uintptr_t)alloc_kind << gcobj_alloc_kind_shift);
-}
-static inline uintptr_t tag_free_tiny(void) {
-  return tag_free(GCOBJ_TINY, 0);
-}
-
-// The gcobj_free_tiny and gcobj_free structs define the fields in free
-// tiny (1-granule), and non-tiny (2 granules and up) objects.
-struct gcobj_free_tiny {
-  // Low 2 bits of tag are GCOBJ_TINY, which is 0.  Bit 2 is live bit;
-  // never set for free objects.  Therefore for free objects, the
-  // 8-byte-aligned next pointer can alias the tag.
-  union {
-    uintptr_t tag;
-    struct gcobj_free_tiny *next;
-  };
+struct gcobj_free {
+  struct gcobj_free *next;
 };
 
-// Objects from 2 granules and up.
-struct gcobj_free {
-  // For free objects, we store the granule size in the tag's payload.
-  // Next pointer only valid for objects on small freelist.
-  uintptr_t tag;
-  struct gcobj_free *next;
+// Objects larger than LARGE_OBJECT_GRANULE_THRESHOLD.
+struct gcobj_free_large {
+  struct gcobj_free_large *next;
+  size_t granules;
 };
 
 struct gcobj {
   union {
     uintptr_t tag;
-    struct gcobj_free_tiny free_tiny;
     struct gcobj_free free;
+    struct gcobj_free_large free_large;
     uintptr_t words[0];
     void *pointers[0];
   };
 };
 
-static inline enum gcobj_kind gcobj_kind(struct gcobj *obj) {
-  return tag_gcobj_kind (obj->tag);
-}
-
 struct context {
-  // Segregated freelists of tiny and small objects.
-  struct gcobj_free_tiny *tiny_objects;
+  // Segregated freelists of small objects.
   struct gcobj_free *small_objects[SMALL_OBJECT_SIZES];
   // Unordered list of large objects.
-  struct gcobj_free *large_objects;
+  struct gcobj_free_large *large_objects;
   uintptr_t base;
   uint8_t *mark_bytes;
   uintptr_t heap_base;
@@ -197,7 +158,6 @@ static void process(struct context *cx, struct gcobj *obj) {
 }
 
 static void clear_freelists(struct context *cx) {
-  cx->tiny_objects = NULL;
   for (int i = 0; i < SMALL_OBJECT_SIZES; i++)
     cx->small_objects[i] = NULL;
   cx->large_objects = NULL;
@@ -216,23 +176,9 @@ static void collect(struct context *cx) {
   cx->count++;
 }
 
-static void push_free_tiny(struct gcobj_free_tiny **loc,
-                           struct gcobj_free_tiny *obj) {
-  // Rely on obj->next having low bits being 0, indicating a non-live
-  // tiny object.
+static void push_free(struct gcobj_free **loc, struct gcobj_free *obj) {
   obj->next = *loc;
   *loc = obj;
-}
-
-static void push_free(struct gcobj_free **loc, struct gcobj_free *obj,
-                      size_t granules) {
-  obj->tag = tag_free(GCOBJ, granules);
-  obj->next = *loc;
-  *loc = obj;
-}
-
-static void push_tiny(struct context *cx, void *obj) {
-  push_free_tiny(&cx->tiny_objects, obj);
 }
 
 static void push_small(struct context *cx, void *region,
@@ -242,14 +188,9 @@ static void push_small(struct context *cx, void *region,
     size_t granules = small_object_granule_sizes[kind];
     struct gcobj_free **loc = get_small_object_freelist(cx, kind);
     while (granules <= region_granules) {
-      push_free(loc, (struct gcobj_free*) addr, granules);
+      push_free(loc, (struct gcobj_free*) addr);
       region_granules -= granules;
       addr += granules * GRANULE_SIZE;
-    }
-    if (region_granules == 1) {
-      // Region is actually a tiny object.
-      push_free_tiny(&cx->tiny_objects, (struct gcobj_free_tiny *)addr);
-      return;
     }
     // Fit any remaining granules into smaller freelists.
     kind--;
@@ -257,24 +198,31 @@ static void push_small(struct context *cx, void *region,
 }
 
 static void push_large(struct context *cx, void *region, size_t granules) {
-  push_free(&cx->large_objects, region, granules);
+  struct gcobj_free_large *large = region;
+  large->next = cx->large_objects;
+  large->granules = granules;
+  cx->large_objects = large;
 }
 
 static void reclaim(struct context *cx, void *obj, size_t granules) {
-  if (granules == 1) {
-    push_tiny(cx, obj);
-  } else if (granules <= LARGE_OBJECT_GRANULE_THRESHOLD) {
+  if (granules <= LARGE_OBJECT_GRANULE_THRESHOLD)
     push_small(cx, obj, SMALL_OBJECT_SIZES - 1, granules);
-  } else {
+  else
     push_large(cx, obj, granules);
-  }
 }
 
 static void split_large_object(struct context *cx,
-                               struct gcobj_free *large,
-                               size_t granules) {
-  size_t large_granules = tag_free_granules(large->tag);
+                                struct gcobj_free_large *large,
+                                size_t granules) {
+  size_t large_granules = large->granules;
   ASSERT(large_granules >= granules);
+  ASSERT(granules >= LARGE_OBJECT_GRANULE_THRESHOLD);
+  // Invariant: all words in LARGE are 0 except the two header words.
+  // LARGE is off the freelist.  We return a block of cleared memory, so
+  // clear those fields now.
+  large->next = NULL;
+  large->granules = 0;
+
   if (large_granules == granules)
     return;
   
@@ -282,15 +230,12 @@ static void split_large_object(struct context *cx,
   reclaim(cx, tail, large_granules - granules);
 }
 
-static void unlink_large_object(struct gcobj_free **prev,
-                                struct gcobj_free *large) {
+static void unlink_large_object(struct gcobj_free_large **prev,
+                                struct gcobj_free_large *large) {
   *prev = large->next;
 }
 
 static size_t live_object_granules(struct gcobj *obj) {
-  enum gcobj_kind size_kind = tag_gcobj_kind(obj->tag);
-  if (size_kind == GCOBJ_TINY)
-    return 1;
   size_t bytes;
   switch (tag_live_alloc_kind (obj->tag)) {
 #define COMPUTE_SIZE(name, Name, NAME) \
@@ -369,18 +314,18 @@ static int sweep(struct context *cx) {
 static void* allocate_large(struct context *cx, enum alloc_kind kind,
                             size_t granules) {
   int swept_from_beginning = 0;
-  struct gcobj_free *already_scanned = NULL;
+  struct gcobj_free_large *already_scanned = NULL;
   while (1) {
     do {
-      struct gcobj_free **prev = &cx->large_objects;
-      for (struct gcobj_free *large = cx->large_objects;
+      struct gcobj_free_large **prev = &cx->large_objects;
+      for (struct gcobj_free_large *large = cx->large_objects;
            large != already_scanned;
            prev = &large->next, large = large->next) {
-        if (tag_free_granules(large->tag) >= granules) {
+        if (large->granules >= granules) {
           unlink_large_object(prev, large);
           split_large_object(cx, large, granules);
-          large->tag = tag_live(GCOBJ, kind);
-          large->next = NULL;
+          struct gcobj *obj = (struct gcobj *)large;
+          obj->tag = tag_live(kind);
           return large;
         }
       }
@@ -419,7 +364,7 @@ static void fill_small(struct context *cx, enum small_object_size kind) {
     }
 
     // Otherwise if there is a large object, take and split it.
-    struct gcobj_free *large = cx->large_objects;
+    struct gcobj_free_large *large = cx->large_objects;
     if (large) {
       unlink_large_object(&cx->large_objects, large);
       split_large_object(cx, large, LARGE_OBJECT_GRANULE_THRESHOLD);
@@ -447,38 +392,14 @@ static inline void* allocate_small(struct context *cx,
     fill_small(cx, small_kind);
   struct gcobj_free *ret = *loc;
   *loc = ret->next;
-  ret->tag = tag_live(GCOBJ, alloc_kind);
-  ret->next = NULL;
-  return (void *) ret;
-}
-
-static inline void fill_tiny(struct context *cx) {
-  struct gcobj_free **loc = get_small_object_freelist(cx, SMALL_OBJECT_2);
-  if (!*loc)
-    fill_small(cx, SMALL_OBJECT_2);
-  struct gcobj_free *small = *loc;
-  *loc = small->next;
-  struct gcobj_free_tiny *ret = (struct gcobj_free_tiny *)small;
-  reclaim(cx, ret, 1);
-  reclaim(cx, ret + 1, 1);
-}
-
-static inline void* allocate_tiny(struct context *cx,
-                                  enum alloc_kind alloc_kind) {
-  if (!cx->tiny_objects)
-    fill_tiny(cx);
-
-  struct gcobj_free_tiny *ret = cx->tiny_objects;
-  cx->tiny_objects = ret->next;
-  ret->tag = tag_live(GCOBJ_TINY, alloc_kind);
-  return ret;
+  struct gcobj *obj = (struct gcobj *)ret;
+  obj->tag = tag_live(alloc_kind);
+  return obj;
 }
 
 static inline void* allocate(struct context *cx, enum alloc_kind kind,
                              size_t size) {
   size_t granules = size_to_granules(size);
-  if (granules <= 1)
-    return allocate_tiny(cx, kind);
   if (granules <= LARGE_OBJECT_GRANULE_THRESHOLD)
     return allocate_small(cx, kind, granules_to_small_object_size(granules));
   return allocate_large(cx, kind, granules);
