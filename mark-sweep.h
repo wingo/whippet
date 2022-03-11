@@ -318,8 +318,15 @@ static size_t next_mark(const uint8_t *mark, size_t limit) {
     if (mark[n])
       return n;
   uintptr_t *word_mark = (uintptr_t *)(mark + n);
-  for (; n < limit; n += sizeof(uintptr_t), word_mark++)
-    if (word_mark)
+  for (;
+       n + sizeof(uintptr_t) * 4 <= limit;
+       n += sizeof(uintptr_t) * 4, word_mark += 4)
+    if (word_mark[0] | word_mark[1] | word_mark[2] | word_mark[3])
+      break;
+  for (;
+       n + sizeof(uintptr_t) <= limit;
+       n += sizeof(uintptr_t), word_mark += 1)
+    if (word_mark[0])
       break;
   for (; n < limit; n++)
     if (mark[n])
