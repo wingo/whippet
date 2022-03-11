@@ -127,7 +127,7 @@ static void marker_release(struct context *cx) {
 struct gcobj;
 static inline void marker_visit(void **loc, void *mark_data) ALWAYS_INLINE;
 static inline void marker_trace(struct context *cx,
-                                void (*)(struct context *, struct gcobj *))
+                                void (*)(struct gcobj *, void *))
   ALWAYS_INLINE;
 static inline int mark_object(struct context *cx,
                               struct gcobj *obj) ALWAYS_INLINE;
@@ -145,10 +145,10 @@ marker_visit_root(void **loc, struct context *cx) {
 }
 static inline void
 marker_trace(struct context *cx,
-             void (*process)(struct context *, struct gcobj *)) {
+             void (*trace_one)(struct gcobj *, void *)) {
   struct gcobj *obj;
   while ((obj = mark_queue_pop(&context_marker(cx)->queue)))
-    process(cx, obj);
+    trace_one(obj, cx);
 }
 
 #endif // SERIAL_MARK_H

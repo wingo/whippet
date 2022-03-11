@@ -144,11 +144,11 @@ static inline int mark_object(struct context *cx, struct gcobj *obj) {
   return 1;
 }
 
-static void process(struct context *cx, struct gcobj *obj) {
+static void trace_one(struct gcobj *obj, void *mark_data) {
   switch (tag_live_alloc_kind(obj->tag)) {
 #define SCAN_OBJECT(name, Name, NAME) \
     case ALLOC_KIND_##NAME: \
-      visit_##name##_fields((Name*)obj, marker_visit, cx); \
+      visit_##name##_fields((Name*)obj, marker_visit, mark_data); \
       break;
     FOR_EACH_HEAP_OBJECT_KIND(SCAN_OBJECT)
 #undef SCAN_OBJECT
@@ -168,7 +168,7 @@ static void collect(struct context *cx) {
   marker_prepare(cx);
   for (struct handle *h = cx->roots; h; h = h->next)
     marker_visit_root(&h->v, cx);
-  marker_trace(cx, process);
+  marker_trace(cx, trace_one);
   marker_release(cx);
   DEBUG("done marking\n");
   cx->sweep = cx->heap_base;
@@ -290,9 +290,7 @@ static int sweep(struct context *cx) {
                                      (limit - sweep) >> GRANULE_SIZE_LOG_2);
     if (free_granules) {
       size_t free_bytes = free_granules * GRANULE_SIZE;
-      memset((void*)(sweep + GRANULE_SIZE),
-             0,
-             free_bytes - GRANULE_SIZE);
+      clear_memory(sweep + GRANULE_SIZE, free_bytes - GRANULE_SIZE);
       reclaim(cx, (void*)sweep, free_granules);
       sweep += free_bytes;
       to_reclaim -= free_granules;

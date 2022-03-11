@@ -36,7 +36,7 @@ mark_buf_init(struct mark_buf *buf, unsigned log_size) {
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
     perror("Failed to grow work-stealing dequeue");
-    DEBUG("Failed to allocate %zu bytes", size, );
+    DEBUG("Failed to allocate %zu bytes", size);
     return 0;
   }
   buf->log_size = log_size;
@@ -220,8 +220,47 @@ mark_deque_steal(struct mark_deque *q) {
 #undef STORE_RELEASE
 #undef LOAD_CONSUME
 
+#define LOCAL_MARK_QUEUE_SIZE 64
+#define LOCAL_MARK_QUEUE_MASK 63
+struct local_mark_queue {
+  size_t read;
+  size_t write;
+  uintptr_t data[LOCAL_MARK_QUEUE_SIZE];
+};
+
+static inline void
+local_mark_queue_init(struct local_mark_queue *q) {
+  q->read = q->write = 0;
+}
+static inline void
+local_mark_queue_poison(struct local_mark_queue *q) {
+  q->read = 0; q->write = LOCAL_MARK_QUEUE_SIZE;
+}
+static inline int
+local_mark_queue_empty(struct local_mark_queue *q) {
+  return q->read == q->write;
+}
+static inline int
+local_mark_queue_full(struct local_mark_queue *q) {
+  return q->read + LOCAL_MARK_QUEUE_SIZE == q->write;
+}
+static inline void
+local_mark_queue_push(struct local_mark_queue *q, uintptr_t v) {
+  q->data[q->write++ & LOCAL_MARK_QUEUE_MASK] = v;
+}
+static inline uintptr_t
+local_mark_queue_pop(struct local_mark_queue *q) {
+  return q->data[q->read++ & LOCAL_MARK_QUEUE_MASK];
+}
+
 struct marker {
   struct mark_deque deque;
+};
+
+struct local_marker {
+  struct local_mark_queue local;
+  struct mark_deque *deque;
+  struct context *cx;
 };
 
 struct context;
@@ -239,32 +278,50 @@ static void marker_release(struct context *cx) {
 struct gcobj;
 static inline void marker_visit(void **loc, void *mark_data) ALWAYS_INLINE;
 static inline void marker_trace(struct context *cx,
-                                void (*)(struct context *, struct gcobj *))
+                                void (*)(struct gcobj *, void *))
   ALWAYS_INLINE;
 static inline int mark_object(struct context *cx,
                               struct gcobj *obj) ALWAYS_INLINE;
 
 static inline void
 marker_visit(void **loc, void *mark_data) {
-  struct context *cx = mark_data;
+  struct local_marker *mark = mark_data;
   struct gcobj *obj = *loc;
-  if (obj && mark_object(cx, obj))
-    mark_deque_push(&context_marker(cx)->deque, (uintptr_t)obj);
+  if (obj && mark_object(mark->cx, obj)) {
+    if (!local_mark_queue_full(&mark->local))
+      local_mark_queue_push(&mark->local, (uintptr_t)obj);
+    else
+      mark_deque_push(mark->deque, (uintptr_t)obj);
+  }
 }
 static inline void
 marker_visit_root(void **loc, struct context *cx) {
-  marker_visit(loc, cx);
+  struct local_marker mark;
+  local_mark_queue_poison(&mark.local);
+  mark.deque = &context_marker(cx)->deque;
+  mark.cx = cx;
+  marker_visit(loc, &mark);
 }
 static inline void
 marker_trace(struct context *cx,
-             void (*process)(struct context *, struct gcobj *)) {
+             void (*trace_one)(struct gcobj *, void *)) {
+  struct local_marker mark;
+  local_mark_queue_init(&mark.local);
+  mark.deque = &context_marker(cx)->deque;
+  mark.cx = cx;
+
   while (1) {
-    uintptr_t addr = mark_deque_steal(&context_marker(cx)->deque);
-    if (addr == mark_deque_empty)
-      return;
-    if (addr == mark_deque_abort)
-      continue;
-    process(cx, (struct gcobj*)addr);
+    uintptr_t addr;
+    if (!local_mark_queue_empty(&mark.local)) {
+      addr = local_mark_queue_pop(&mark.local);
+    } else {
+      addr = mark_deque_steal(mark.deque);
+      if (addr == mark_deque_empty)
+        break;
+      if (addr == mark_deque_abort)
+        continue;
+    }
+    trace_one((struct gcobj*)addr, &mark);
   }
 }
 
