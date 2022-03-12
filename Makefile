@@ -2,7 +2,7 @@ TESTS=gcbench # MT_GCBench MT_GCBench2
 COLLECTORS=bdw semi mark-sweep parallel-mark-sweep
 
 CC=gcc
-CFLAGS=-Wall -O2 -g
+CFLAGS=-Wall -O2 -g -fno-strict-aliasing
 
 ALL_TESTS=$(foreach COLLECTOR,$(COLLECTORS),$(addprefix $(COLLECTOR)-,$(TESTS)))
 
@@ -15,10 +15,10 @@ semi-%: semi.h precise-roots.h %.c
 	$(CC) $(CFLAGS) -I. -DNDEBUG -DGC_SEMI -o $@ $*.c
 
 mark-sweep-%: mark-sweep.h precise-roots.h serial-marker.h assert.h debug.h %.c
-	$(CC) $(CFLAGS) -I. -DNDEBUG -DGC_MARK_SWEEP -o $@ $*.c
+	$(CC) $(CFLAGS) -I. -Wno-unused -DNDEBUG -DGC_MARK_SWEEP -o $@ $*.c
 
 parallel-mark-sweep-%: mark-sweep.h precise-roots.h parallel-marker.h assert.h debug.h %.c
-	$(CC) $(CFLAGS) -I. -DNDEBUG -DGC_PARALLEL_MARK_SWEEP -o $@ $*.c
+	$(CC) $(CFLAGS) -I. -Wno-unused -DNDEBUG -DGC_PARALLEL_MARK_SWEEP -lpthread -o $@ $*.c
 
 check: $(addprefix test-$(TARGET),$(TARGETS))
 

@@ -126,9 +126,7 @@ static void marker_release(struct context *cx) {
 
 struct gcobj;
 static inline void marker_visit(void **loc, void *mark_data) ALWAYS_INLINE;
-static inline void marker_trace(struct context *cx,
-                                void (*)(struct gcobj *, void *))
-  ALWAYS_INLINE;
+static inline void trace_one(struct gcobj *obj, void *mark_data) ALWAYS_INLINE;
 static inline int mark_object(struct context *cx,
                               struct gcobj *obj) ALWAYS_INLINE;
 
@@ -144,8 +142,7 @@ marker_visit_root(void **loc, struct context *cx) {
   marker_visit(loc, cx);
 }
 static inline void
-marker_trace(struct context *cx,
-             void (*trace_one)(struct gcobj *, void *)) {
+marker_trace(struct context *cx) {
   struct gcobj *obj;
   while ((obj = mark_queue_pop(&context_marker(cx)->queue)))
     trace_one(obj, cx);

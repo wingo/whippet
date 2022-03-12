@@ -144,7 +144,7 @@ static inline int mark_object(struct context *cx, struct gcobj *obj) {
   return 1;
 }
 
-static void trace_one(struct gcobj *obj, void *mark_data) {
+static inline void trace_one(struct gcobj *obj, void *mark_data) {
   switch (tag_live_alloc_kind(obj->tag)) {
 #define SCAN_OBJECT(name, Name, NAME) \
     case ALLOC_KIND_##NAME: \
@@ -168,7 +168,7 @@ static void collect(struct context *cx) {
   marker_prepare(cx);
   for (struct handle *h = cx->roots; h; h = h->next)
     marker_visit_root(&h->v, cx);
-  marker_trace(cx, trace_one);
+  marker_trace(cx);
   marker_release(cx);
   DEBUG("done marking\n");
   cx->sweep = cx->heap_base;
