@@ -16,7 +16,8 @@ Then there are currently three collectors:
    mark-sweep segregated-fits collector with lazy sweeping.
  - `semi.h`: Semispace copying collector.
  - `mark-sweep.h`: Stop-the-world mark-sweep segregated-fits collector
-   with lazy sweeping.
+   with lazy sweeping.  Two different marking algorithms:
+   single-threaded and parallel.
 
 The two latter collectors reserve one word per object on the header,
 which makes them collect more frequently than `bdw` because the `Node`
@@ -27,10 +28,11 @@ garbage collector.  Guile currently uses BDW-GC.  In Guile if we have an
 object reference we generally have to be able to know what kind of
 object it is, because there are few global invariants enforced by
 typing.  Therefore it is reasonable to consider allowing the GC and the
-application to share the first word of an object, for example to store a
-mark bit, to allow the application to know what kind an object is, to
-allow the GC to find references within the object, to allow the GC to
-compute the object's size, and so on.
+application to share the first word of an object, for example to maybe
+store a mark bit (though an on-the-side mark byte seems to allow much
+more efficient sweeping, for mark-sweep), to allow the application to
+know what kind an object is, to allow the GC to find references within
+the object, to allow the GC to compute the object's size, and so on.
 
 The GCBench benchmark is small but then again many Guile processes also
 are quite short-lived, so perhaps it is useful to ensure that small
@@ -65,8 +67,9 @@ majority of use cases.
 
 ## To do
 
- - [ ] Implement a parallel marker for the mark-sweep collector.
- - [ ] Adapt GCBench for multiple mutator threads.
+ - [X] Implement a parallel marker for the mark-sweep collector.
+ - [ ] Adapt all GC implementations to allow multiple mutator threads.
+   Update gcbench.c.
  - [ ] Implement precise non-moving Immix whole-heap collector.
  - [ ] Add evacuation to Immix whole-heap collector.
  - [ ] Add parallelism to Immix stop-the-world phase.
@@ -79,7 +82,7 @@ majority of use cases.
 
 ## License
 
-GCBench.c, MT_GCBench.c, and MT_GCBench2.c are from
+gcbench.c, MT_GCBench.c, and MT_GCBench2.c are from
 https://hboehm.info/gc/gc_bench/ and have a somewhat unclear license.  I
 have modified GCBench significantly so that I can slot in different GC
 implementations.  The GC implementations themselves are available under
