@@ -306,7 +306,7 @@ static int sweep(struct context *cx) {
   }
 
   cx->sweep = sweep;
-  return sweep < limit;
+  return to_reclaim < 128;
 }
 
 static void* allocate_large(struct context *cx, enum alloc_kind kind,
