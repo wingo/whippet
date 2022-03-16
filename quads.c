@@ -124,6 +124,7 @@ int main(int argc, char *argv[]) {
   size_t tree_bytes = nquads * 4 * sizeof(Quad*);
   size_t heap_size = tree_bytes * multiplier;
 
+  unsigned long gc_start = current_time();
   printf("Allocating heap of %.3fGB (%.2f multiplier of live data).\n",
          heap_size / 1e9, multiplier);
   struct context _cx;
@@ -144,30 +145,22 @@ int main(int argc, char *argv[]) {
 
   validate_tree(HANDLE_REF(quad), depth);
 
-  for (size_t i = 0; i < 10; i++) {
-    printf("Allocating 1 GB of garbage.\n");
+  size_t garbage_step = heap_size / 7.5;
+  printf("Allocating %.3f GB of garbage, 20 times, validating live tree each time.\n",
+         garbage_step / 1e9);
+  unsigned long garbage_start = current_time();
+  for (size_t i = 0; i < 20; i++) {
     size_t garbage_depth = 3;
     start = current_time();
-    for (size_t i = 1e9/(tree_size(garbage_depth)*4*sizeof(Quad*)); i; i--)
+    for (size_t i = garbage_step/(tree_size(garbage_depth)*4*sizeof(Quad*)); i; i--)
       make_tree(cx, garbage_depth);
     print_elapsed("allocating garbage", start);
 
-#if 0
-#ifdef LAZY_SWEEP
-    start = current_time();
-    do {} while (sweep(cx));
-    print_elapsed("finishing lazy sweep", start);
-#endif
-
-    start = current_time();
-    collect(cx);
-    print_elapsed("collection", start);
-#endif
-
     start = current_time();
     validate_tree(HANDLE_REF(quad), depth);
-    print_elapsed("validate tree", start);
   }
+  print_elapsed("allocation loop", garbage_start);
+  print_elapsed("quads test", gc_start);
 
   print_end_gc_stats(cx);
 
