@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 #include "conservative-roots.h"
 
 // When pthreads are used, let `libgc' know about it and redirect
@@ -20,15 +22,17 @@ struct context {};
 
 static inline void* allocate(struct context *cx, enum alloc_kind kind,
                              size_t size) {
-  switch (kind) {
-  case ALLOC_KIND_NODE:
-    // cleared to 0 by the collector.
-    return GC_malloc(size);
-  case ALLOC_KIND_DOUBLE_ARRAY:
-    // warning: not cleared!
-    return GC_malloc_atomic(size);
-  }
-  abort();
+  return GC_malloc(size);
+}
+
+static inline void*
+allocate_pointerless(struct context *cx, enum alloc_kind kind,
+                     size_t size) {
+  return GC_malloc_atomic(size);
+}
+
+static inline void collect(struct context *cx) {
+  GC_gcollect();
 }
 
 static inline void init_field(void **addr, void *val) {

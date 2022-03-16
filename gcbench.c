@@ -94,9 +94,10 @@ static Node* allocate_node(struct context *cx) {
 
 static struct DoubleArray* allocate_double_array(struct context *cx,
                                                  size_t size) {
-  // note, we might allow the collector to leave this data uninitialized.
-  DoubleArray *ret = allocate(cx, ALLOC_KIND_DOUBLE_ARRAY,
-                              sizeof(DoubleArray) + sizeof (double) * size);
+  // May be uninitialized.
+  DoubleArray *ret =
+    allocate_pointerless(cx, ALLOC_KIND_DOUBLE_ARRAY,
+                         sizeof(DoubleArray) + sizeof (double) * size);
   ret->length = size;
   return ret;
 }

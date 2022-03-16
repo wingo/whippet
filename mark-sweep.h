@@ -14,6 +14,8 @@
 #include "serial-marker.h"
 #endif
 
+#define LAZY_SWEEP 1
+
 #define GRANULE_SIZE 8
 #define GRANULE_SIZE_LOG_2 3
 #define LARGE_OBJECT_THRESHOLD 256
@@ -277,17 +279,22 @@ static size_t next_mark(const uint8_t *mark, size_t limit) {
 
 // Sweep some heap to reclaim free space.  Return 1 if there is more
 // heap to sweep, or 0 if we reached the end.
-static int sweep(struct context *cx) {
+static int sweep(struct context *cx, size_t for_granules) {
   // Sweep until we have reclaimed 128 granules (1024 kB), or we reach
   // the end of the heap.
   ssize_t to_reclaim = 128;
   uintptr_t sweep = cx->sweep;
   uintptr_t limit = cx->base + cx->size;
 
+  if (sweep == limit)
+    return 0;
+
   while (to_reclaim > 0 && sweep < limit) {
     uint8_t* mark = mark_byte(cx, (struct gcobj*)sweep);
-    size_t free_granules = next_mark(mark,
-                                     (limit - sweep) >> GRANULE_SIZE_LOG_2);
+    size_t limit_granules = (limit - sweep) >> GRANULE_SIZE_LOG_2;
+    if (limit_granules > for_granules)
+      limit_granules = for_granules;
+    size_t free_granules = next_mark(mark, limit_granules);
     if (free_granules) {
       size_t free_bytes = free_granules * GRANULE_SIZE;
       clear_memory(sweep + GRANULE_SIZE, free_bytes - GRANULE_SIZE);
@@ -296,7 +303,7 @@ static int sweep(struct context *cx) {
       to_reclaim -= free_granules;
 
       mark += free_granules;
-      if (sweep == limit)
+      if (free_granules == limit_granules)
         break;
     }
     // Object survived collection; clear mark and continue sweeping.
@@ -306,7 +313,7 @@ static int sweep(struct context *cx) {
   }
 
   cx->sweep = sweep;
-  return to_reclaim < 128;
+  return 1;
 }
 
 static void* allocate_large(struct context *cx, enum alloc_kind kind,
@@ -328,7 +335,7 @@ static void* allocate_large(struct context *cx, enum alloc_kind kind,
         }
       }
       already_scanned = cx->large_objects;
-    } while (sweep (cx));
+    } while (sweep(cx, granules));
 
     // No large object, and we swept across the whole heap.  Collect.
     if (swept_from_beginning) {
@@ -370,7 +377,7 @@ static void fill_small(struct context *cx, enum small_object_size kind) {
       return;
     }
 
-    if (!sweep(cx)) {
+    if (!sweep(cx, LARGE_OBJECT_GRANULE_THRESHOLD)) {
       if (swept_from_beginning) {
         fprintf(stderr, "ran out of space, heap size %zu\n", cx->size);
         abort();
@@ -401,6 +408,11 @@ static inline void* allocate(struct context *cx, enum alloc_kind kind,
   if (granules <= LARGE_OBJECT_GRANULE_THRESHOLD)
     return allocate_small(cx, kind, granules_to_small_object_size(granules));
   return allocate_large(cx, kind, granules);
+}
+static inline void* allocate_pointerless(struct context *cx,
+                                         enum alloc_kind kind,
+                                         size_t size) {
+  return allocate(cx, kind, size);
 }
 
 static inline void init_field(void **addr, void *val) {

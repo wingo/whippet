@@ -27,7 +27,8 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
 
-static void collect(struct context *cx, size_t bytes) NEVER_INLINE;
+static void collect(struct context *cx) NEVER_INLINE;
+static void collect_for_alloc(struct context *cx, size_t bytes) NEVER_INLINE;
 
 static void visit(void **loc, void *visit_data);
 
@@ -96,7 +97,7 @@ static void visit(void **loc, void *visit_data) {
   if (obj != NULL)
     *loc = forward(cx, obj);
 }
-static void collect(struct context *cx, size_t bytes) {
+static void collect(struct context *cx) {
   // fprintf(stderr, "start collect #%ld:\n", cx->count);
   flip(cx);
   uintptr_t grey = cx->hp;
@@ -107,6 +108,9 @@ static void collect(struct context *cx, size_t bytes) {
     grey = scan(cx, grey);
   // fprintf(stderr, "%zd bytes copied\n", (cx->size>>1)-(cx->limit-cx->hp));
 
+}
+static void collect_for_alloc(struct context *cx, size_t bytes) {
+  collect(cx);
   if (cx->limit - cx->hp < bytes) {
     fprintf(stderr, "ran out of space, heap size %zu\n", cx->size);
     abort();
@@ -119,7 +123,7 @@ static inline void* allocate(struct context *cx, enum alloc_kind kind,
     uintptr_t addr = cx->hp;
     uintptr_t new_hp = align_up (addr + size, ALIGNMENT);
     if (cx->limit < new_hp) {
-      collect(cx, size);
+      collect_for_alloc(cx, size);
       continue;
     }
     cx->hp = new_hp;
@@ -131,6 +135,10 @@ static inline void* allocate(struct context *cx, enum alloc_kind kind,
     clear_memory(addr + sizeof(uintptr_t), size - sizeof(uintptr_t));
     return ret;
   }
+}
+static inline void* allocate_pointerless(struct context *cx,
+                                         enum alloc_kind kind, size_t size) {
+  return allocate(cx, kind, size);
 }
 
 static inline void init_field(void **addr, void *val) {
