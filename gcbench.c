@@ -145,9 +145,9 @@ static void Populate(struct context *cx, int iDepth, Node *node) {
     set_field((void**)&HANDLE_REF(self)->right, HANDLE_REF(r));
     Populate (cx, iDepth, HANDLE_REF(self)->left);
     Populate (cx, iDepth, HANDLE_REF(self)->right);
-    POP_HANDLE(cx, r);
-    POP_HANDLE(cx, l);
-    POP_HANDLE(cx, self);
+    POP_HANDLE(cx);
+    POP_HANDLE(cx);
+    POP_HANDLE(cx);
   }
 }
 
@@ -162,8 +162,8 @@ static Node* MakeTree(struct context *cx, int iDepth) {
     PUSH_HANDLE(cx, right);
     Node *result = allocate_node(cx);
     init_Node(result, HANDLE_REF(left), HANDLE_REF(right));
-    POP_HANDLE(cx, right);
-    POP_HANDLE(cx, left);
+    POP_HANDLE(cx);
+    POP_HANDLE(cx);
     return result;
   }
 }
@@ -216,7 +216,7 @@ static void TimeConstruction(struct context *cx, int depth) {
            tFinish - tStart);
   }
 
-  POP_HANDLE(cx, tempTree);
+  POP_HANDLE(cx);
 }
 
 int main() {
@@ -294,9 +294,9 @@ int main() {
   printf("Completed in %ld msec\n", tElapsed);
   print_end_gc_stats(cx);
 
-  POP_HANDLE(cx, array);
-  POP_HANDLE(cx, tempTree);
-  POP_HANDLE(cx, longLivedTree);
-  POP_HANDLE(cx, root);
+  POP_HANDLE(cx);
+  POP_HANDLE(cx);
+  POP_HANDLE(cx);
+  POP_HANDLE(cx);
 }
 

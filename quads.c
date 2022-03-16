@@ -52,7 +52,7 @@ static Quad* make_tree(struct context *cx, int depth) {
       init_field((void**)&result->kids[i], HANDLE_REF(kids[i]));
 
     for (size_t i = 0; i < 4; i++)
-      POP_HANDLE(cx, kids[3 - i]);
+      POP_HANDLE(cx);
 
     return result;
   }
@@ -162,7 +162,7 @@ int main(int argc, char *argv[]) {
 
   print_end_gc_stats(cx);
 
-  POP_HANDLE(cx, quad);
+  POP_HANDLE(cx);
   return 0;
 }
 
