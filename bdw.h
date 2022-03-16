@@ -45,7 +45,7 @@ static inline void* get_field(void **addr) {
   return *addr;
 }
 
-static inline void initialize_gc(struct context* cx, size_t heap_size) {
+static struct context* initialize_gc(size_t heap_size) {
   // GC_full_freq = 30;
   // GC_free_space_divisor = 16;
   // GC_enable_incremental();
@@ -55,6 +55,7 @@ static inline void initialize_gc(struct context* cx, size_t heap_size) {
     GC_set_max_heap_size (heap_size);
     GC_expand_hp(heap_size - current_heap_size);
   }
+  return GC_malloc_atomic(1);
 }
 
 static inline void print_start_gc_stats(struct context *cx) {

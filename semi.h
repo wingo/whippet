@@ -9,9 +9,11 @@
 struct context {
   uintptr_t hp;
   uintptr_t limit;
-  uintptr_t base;
-  size_t size;
+  uintptr_t heap_base;
+  size_t heap_size;
   struct handle *roots;
+  void *mem;
+  size_t mem_size;
   long count;
 };
 
@@ -33,12 +35,12 @@ static void collect_for_alloc(struct context *cx, size_t bytes) NEVER_INLINE;
 static void visit(void **loc, void *visit_data);
 
 static void flip(struct context *cx) {
-  uintptr_t split = cx->base + (cx->size >> 1);
+  uintptr_t split = cx->heap_base + (cx->heap_size >> 1);
   if (cx->hp <= split) {
     cx->hp = split;
-    cx->limit = cx->base + cx->size;
+    cx->limit = cx->heap_base + cx->heap_size;
   } else {
-    cx->hp = cx->base;
+    cx->hp = cx->heap_base;
     cx->limit = split;
   }
   cx->count++;
@@ -106,13 +108,13 @@ static void collect(struct context *cx) {
   // fprintf(stderr, "pushed %zd bytes in roots\n", cx->hp - grey);
   while(grey < cx->hp)
     grey = scan(cx, grey);
-  // fprintf(stderr, "%zd bytes copied\n", (cx->size>>1)-(cx->limit-cx->hp));
+  // fprintf(stderr, "%zd bytes copied\n", (cx->heap_size>>1)-(cx->limit-cx->hp));
 
 }
 static void collect_for_alloc(struct context *cx, size_t bytes) {
   collect(cx);
   if (cx->limit - cx->hp < bytes) {
-    fprintf(stderr, "ran out of space, heap size %zu\n", cx->size);
+    fprintf(stderr, "ran out of space, heap size %zu\n", cx->mem_size);
     abort();
   }
 }
@@ -151,20 +153,24 @@ static inline void* get_field(void **addr) {
   return *addr;
 }
 
-static inline void initialize_gc(struct context *cx, size_t size) {
-  size = align_up(size, getpagesize());
-
+static struct context* initialize_gc(size_t size) {
   void *mem = mmap(NULL, size, PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
     perror("mmap failed");
     abort();
   }
-  cx->hp = cx->base = (uintptr_t) mem;
-  cx->size = size;
+  struct context *cx = mem;
+  cx->mem = mem;
+  cx->mem_size = size;
+  // Round up to twice ALIGNMENT so that both spaces will be aligned.
+  size_t overhead = align_up(sizeof(*cx), ALIGNMENT * 2);
+  cx->hp = cx->heap_base = ((uintptr_t) mem) + overhead;
+  cx->heap_size = size - overhead;
   cx->count = -1;
   flip(cx);
   cx->roots = NULL;
+  return cx;
 }
 
 static inline void print_start_gc_stats(struct context *cx) {
@@ -172,5 +178,5 @@ static inline void print_start_gc_stats(struct context *cx) {
 
 static inline void print_end_gc_stats(struct context *cx) {
   printf("Completed %ld collections\n", cx->count);
-  printf("Heap size is %zd\n", cx->size);
+  printf("Heap size is %zd\n", cx->mem_size);
 }

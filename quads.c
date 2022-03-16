@@ -127,9 +127,7 @@ int main(int argc, char *argv[]) {
   unsigned long gc_start = current_time();
   printf("Allocating heap of %.3fGB (%.2f multiplier of live data).\n",
          heap_size / 1e9, multiplier);
-  struct context _cx;
-  struct context *cx = &_cx;
-  initialize_gc(cx, heap_size);
+  struct context *cx = initialize_gc(heap_size);
 
   QuadHandle quad = { NULL };
 

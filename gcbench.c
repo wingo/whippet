@@ -233,9 +233,12 @@ int main() {
     return 1;
   }
 
-  struct context _cx;
-  struct context *cx = &_cx;
-  initialize_gc(cx, kHeapSize);
+  struct context *cx = initialize_gc(kHeapSize);
+  if (!cx) {
+    fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
+            kHeapSize);
+    return 1;
+  }
 
   NodeHandle root = { NULL };
   NodeHandle longLivedTree = { NULL };

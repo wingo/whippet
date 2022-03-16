@@ -107,9 +107,11 @@ struct context {
   uintptr_t base;
   uint8_t *mark_bytes;
   uintptr_t heap_base;
-  size_t size;
+  size_t heap_size;
   uintptr_t sweep;
   struct handle *roots;
+  void *mem;
+  size_t mem_size;
   long count;
   struct marker marker;
 };
@@ -133,8 +135,9 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
 static void collect(struct context *cx) NEVER_INLINE;
 
 static inline uint8_t* mark_byte(struct context *cx, struct gcobj *obj) {
+  ASSERT(cx->heap_base <= (uintptr_t) obj);
+  ASSERT((uintptr_t) obj < cx->heap_base + cx->heap_size);
   uintptr_t granule = (((uintptr_t) obj) - cx->heap_base)  / GRANULE_SIZE;
-  ASSERT(granule < (cx->heap_base - cx->base));
   return &cx->mark_bytes[granule];
 }
 
@@ -284,7 +287,7 @@ static int sweep(struct context *cx, size_t for_granules) {
   // the end of the heap.
   ssize_t to_reclaim = 128;
   uintptr_t sweep = cx->sweep;
-  uintptr_t limit = cx->base + cx->size;
+  uintptr_t limit = cx->heap_base + cx->heap_size;
 
   if (sweep == limit)
     return 0;
@@ -339,7 +342,7 @@ static void* allocate_large(struct context *cx, enum alloc_kind kind,
 
     // No large object, and we swept across the whole heap.  Collect.
     if (swept_from_beginning) {
-      fprintf(stderr, "ran out of space, heap size %zu\n", cx->size);
+      fprintf(stderr, "ran out of space, heap size %zu\n", cx->heap_size);
       abort();
     } else {
       collect(cx);
@@ -379,7 +382,7 @@ static void fill_small(struct context *cx, enum small_object_size kind) {
 
     if (!sweep(cx, LARGE_OBJECT_GRANULE_THRESHOLD)) {
       if (swept_from_beginning) {
-        fprintf(stderr, "ran out of space, heap size %zu\n", cx->size);
+        fprintf(stderr, "ran out of space, heap size %zu\n", cx->heap_size);
         abort();
       } else {
         collect(cx);
@@ -425,7 +428,7 @@ static inline void* get_field(void **addr) {
   return *addr;
 }
 
-static inline void initialize_gc(struct context *cx, size_t size) {
+static struct context* initialize_gc(size_t size) {
 #define SMALL_OBJECT_GRANULE_SIZE(i) \
     ASSERT_EQ(SMALL_OBJECT_##i, small_object_sizes_for_granules[i]); \
     ASSERT_EQ(SMALL_OBJECT_##i + 1, small_object_sizes_for_granules[i+1]);
@@ -443,18 +446,34 @@ static inline void initialize_gc(struct context *cx, size_t size) {
     perror("mmap failed");
     abort();
   }
+
+  struct context *cx = mem;
+  cx->mem = mem;
+  cx->mem_size = size;
+  size_t overhead = sizeof(*cx);
+  // If there is 1 mark byte per granule, and SIZE bytes available for
+  // HEAP_SIZE + MARK_BYTES, then:
+  //
+  //   size = (granule_size + 1) / granule_size * heap_size
+  //   mark_bytes = 1/granule_size * heap_size
+  //   mark_bytes = ceil(size / (granule_size + 1))
+  cx->mark_bytes = ((uint8_t *)mem) + overhead;
+  size_t mark_bytes_size = (size - overhead + GRANULE_SIZE) / (GRANULE_SIZE + 1);
+  overhead += mark_bytes_size;
+  overhead = align_up(overhead, GRANULE_SIZE);
+
+  cx->heap_base = ((uintptr_t) mem) + overhead;
+  cx->heap_size = size - overhead;
+
   clear_freelists(cx);
-  cx->base = (uintptr_t) mem;
-  cx->mark_bytes = mem;
-  size_t heap_admin_size = align_up(size / GRANULE_SIZE, GRANULE_SIZE);
-  cx->heap_base = cx->base + heap_admin_size;
-  cx->size = size;
-  cx->sweep = cx->base + cx->size;
+  cx->sweep = cx->heap_base + cx->heap_size;
   cx->roots = NULL;
   cx->count = 0;
   if (!marker_init(cx))
     abort();
-  reclaim(cx, (void*)cx->heap_base, size_to_granules(size - heap_admin_size));
+  reclaim(cx, (void*)cx->heap_base, size_to_granules(cx->heap_size));
+
+  return cx;
 }
 
 static inline void print_start_gc_stats(struct context *cx) {
@@ -462,5 +481,5 @@ static inline void print_start_gc_stats(struct context *cx) {
 
 static inline void print_end_gc_stats(struct context *cx) {
   printf("Completed %ld collections\n", cx->count);
-  printf("Heap size is %zd\n", cx->size);
+  printf("Heap size with overhead is %zd\n", cx->mem_size);
 }
