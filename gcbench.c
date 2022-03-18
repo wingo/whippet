@@ -215,20 +215,27 @@ static void time_construction(struct context *cx, int depth) {
   POP_HANDLE(cx);
 }
 
-int main() {
+int main(int argc, char *argv[]) {
+  // Define size of Node without any GC header.
+  size_t sizeof_node = 2 * sizeof(Node*) + 2 * sizeof(int);
+  size_t sizeof_double_array = sizeof(size_t);
   size_t heap_max_live =
-    2 * sizeof(Node) * tree_size(long_lived_tree_depth) +
-    sizeof(double) * array_size;
-  double heap_multiplier = 3;
-  size_t heap_size = heap_max_live * heap_multiplier;
-
-  if (getenv("HEAP_SIZE"))
-    heap_size = atol(getenv("HEAP_SIZE"));
-  if (!heap_size) {
-    fprintf(stderr, "Failed to parse HEAP_SIZE='%s'\n", getenv("HEAP_SIZE"));
+    tree_size(long_lived_tree_depth) * sizeof_node +
+    tree_size(max_tree_depth) * sizeof_node +
+    sizeof_double_array + sizeof(double) * array_size;
+  if (argc != 2) {
+    fprintf(stderr, "usage: %s MULTIPLIER\n", argv[0]);
     return 1;
   }
 
+  double multiplier = atof(argv[1]);
+
+  if (!(1.0 < multiplier && multiplier < 100)) {
+    fprintf(stderr, "Failed to parse heap multiplier '%s'\n", argv[2]);
+    return 1;
+  }
+
+  size_t heap_size = heap_max_live * multiplier;
   struct context *cx = initialize_gc(heap_size);
   if (!cx) {
     fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
