@@ -15,20 +15,86 @@
 #define GC_NO_THREAD_REDIRECTS 1
 
 #include <gc/gc.h>
+#include <gc/gc_inline.h> /* GC_generic_malloc_many */
 
-struct context {};
+#define GC_INLINE_GRANULE_WORDS 2
+#define GC_INLINE_GRANULE_BYTES (sizeof(void *) * GC_INLINE_GRANULE_WORDS)
+
+/* A freelist set contains GC_INLINE_FREELIST_COUNT pointers to singly
+   linked lists of objects of different sizes, the ith one containing
+   objects i + 1 granules in size.  This setting of
+   GC_INLINE_FREELIST_COUNT will hold freelists for allocations of
+   up to 256 bytes.  */
+#define GC_INLINE_FREELIST_COUNT (256U / GC_INLINE_GRANULE_BYTES)
+
+struct context {
+  void *freelists[GC_INLINE_FREELIST_COUNT];
+  void *pointerless_freelists[GC_INLINE_FREELIST_COUNT];
+};
+
+static inline size_t gc_inline_bytes_to_freelist_index(size_t bytes) {
+  return (bytes - 1U) / GC_INLINE_GRANULE_BYTES;
+}
+static inline size_t gc_inline_freelist_object_size(size_t idx) {
+  return (idx + 1U) * GC_INLINE_GRANULE_BYTES;
+}
+
+// The values of these must match the internal POINTERLESS and NORMAL
+// definitions in libgc, for which unfortunately there are no external
+// definitions.  Alack.
+enum gc_inline_kind {
+  GC_INLINE_KIND_POINTERLESS,
+  GC_INLINE_KIND_NORMAL
+};
+
+static void* allocate_small_slow(void **freelist, size_t idx,
+                                 enum gc_inline_kind kind) NEVER_INLINE;
+static void* allocate_small_slow(void **freelist, size_t idx,
+                                 enum gc_inline_kind kind) {
+  size_t bytes = gc_inline_freelist_object_size(idx);
+  GC_generic_malloc_many(bytes, kind, freelist);
+  void *head = *freelist;
+  if (UNLIKELY (!head)) {
+    fprintf(stderr, "ran out of space, heap size %zu\n",
+            GC_get_heap_size());
+    abort();
+  }
+  *freelist = *(void **)(head);
+  return head;
+}
+
+static inline void *
+allocate_small(void **freelist, size_t idx, enum gc_inline_kind kind) {
+  void *head = *freelist;
+
+  if (UNLIKELY (!head))
+    return allocate_small_slow(freelist, idx, kind);
+
+  *freelist = *(void **)(head);
+  return head;
+}
 
 #define GC_HEADER /**/
 
 static inline void* allocate(struct context *cx, enum alloc_kind kind,
                              size_t size) {
-  return GC_malloc(size);
+  size_t idx = gc_inline_bytes_to_freelist_index(size);
+
+  if (UNLIKELY(idx >= GC_INLINE_FREELIST_COUNT))
+    return GC_malloc(size);
+
+  return allocate_small(&cx->freelists[idx], idx, GC_INLINE_KIND_NORMAL);
 }
 
-static inline void*
-allocate_pointerless(struct context *cx, enum alloc_kind kind,
-                     size_t size) {
-  return GC_malloc_atomic(size);
+static inline void* allocate_pointerless(struct context *cx,
+                                         enum alloc_kind kind, size_t size) {
+  size_t idx = gc_inline_bytes_to_freelist_index(size);
+
+  if (UNLIKELY (idx >= GC_INLINE_FREELIST_COUNT))
+    return GC_malloc_atomic(size);
+
+  return allocate_small(&cx->pointerless_freelists[idx], idx,
+                        GC_INLINE_KIND_POINTERLESS);
 }
 
 static inline void collect(struct context *cx) {
@@ -56,14 +122,14 @@ static struct context* initialize_gc(size_t heap_size) {
     GC_expand_hp(heap_size - current_heap_size);
   }
   GC_allow_register_threads();
-  return GC_malloc_atomic(1);
+  return GC_malloc(sizeof(struct context));
 }
 
 static struct context* initialize_gc_for_thread(uintptr_t *stack_base,
                                                 struct context *parent) {
   struct GC_stack_base base = { stack_base };
   GC_register_my_thread(&base);
-  return GC_malloc_atomic(1);
+  return GC_malloc(sizeof(struct context));
 }
 static void finish_gc_for_thread(struct context *cx) {
   GC_unregister_my_thread();
