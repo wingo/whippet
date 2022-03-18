@@ -46,7 +46,6 @@
 #include "gcbench-types.h"
 #include "gc.h"
 
-static const int stretch_tree_depth = 18; // about 16Mb
 static const int long_lived_tree_depth = 16; // about 4Mb
 static const int array_size = 500000; // about 4Mb
 static const int min_tree_depth = 4;
@@ -120,7 +119,7 @@ static int tree_size(int i) {
 
 // Number of iterations to use for a given tree depth
 static int compute_num_iters(int i) {
-  return 2 * tree_size(stretch_tree_depth) / tree_size(i);
+  return 2 * tree_size(max_tree_depth + 2) / tree_size(i);
 }
 
 // Build tree top down, assigning to older objects.
@@ -255,17 +254,10 @@ int main(int argc, char *argv[]) {
 
   printf("Garbage Collector Test\n");
   printf(" Live storage will peak at %zd bytes.\n\n", heap_max_live);
-  printf(" Stretching memory with a binary tree of depth %d\n",
-         stretch_tree_depth);
   print_start_gc_stats(cx);
-       
+
   unsigned long start = current_time();
         
-  // Stretch the memory space quickly
-  HANDLE_SET(temp_tree, make_tree(cx, stretch_tree_depth));
-  validate_tree(HANDLE_REF(temp_tree), stretch_tree_depth);
-  HANDLE_SET(temp_tree, NULL);
-
   // Create a long lived object
   printf(" Creating a long-lived binary tree of depth %d\n",
          long_lived_tree_depth);
