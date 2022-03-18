@@ -55,12 +55,22 @@ static struct context* initialize_gc(size_t heap_size) {
     GC_set_max_heap_size (heap_size);
     GC_expand_hp(heap_size - current_heap_size);
   }
+  GC_allow_register_threads();
   return GC_malloc_atomic(1);
+}
+
+static struct context* initialize_gc_for_thread(uintptr_t *stack_base,
+                                                struct context *parent) {
+  struct GC_stack_base base = { stack_base };
+  GC_register_my_thread(&base);
+  return GC_malloc_atomic(1);
+}
+static void finish_gc_for_thread(struct context *cx) {
+  GC_unregister_my_thread();
 }
 
 static inline void print_start_gc_stats(struct context *cx) {
 }
-
 static inline void print_end_gc_stats(struct context *cx) {
   printf("Completed %ld collections\n", (long)GC_get_gc_no());
   printf("Heap size is %ld\n", (long)GC_get_heap_size());
