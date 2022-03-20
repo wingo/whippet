@@ -476,6 +476,15 @@ static struct context* initialize_gc(size_t size) {
   return cx;
 }
 
+static struct context* initialize_gc_for_thread(uintptr_t *stack_base,
+                                                struct context *parent) {
+  fprintf(stderr,
+          "Multiple mutator threads not yet implemented.\n");
+  exit(1);
+}
+static void finish_gc_for_thread(struct context *cx) {
+}
+
 static inline void print_start_gc_stats(struct context *cx) {
 }
 
