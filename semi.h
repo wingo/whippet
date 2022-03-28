@@ -1,3 +1,4 @@
+#include <malloc.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -6,16 +7,31 @@
 
 #include "precise-roots.h"
 
-struct context {
+struct semi_space {
   uintptr_t hp;
   uintptr_t limit;
-  uintptr_t heap_base;
-  size_t heap_size;
-  struct handle *roots;
-  void *mem;
-  size_t mem_size;
+  uintptr_t base;
+  size_t size;
   long count;
 };
+struct heap {
+  struct semi_space semi_space;
+};
+// One mutator per space, can just store the heap in the mutator.
+struct mutator {
+  struct heap heap;
+  struct handle *roots;
+};
+
+static inline struct heap* mutator_heap(struct mutator *mut) {
+  return &mut->heap;
+}
+static inline struct semi_space* heap_semi_space(struct heap *heap) {
+  return &heap->semi_space;
+}
+static inline struct semi_space* mutator_semi_space(struct mutator *mut) {
+  return heap_semi_space(mutator_heap(mut));
+}
 
 static const uintptr_t ALIGNMENT = 8;
 
@@ -29,24 +45,24 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
 
-static void collect(struct context *cx) NEVER_INLINE;
-static void collect_for_alloc(struct context *cx, size_t bytes) NEVER_INLINE;
+static void collect(struct mutator *mut) NEVER_INLINE;
+static void collect_for_alloc(struct mutator *mut, size_t bytes) NEVER_INLINE;
 
 static void visit(void **loc, void *visit_data);
 
-static void flip(struct context *cx) {
-  uintptr_t split = cx->heap_base + (cx->heap_size >> 1);
-  if (cx->hp <= split) {
-    cx->hp = split;
-    cx->limit = cx->heap_base + cx->heap_size;
+static void flip(struct semi_space *space) {
+  uintptr_t split = space->base + (space->size >> 1);
+  if (space->hp <= split) {
+    space->hp = split;
+    space->limit = space->base + space->size;
   } else {
-    cx->hp = cx->heap_base;
-    cx->limit = split;
+    space->hp = space->base;
+    space->limit = split;
   }
-  cx->count++;
+  space->count++;
 }  
 
-static void* copy(struct context *cx, uintptr_t kind, void *obj) {
+static void* copy(struct semi_space *space, uintptr_t kind, void *obj) {
   size_t size;
   switch (kind) {
 #define COMPUTE_SIZE(name, Name, NAME) \
@@ -58,20 +74,20 @@ static void* copy(struct context *cx, uintptr_t kind, void *obj) {
   default:
     abort ();
   }
-  void *new_obj = (void*)cx->hp;
+  void *new_obj = (void*)space->hp;
   memcpy(new_obj, obj, size);
-  *(uintptr_t*) obj = cx->hp;
-  cx->hp += align_up (size, ALIGNMENT);
+  *(uintptr_t*) obj = space->hp;
+  space->hp += align_up (size, ALIGNMENT);
   return new_obj;
 }
 
-static uintptr_t scan(struct context *cx, uintptr_t grey) {
+static uintptr_t scan(struct semi_space *space, uintptr_t grey) {
   void *obj = (void*)grey;
   uintptr_t kind = *(uintptr_t*) obj;
   switch (kind) {
 #define SCAN_OBJECT(name, Name, NAME) \
     case ALLOC_KIND_##NAME: \
-      visit_##name##_fields((Name*)obj, visit, cx); \
+      visit_##name##_fields((Name*)obj, visit, space); \
       return grey + align_up(name##_size((Name*)obj), ALIGNMENT);
     FOR_EACH_HEAP_OBJECT_KIND(SCAN_OBJECT)
 #undef SCAN_OBJECT
@@ -80,55 +96,58 @@ static uintptr_t scan(struct context *cx, uintptr_t grey) {
   }
 }
 
-static void* forward(struct context *cx, void *obj) {
+static void* forward(struct semi_space *space, void *obj) {
   uintptr_t header_word = *(uintptr_t*)obj;
   switch (header_word) {
 #define CASE_ALLOC_KIND(name, Name, NAME) \
     case ALLOC_KIND_##NAME:
     FOR_EACH_HEAP_OBJECT_KIND(CASE_ALLOC_KIND)
 #undef CASE_ALLOC_KIND
-    return copy(cx, header_word, obj);
+    return copy(space, header_word, obj);
   default:
     return (void*)header_word;
   }
 }  
 
 static void visit(void **loc, void *visit_data) {
-  struct context *cx = visit_data;
+  struct semi_space *space = visit_data;
   void *obj = *loc;
   if (obj != NULL)
-    *loc = forward(cx, obj);
+    *loc = forward(space, obj);
 }
-static void collect(struct context *cx) {
-  // fprintf(stderr, "start collect #%ld:\n", cx->count);
-  flip(cx);
-  uintptr_t grey = cx->hp;
-  for (struct handle *h = cx->roots; h; h = h->next)
-    visit(&h->v, cx);
-  // fprintf(stderr, "pushed %zd bytes in roots\n", cx->hp - grey);
-  while(grey < cx->hp)
-    grey = scan(cx, grey);
-  // fprintf(stderr, "%zd bytes copied\n", (cx->heap_size>>1)-(cx->limit-cx->hp));
+static void collect(struct mutator *mut) {
+  struct semi_space *space = mutator_semi_space(mut);
+  // fprintf(stderr, "start collect #%ld:\n", space->count);
+  flip(space);
+  uintptr_t grey = space->hp;
+  for (struct handle *h = mut->roots; h; h = h->next)
+    visit(&h->v, space);
+  // fprintf(stderr, "pushed %zd bytes in roots\n", space->hp - grey);
+  while(grey < space->hp)
+    grey = scan(space, grey);
+  // fprintf(stderr, "%zd bytes copied\n", (space->size>>1)-(space->limit-space->hp));
 
 }
-static void collect_for_alloc(struct context *cx, size_t bytes) {
-  collect(cx);
-  if (cx->limit - cx->hp < bytes) {
-    fprintf(stderr, "ran out of space, heap size %zu\n", cx->mem_size);
+static void collect_for_alloc(struct mutator *mut, size_t bytes) {
+  collect(mut);
+  struct semi_space *space = mutator_semi_space(mut);
+  if (space->limit - space->hp < bytes) {
+    fprintf(stderr, "ran out of space, heap size %zu\n", space->size);
     abort();
   }
 }
 
-static inline void* allocate(struct context *cx, enum alloc_kind kind,
+static inline void* allocate(struct mutator *mut, enum alloc_kind kind,
                              size_t size) {
+  struct semi_space *space = mutator_semi_space(mut);
   while (1) {
-    uintptr_t addr = cx->hp;
+    uintptr_t addr = space->hp;
     uintptr_t new_hp = align_up (addr + size, ALIGNMENT);
-    if (cx->limit < new_hp) {
-      collect_for_alloc(cx, size);
+    if (space->limit < new_hp) {
+      collect_for_alloc(mut, size);
       continue;
     }
-    cx->hp = new_hp;
+    space->hp = new_hp;
     void *ret = (void *)addr;
     uintptr_t *header_word = ret;
     *header_word = kind;
@@ -138,9 +157,9 @@ static inline void* allocate(struct context *cx, enum alloc_kind kind,
     return ret;
   }
 }
-static inline void* allocate_pointerless(struct context *cx,
+static inline void* allocate_pointerless(struct mutator *mut,
                                          enum alloc_kind kind, size_t size) {
-  return allocate(cx, kind, size);
+  return allocate(mut, kind, size);
 }
 
 static inline void init_field(void **addr, void *val) {
@@ -153,39 +172,43 @@ static inline void* get_field(void **addr) {
   return *addr;
 }
 
-static struct context* initialize_gc(size_t size) {
-  void *mem = mmap(NULL, size, PROT_READ|PROT_WRITE,
+static int initialize_gc(size_t heap_size, struct heap **heap,
+                         struct mutator **mut) {
+  void *mem = mmap(NULL, heap_size, PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
     perror("mmap failed");
-    abort();
+    return 0;
   }
-  struct context *cx = mem;
-  cx->mem = mem;
-  cx->mem_size = size;
-  // Round up to twice ALIGNMENT so that both spaces will be aligned.
-  size_t overhead = align_up(sizeof(*cx), ALIGNMENT * 2);
-  cx->hp = cx->heap_base = ((uintptr_t) mem) + overhead;
-  cx->heap_size = size - overhead;
-  cx->count = -1;
-  flip(cx);
-  cx->roots = NULL;
-  return cx;
+
+  *mut = calloc(1, sizeof(struct mutator));
+  if (!*mut) abort();
+  *heap = mutator_heap(*mut);
+  struct semi_space *space = mutator_semi_space(*mut);
+
+  space->hp = space->base = (uintptr_t) mem;
+  space->size = heap_size;
+  space->count = -1;
+  flip(space);
+  (*mut)->roots = NULL;
+
+  return 1;
 }
 
-static struct context* initialize_gc_for_thread(uintptr_t *stack_base,
-                                                struct context *parent) {
+static struct mutator* initialize_gc_for_thread(uintptr_t *stack_base,
+                                                struct heap *heap) {
   fprintf(stderr,
           "Semispace copying collector not appropriate for multithreaded use.\n");
   exit(1);
 }
-static void finish_gc_for_thread(struct context *cx) {
+static void finish_gc_for_thread(struct mutator *space) {
 }
 
-static inline void print_start_gc_stats(struct context *cx) {
+static inline void print_start_gc_stats(struct heap *heap) {
 }
 
-static inline void print_end_gc_stats(struct context *cx) {
-  printf("Completed %ld collections\n", cx->count);
-  printf("Heap size is %zd\n", cx->mem_size);
+static inline void print_end_gc_stats(struct heap *heap) {
+  struct semi_space *space = heap_semi_space(heap);
+  printf("Completed %ld collections\n", space->count);
+  printf("Heap size is %zd\n", space->size);
 }
