@@ -7,20 +7,22 @@
 #include "assert.h"
 #include "debug.h"
 
+struct gcobj;
+
 struct mark_queue {
   size_t size;
   size_t read;
   size_t write;
-  uintptr_t *buf;
+  struct gcobj **buf;
 };
 
 static const size_t mark_queue_max_size =
-  (1ULL << (sizeof(uintptr_t) * 8 - 1)) / sizeof(uintptr_t);
+  (1ULL << (sizeof(struct gcobj *) * 8 - 1)) / sizeof(struct gcobj *);
 static const size_t mark_queue_release_byte_threshold = 1 * 1024 * 1024;
 
-static void*
+static struct gcobj **
 mark_queue_alloc(size_t size) {
-  void *mem = mmap(NULL, size * sizeof(uintptr_t), PROT_READ|PROT_WRITE,
+  void *mem = mmap(NULL, size * sizeof(struct gcobj *), PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
     perror("Failed to grow mark queue");
@@ -32,20 +34,20 @@ mark_queue_alloc(size_t size) {
 
 static int
 mark_queue_init(struct mark_queue *q) {
-  q->size = getpagesize() / sizeof(uintptr_t);
+  q->size = getpagesize() / sizeof(struct gcobj *);
   q->read = 0;
   q->write = 0;
   q->buf = mark_queue_alloc(q->size);
   return !!q->buf;
 }
   
-static inline uintptr_t
+static inline struct gcobj *
 mark_queue_get(struct mark_queue *q, size_t idx) {
   return q->buf[idx & (q->size - 1)];
 }
 
 static inline void
-mark_queue_put(struct mark_queue *q, size_t idx, uintptr_t x) {
+mark_queue_put(struct mark_queue *q, size_t idx, struct gcobj *x) {
   q->buf[idx & (q->size - 1)] = x;
 }
 
@@ -54,14 +56,14 @@ static int mark_queue_grow(struct mark_queue *q) NEVER_INLINE;
 static int
 mark_queue_grow(struct mark_queue *q) {
   size_t old_size = q->size;
-  uintptr_t *old_buf = q->buf;
+  struct gcobj **old_buf = q->buf;
   if (old_size >= mark_queue_max_size) {
     DEBUG("mark queue already at max size of %zu bytes", old_size);
     return 0;
   }
 
   size_t new_size = old_size * 2;
-  uintptr_t *new_buf = mark_queue_alloc(new_size);
+  struct gcobj **new_buf = mark_queue_alloc(new_size);
   if (!new_buf)
     return 0;
 
@@ -71,7 +73,7 @@ mark_queue_grow(struct mark_queue *q) {
   for (size_t i = q->read; i < q->write; i++)
     new_buf[i & new_mask] = old_buf[i & old_mask];
 
-  munmap(old_buf, old_size * sizeof(uintptr_t));
+  munmap(old_buf, old_size * sizeof(struct gcobj *));
 
   q->size = new_size;
   q->buf = new_buf;
@@ -79,24 +81,34 @@ mark_queue_grow(struct mark_queue *q) {
 }
   
 static inline void
-mark_queue_push(struct mark_queue *q, void *p) {
+mark_queue_push(struct mark_queue *q, struct gcobj *p) {
   if (UNLIKELY(q->write - q->read == q->size)) {
     if (!mark_queue_grow(q))
       abort();
   }
-  mark_queue_put(q, q->write++, (uintptr_t)p);
+  mark_queue_put(q, q->write++, p);
 }
 
-static inline void*
+static inline void
+mark_queue_push_many(struct mark_queue *q, struct gcobj **pv, size_t count) {
+  while (q->size - (q->write - q->read) < count) {
+    if (!mark_queue_grow(q))
+      abort();
+  }
+  for (size_t i = 0; i < count; i++)
+    mark_queue_put(q, q->write++, pv[i]);
+}
+
+static inline struct gcobj*
 mark_queue_pop(struct mark_queue *q) {
   if (UNLIKELY(q->read == q->write))
     return NULL;
-  return (void*)mark_queue_get(q, q->read++);
+  return mark_queue_get(q, q->read++);
 }
 
 static void
 mark_queue_release(struct mark_queue *q) {
-  size_t byte_size = q->size * sizeof(uintptr_t);
+  size_t byte_size = q->size * sizeof(struct gcobj *);
   if (byte_size >= mark_queue_release_byte_threshold)
     madvise(q->buf, byte_size, MADV_DONTNEED);
   q->read = q->write = 0;
@@ -104,7 +116,7 @@ mark_queue_release(struct mark_queue *q) {
 
 static void
 mark_queue_destroy(struct mark_queue *q) {
-  size_t byte_size = q->size * sizeof(uintptr_t);
+  size_t byte_size = q->size * sizeof(struct gcobj *);
   munmap(q->buf, byte_size);
 }
 
