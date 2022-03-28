@@ -14,8 +14,6 @@
 #include "serial-marker.h"
 #endif
 
-#define LAZY_SWEEP 1
-
 #define GRANULE_SIZE 8
 #define GRANULE_SIZE_LOG_2 3
 #define LARGE_OBJECT_THRESHOLD 256
@@ -109,12 +107,34 @@ struct context {
   uintptr_t heap_base;
   size_t heap_size;
   uintptr_t sweep;
-  struct handle *roots;
   void *mem;
   size_t mem_size;
   long count;
   struct marker marker;
 };
+
+struct mark_space { struct context cx; };
+struct heap { struct mark_space mark_space; };
+struct mutator {
+  struct heap heap;
+  struct handle *roots;
+};
+
+static inline struct heap* mutator_heap(struct mutator *mut) {
+  return &mut->heap;
+}
+static inline struct mark_space* heap_mark_space(struct heap *heap) {
+  return &heap->mark_space;
+}
+static inline struct context* mark_space_context(struct mark_space *space) {
+  return &space->cx;
+}
+static inline struct mark_space* mutator_mark_space(struct mutator *mut) {
+  return heap_mark_space(mutator_heap(mut));
+}
+static inline struct context* mutator_context(struct mutator *mut) {
+  return mark_space_context(mutator_mark_space(mut));
+}
 
 static inline struct marker* context_marker(struct context *cx) {
   return &cx->marker;
@@ -171,7 +191,9 @@ static void clear_freelists(struct context *cx) {
 static void collect(struct context *cx) {
   DEBUG("start collect #%ld:\n", cx->count);
   marker_prepare(cx);
-  for (struct handle *h = cx->roots; h; h = h->next)
+  // HACK!!!
+  struct mutator *mut = (struct mutator *)cx;
+  for (struct handle *h = mut->roots; h; h = h->next)
     marker_visit_root(&h->v, cx);
   marker_trace(cx);
   marker_release(cx);
@@ -405,17 +427,18 @@ static inline void* allocate_small(struct context *cx,
   return obj;
 }
 
-static inline void* allocate(struct context *cx, enum alloc_kind kind,
+static inline void* allocate(struct mutator *mut, enum alloc_kind kind,
                              size_t size) {
+  struct context *cx = mutator_context(mut);
   size_t granules = size_to_granules(size);
   if (granules <= LARGE_OBJECT_GRANULE_THRESHOLD)
     return allocate_small(cx, kind, granules_to_small_object_size(granules));
   return allocate_large(cx, kind, granules);
 }
-static inline void* allocate_pointerless(struct context *cx,
+static inline void* allocate_pointerless(struct mutator *mut,
                                          enum alloc_kind kind,
                                          size_t size) {
-  return allocate(cx, kind, size);
+  return allocate(mut, kind, size);
 }
 
 static inline void init_field(void **addr, void *val) {
@@ -428,7 +451,8 @@ static inline void* get_field(void **addr) {
   return *addr;
 }
 
-static struct context* initialize_gc(size_t size) {
+static int initialize_gc(size_t size, struct heap **heap,
+                         struct mutator **mut) {
 #define SMALL_OBJECT_GRANULE_SIZE(i) \
     ASSERT_EQ(SMALL_OBJECT_##i, small_object_sizes_for_granules[i]); \
     ASSERT_EQ(SMALL_OBJECT_##i + 1, small_object_sizes_for_granules[i+1]);
@@ -444,51 +468,55 @@ static struct context* initialize_gc(size_t size) {
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
     perror("mmap failed");
-    abort();
+    return 0;
   }
 
-  struct context *cx = mem;
+  *mut = calloc(1, sizeof(struct mutator));
+  if (!*mut) abort();
+  (*mut)->roots = NULL;
+  *heap = mutator_heap(*mut);
+  struct mark_space *space = mutator_mark_space(*mut);
+  struct context *cx = &space->cx;
+
   cx->mem = mem;
   cx->mem_size = size;
-  size_t overhead = sizeof(*cx);
   // If there is 1 mark byte per granule, and SIZE bytes available for
   // HEAP_SIZE + MARK_BYTES, then:
   //
   //   size = (granule_size + 1) / granule_size * heap_size
   //   mark_bytes = 1/granule_size * heap_size
   //   mark_bytes = ceil(size / (granule_size + 1))
-  cx->mark_bytes = ((uint8_t *)mem) + overhead;
-  size_t mark_bytes_size = (size - overhead + GRANULE_SIZE) / (GRANULE_SIZE + 1);
-  overhead += mark_bytes_size;
-  overhead = align_up(overhead, GRANULE_SIZE);
+  cx->mark_bytes = (uint8_t *)mem;
+  size_t mark_bytes_size = (size + GRANULE_SIZE) / (GRANULE_SIZE + 1);
+  size_t overhead = align_up(mark_bytes_size, GRANULE_SIZE);
 
   cx->heap_base = ((uintptr_t) mem) + overhead;
   cx->heap_size = size - overhead;
 
   clear_freelists(cx);
   cx->sweep = cx->heap_base + cx->heap_size;
-  cx->roots = NULL;
   cx->count = 0;
   if (!marker_init(cx))
     abort();
   reclaim(cx, (void*)cx->heap_base, size_to_granules(cx->heap_size));
 
-  return cx;
+  return 1;
 }
 
-static struct context* initialize_gc_for_thread(uintptr_t *stack_base,
-                                                struct context *parent) {
+static struct mutator* initialize_gc_for_thread(uintptr_t *stack_base,
+                                                struct heap *parent) {
   fprintf(stderr,
           "Multiple mutator threads not yet implemented.\n");
   exit(1);
 }
-static void finish_gc_for_thread(struct context *cx) {
+static void finish_gc_for_thread(struct mutator *heap) {
 }
 
-static inline void print_start_gc_stats(struct context *cx) {
+static inline void print_start_gc_stats(struct heap *heap) {
 }
 
-static inline void print_end_gc_stats(struct context *cx) {
+static inline void print_end_gc_stats(struct heap *heap) {
+  struct context *cx = mark_space_context(heap_mark_space(heap));
   printf("Completed %ld collections\n", cx->count);
   printf("Heap size with overhead is %zd\n", cx->mem_size);
 }
