@@ -91,16 +91,16 @@ visit_double_array_fields(DoubleArray *obj,
 typedef HANDLE_TO(Node) NodeHandle;
 typedef HANDLE_TO(DoubleArray) DoubleArrayHandle;
 
-static Node* allocate_node(struct context *cx) {
+static Node* allocate_node(struct mutator *mut) {
   // memset to 0 by the collector.
-  return allocate(cx, ALLOC_KIND_NODE, sizeof (Node));
+  return allocate(mut, ALLOC_KIND_NODE, sizeof (Node));
 }
 
-static DoubleArray* allocate_double_array(struct context *cx,
+static DoubleArray* allocate_double_array(struct mutator *mut,
                                                  size_t size) {
   // May be uninitialized.
   DoubleArray *ret =
-    allocate_pointerless(cx, ALLOC_KIND_DOUBLE_ARRAY,
+    allocate_pointerless(mut, ALLOC_KIND_DOUBLE_ARRAY,
                          sizeof(DoubleArray) + sizeof (double) * size);
   ret->length = size;
   return ret;
@@ -128,44 +128,44 @@ static int compute_num_iters(int i) {
 }
 
 // Build tree top down, assigning to older objects.
-static void populate(struct context *cx, int depth, Node *node) {
+static void populate(struct mutator *mut, int depth, Node *node) {
   if (depth <= 0)
     return;
 
   NodeHandle self = { node };
-  PUSH_HANDLE(cx, self);
-  NodeHandle l = { allocate_node(cx) };
-  PUSH_HANDLE(cx, l);
-  NodeHandle r = { allocate_node(cx) };
-  PUSH_HANDLE(cx, r);
+  PUSH_HANDLE(mut, self);
+  NodeHandle l = { allocate_node(mut) };
+  PUSH_HANDLE(mut, l);
+  NodeHandle r = { allocate_node(mut) };
+  PUSH_HANDLE(mut, r);
 
   set_field((void**)&HANDLE_REF(self)->left, HANDLE_REF(l));
   set_field((void**)&HANDLE_REF(self)->right, HANDLE_REF(r));
 
-  populate(cx, depth-1, HANDLE_REF(self)->left);
-  populate(cx, depth-1, HANDLE_REF(self)->right);
+  populate(mut, depth-1, HANDLE_REF(self)->left);
+  populate(mut, depth-1, HANDLE_REF(self)->right);
 
-  POP_HANDLE(cx);
-  POP_HANDLE(cx);
-  POP_HANDLE(cx);
+  POP_HANDLE(mut);
+  POP_HANDLE(mut);
+  POP_HANDLE(mut);
 }
 
 // Build tree bottom-up
-static Node* make_tree(struct context *cx, int depth) {
+static Node* make_tree(struct mutator *mut, int depth) {
   if (depth <= 0)
-    return allocate_node(cx);
+    return allocate_node(mut);
 
-  NodeHandle left = { make_tree(cx, depth-1) };
-  PUSH_HANDLE(cx, left);
-  NodeHandle right = { make_tree(cx, depth-1) };
-  PUSH_HANDLE(cx, right);
+  NodeHandle left = { make_tree(mut, depth-1) };
+  PUSH_HANDLE(mut, left);
+  NodeHandle right = { make_tree(mut, depth-1) };
+  PUSH_HANDLE(mut, right);
 
-  Node *result = allocate_node(cx);
+  Node *result = allocate_node(mut);
   init_field((void**)&result->left, HANDLE_REF(left));
   init_field((void**)&result->right, HANDLE_REF(right));
 
-  POP_HANDLE(cx);
-  POP_HANDLE(cx);
+  POP_HANDLE(mut);
+  POP_HANDLE(mut);
 
   return result;
 }
@@ -186,18 +186,18 @@ static void validate_tree(Node *tree, int depth) {
 #endif
 }
 
-static void time_construction(struct context *cx, int depth) {
+static void time_construction(struct mutator *mut, int depth) {
   int num_iters = compute_num_iters(depth);
   NodeHandle temp_tree = { NULL };
-  PUSH_HANDLE(cx, temp_tree);
+  PUSH_HANDLE(mut, temp_tree);
 
   printf("Creating %d trees of depth %d\n", num_iters, depth);
 
   {
     unsigned long start = current_time();
     for (int i = 0; i < num_iters; ++i) {
-      HANDLE_SET(temp_tree, allocate_node(cx));
-      populate(cx, depth, HANDLE_REF(temp_tree));
+      HANDLE_SET(temp_tree, allocate_node(mut));
+      populate(mut, depth, HANDLE_REF(temp_tree));
       validate_tree(HANDLE_REF(temp_tree), depth);
       HANDLE_SET(temp_tree, NULL);
     }
@@ -208,7 +208,7 @@ static void time_construction(struct context *cx, int depth) {
   {
     long start = current_time();
     for (int i = 0; i < num_iters; ++i) {
-      HANDLE_SET(temp_tree, make_tree(cx, depth));
+      HANDLE_SET(temp_tree, make_tree(mut, depth));
       validate_tree(HANDLE_REF(temp_tree), depth);
       HANDLE_SET(temp_tree, NULL);
     }
@@ -216,7 +216,7 @@ static void time_construction(struct context *cx, int depth) {
            elapsed_millis(start));
   }
 
-  POP_HANDLE(cx);
+  POP_HANDLE(mut);
 }
 
 static void* call_with_stack_base(void* (*)(uintptr_t*, void*), void*) NEVER_INLINE;
@@ -232,46 +232,46 @@ static void* call_with_stack_base(void* (*f)(uintptr_t *stack_base, void *arg),
 }
 
 struct call_with_gc_data {
-  void* (*f)(struct context *);
-  struct context *parent;
+  void* (*f)(struct mutator *);
+  struct heap *heap;
 };
 static void* call_with_gc_inner(uintptr_t *stack_base, void *arg) {
   struct call_with_gc_data *data = arg;
-  struct context *cx = initialize_gc_for_thread(stack_base, data->parent);
-  void *ret = data->f(cx);
-  finish_gc_for_thread(cx);
+  struct mutator *mut = initialize_gc_for_thread(stack_base, data->heap);
+  void *ret = data->f(mut);
+  finish_gc_for_thread(mut);
   return ret;
 }
-static void* call_with_gc(void* (*f)(struct context *),
-                          struct context *parent) {
-  struct call_with_gc_data data = { f, parent };
+static void* call_with_gc(void* (*f)(struct mutator *),
+                          struct heap *heap) {
+  struct call_with_gc_data data = { f, heap };
   return call_with_stack_base(call_with_gc_inner, &data);
 }
 
-static void* run_one_test(struct context *cx) {
+static void* run_one_test(struct mutator *mut) {
   NodeHandle long_lived_tree = { NULL };
   NodeHandle temp_tree = { NULL };
   DoubleArrayHandle array = { NULL };
 
-  PUSH_HANDLE(cx, long_lived_tree);
-  PUSH_HANDLE(cx, temp_tree);
-  PUSH_HANDLE(cx, array);
+  PUSH_HANDLE(mut, long_lived_tree);
+  PUSH_HANDLE(mut, temp_tree);
+  PUSH_HANDLE(mut, array);
 
   // Create a long lived object
   printf(" Creating a long-lived binary tree of depth %d\n",
          long_lived_tree_depth);
-  HANDLE_SET(long_lived_tree, allocate_node(cx));
-  populate(cx, long_lived_tree_depth, HANDLE_REF(long_lived_tree));
+  HANDLE_SET(long_lived_tree, allocate_node(mut));
+  populate(mut, long_lived_tree_depth, HANDLE_REF(long_lived_tree));
 
   // Create long-lived array, filling half of it
   printf(" Creating a long-lived array of %d doubles\n", array_size);
-  HANDLE_SET(array, allocate_double_array(cx, array_size));
+  HANDLE_SET(array, allocate_double_array(mut, array_size));
   for (int i = 0; i < array_size/2; ++i) {
     HANDLE_REF(array)->values[i] = 1.0/i;
   }
 
   for (int d = min_tree_depth; d <= max_tree_depth; d += 2) {
-    time_construction(cx, d);
+    time_construction(mut, d);
   }
 
   validate_tree(HANDLE_REF(long_lived_tree), long_lived_tree_depth);
@@ -282,15 +282,15 @@ static void* run_one_test(struct context *cx) {
       || HANDLE_REF(array)->values[1000] != 1.0/1000)
     fprintf(stderr, "Failed\n");
 
-  POP_HANDLE(cx);
-  POP_HANDLE(cx);
-  POP_HANDLE(cx);
+  POP_HANDLE(mut);
+  POP_HANDLE(mut);
+  POP_HANDLE(mut);
   return NULL;
 }
 
 static void* run_one_test_in_thread(void *arg) {
-  struct context *parent_cx = arg;
-  return call_with_gc(run_one_test, parent_cx);
+  struct heap *heap = arg;
+  return call_with_gc(run_one_test, heap);
 }
 
 int main(int argc, char *argv[]) {
@@ -320,8 +320,9 @@ int main(int argc, char *argv[]) {
   }
 
   size_t heap_size = heap_max_live * multiplier * nthreads;
-  struct context *cx = initialize_gc(heap_size);
-  if (!cx) {
+  struct heap *heap;
+  struct mutator *mut;
+  if (!initialize_gc(heap_size, &heap, &mut)) {
     fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
             heap_size);
     return 1;
@@ -329,21 +330,21 @@ int main(int argc, char *argv[]) {
 
   printf("Garbage Collector Test\n");
   printf(" Live storage will peak at %zd bytes.\n\n", heap_max_live);
-  print_start_gc_stats(cx);
+  print_start_gc_stats(heap);
 
   unsigned long start = current_time();
         
   pthread_t threads[MAX_THREAD_COUNT];
   // Run one of the threads in the main thread.
   for (size_t i = 1; i < nthreads; i++) {
-    int status = pthread_create(&threads[i], NULL, run_one_test_in_thread, cx);
+    int status = pthread_create(&threads[i], NULL, run_one_test_in_thread, heap);
     if (status) {
       errno = status;
       perror("Failed to create thread");
       return 1;
     }
   }
-  run_one_test(cx);
+  run_one_test(mut);
   for (size_t i = 1; i < nthreads; i++) {
     int status = pthread_join(threads[i], NULL);
     if (status) {
@@ -354,6 +355,5 @@ int main(int argc, char *argv[]) {
   }
   
   printf("Completed in %.3f msec\n", elapsed_millis(start));
-  print_end_gc_stats(cx);
+  print_end_gc_stats(heap);
 }
-
