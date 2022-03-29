@@ -365,12 +365,9 @@ static void mark_global_roots(struct mark_space *space) {
   atomic_store(&space->mutator_roots, NULL);
 }
 
-static void pause_mutator_for_collection(struct mutator *mut) NEVER_INLINE;
-static void pause_mutator_for_collection(struct mutator *mut) {
-  struct mark_space *space = mutator_mark_space(mut);
+static void pause_mutator_for_collection(struct mark_space *space) NEVER_INLINE;
+static void pause_mutator_for_collection(struct mark_space *space) {
   ASSERT(mutators_are_stopping(space));
-  mark_stopping_mutator_roots(mut);
-  mark_space_lock(space);
   ASSERT(space->active_mutator_count);
   space->active_mutator_count--;
   if (space->active_mutator_count == 0)
@@ -389,13 +386,32 @@ static void pause_mutator_for_collection(struct mutator *mut) {
   while (mutators_are_stopping(space) && space->count == epoch);
 
   space->active_mutator_count++;
+}
+
+static void pause_mutator_for_collection_with_lock(struct mutator *mut) NEVER_INLINE;
+static void pause_mutator_for_collection_with_lock(struct mutator *mut) {
+  struct mark_space *space = mutator_mark_space(mut);
+  ASSERT(mutators_are_stopping(space));
+  mark_controlling_mutator_roots(mut);
+  pause_mutator_for_collection(space);
+  clear_mutator_freelists(mut);
+}
+
+static void pause_mutator_for_collection_without_lock(struct mutator *mut) NEVER_INLINE;
+static void pause_mutator_for_collection_without_lock(struct mutator *mut) {
+  struct mark_space *space = mutator_mark_space(mut);
+  ASSERT(mutators_are_stopping(space));
+  mark_stopping_mutator_roots(mut);
+  mark_space_lock(space);
+  pause_mutator_for_collection(space);
   mark_space_unlock(space);
   release_stopping_mutator_roots(mut);
+  clear_mutator_freelists(mut);
 }
 
 static inline void maybe_pause_mutator_for_collection(struct mutator *mut) {
   while (mutators_are_stopping(mutator_mark_space(mut)))
-    pause_mutator_for_collection(mut);
+    pause_mutator_for_collection_without_lock(mut);
 }
 
 static void reset_sweeper(struct mark_space *space) {
@@ -570,6 +586,10 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
   maybe_pause_mutator_for_collection(mut);
 
   mark_space_lock(space);
+
+  while (mutators_are_stopping(space))
+    pause_mutator_for_collection_with_lock(mut);
+
   int swept_from_beginning = 0;
   while (1) {
     struct gcobj_free_large *already_scanned = NULL;
@@ -595,13 +615,7 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
       fprintf(stderr, "ran out of space, heap size %zu\n", space->heap_size);
       abort();
     } else {
-      if (mutators_are_stopping(space)) {
-        mark_space_unlock(space);
-        pause_mutator_for_collection(mut);
-        mark_space_lock(space);
-      } else {
-        collect(space, mut);
-      }
+      collect(space, mut);
       swept_from_beginning = 1;
     }
   }
@@ -676,6 +690,10 @@ static void fill_small_from_global(struct mutator *mut,
   maybe_pause_mutator_for_collection(mut);
 
   mark_space_lock(space);
+
+  while (mutators_are_stopping(space))
+    pause_mutator_for_collection_with_lock(mut);
+
   int swept_from_beginning = 0;
   while (1) {
     if (fill_small_from_global_small(space, small_objects, kind))
@@ -689,13 +707,7 @@ static void fill_small_from_global(struct mutator *mut,
         fprintf(stderr, "ran out of space, heap size %zu\n", space->heap_size);
         abort();
       } else {
-        if (mutators_are_stopping(space)) {
-          mark_space_unlock(space);
-          pause_mutator_for_collection(mut);
-          mark_space_lock(space);
-        } else {
-          collect(space, mut);
-        }
+        collect(space, mut);
         swept_from_beginning = 1;
       }
     }
