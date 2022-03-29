@@ -152,7 +152,7 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
 
-static void collect(struct context *cx) NEVER_INLINE;
+static void collect(struct mutator *mut) NEVER_INLINE;
 
 static inline uint8_t* mark_byte(struct context *cx, struct gcobj *obj) {
   ASSERT(cx->heap_base <= (uintptr_t) obj);
@@ -188,11 +188,10 @@ static void clear_freelists(struct context *cx) {
   cx->large_objects = NULL;
 }
 
-static void collect(struct context *cx) {
+static void collect(struct mutator *mut) {
+  struct context *cx = mutator_context(mut);
   DEBUG("start collect #%ld:\n", cx->count);
   marker_prepare(cx);
-  // HACK!!!
-  struct mutator *mut = (struct mutator *)cx;
   for (struct handle *h = mut->roots; h; h = h->next)
     marker_visit_root(&h->v, cx);
   marker_trace(cx);
@@ -341,8 +340,9 @@ static int sweep(struct context *cx, size_t for_granules) {
   return 1;
 }
 
-static void* allocate_large(struct context *cx, enum alloc_kind kind,
+static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
                             size_t granules) {
+  struct context *cx = mutator_context(mut);
   int swept_from_beginning = 0;
   struct gcobj_free_large *already_scanned = NULL;
   while (1) {
@@ -367,13 +367,14 @@ static void* allocate_large(struct context *cx, enum alloc_kind kind,
       fprintf(stderr, "ran out of space, heap size %zu\n", cx->heap_size);
       abort();
     } else {
-      collect(cx);
+      collect(mut);
       swept_from_beginning = 1;
     }
   }
 }
   
-static void fill_small(struct context *cx, enum small_object_size kind) {
+static void fill_small(struct mutator *mut, enum small_object_size kind) {
+  struct context *cx = mutator_context(mut);
   int swept_from_beginning = 0;
   while (1) {
     // First see if there are small objects already on the freelists
@@ -407,19 +408,20 @@ static void fill_small(struct context *cx, enum small_object_size kind) {
         fprintf(stderr, "ran out of space, heap size %zu\n", cx->heap_size);
         abort();
       } else {
-        collect(cx);
+        collect(mut);
         swept_from_beginning = 1;
       }
     }
   }
 }
 
-static inline void* allocate_small(struct context *cx,
+static inline void* allocate_small(struct mutator *mut,
                                    enum alloc_kind alloc_kind,
                                    enum small_object_size small_kind) {
+  struct context *cx = mutator_context(mut);
   struct gcobj_free **loc = get_small_object_freelist(cx, small_kind);
   if (!*loc)
-    fill_small(cx, small_kind);
+    fill_small(mut, small_kind);
   struct gcobj_free *ret = *loc;
   *loc = ret->next;
   struct gcobj *obj = (struct gcobj *)ret;
@@ -429,11 +431,10 @@ static inline void* allocate_small(struct context *cx,
 
 static inline void* allocate(struct mutator *mut, enum alloc_kind kind,
                              size_t size) {
-  struct context *cx = mutator_context(mut);
   size_t granules = size_to_granules(size);
   if (granules <= LARGE_OBJECT_GRANULE_THRESHOLD)
-    return allocate_small(cx, kind, granules_to_small_object_size(granules));
-  return allocate_large(cx, kind, granules);
+    return allocate_small(mut, kind, granules_to_small_object_size(granules));
+  return allocate_large(mut, kind, granules);
 }
 static inline void* allocate_pointerless(struct mutator *mut,
                                          enum alloc_kind kind,
