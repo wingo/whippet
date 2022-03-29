@@ -97,7 +97,7 @@ struct gcobj {
   };
 };
 
-struct context {
+struct mark_space {
   // Segregated freelists of small objects.
   struct gcobj_free *small_objects[SMALL_OBJECT_SIZES];
   // Unordered list of large objects.
@@ -113,7 +113,6 @@ struct context {
   struct marker marker;
 };
 
-struct mark_space { struct context cx; };
 struct heap { struct mark_space mark_space; };
 struct mutator {
   struct heap *heap;
@@ -126,24 +125,18 @@ static inline struct heap* mutator_heap(struct mutator *mut) {
 static inline struct mark_space* heap_mark_space(struct heap *heap) {
   return &heap->mark_space;
 }
-static inline struct context* mark_space_context(struct mark_space *space) {
-  return &space->cx;
-}
 static inline struct mark_space* mutator_mark_space(struct mutator *mut) {
   return heap_mark_space(mutator_heap(mut));
 }
-static inline struct context* mutator_context(struct mutator *mut) {
-  return mark_space_context(mutator_mark_space(mut));
-}
 
 static inline struct marker* mark_space_marker(struct mark_space *space) {
-  return &mark_space_context(space)->marker;
+  return &space->marker;
 }
 
 static inline struct gcobj_free**
-get_small_object_freelist(struct context *cx, enum small_object_size kind) {
+get_small_object_freelist(struct mark_space *space, enum small_object_size kind) {
   ASSERT(kind < SMALL_OBJECT_SIZES);
-  return &cx->small_objects[kind];
+  return &space->small_objects[kind];
 }
 
 #define GC_HEADER uintptr_t _gc_header
@@ -155,11 +148,10 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
 static void collect(struct mutator *mut) NEVER_INLINE;
 
 static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
-  struct context *cx = mark_space_context(space);
-  ASSERT(cx->heap_base <= (uintptr_t) obj);
-  ASSERT((uintptr_t) obj < cx->heap_base + cx->heap_size);
-  uintptr_t granule = (((uintptr_t) obj) - cx->heap_base)  / GRANULE_SIZE;
-  return &cx->mark_bytes[granule];
+  ASSERT(space->heap_base <= (uintptr_t) obj);
+  ASSERT((uintptr_t) obj < space->heap_base + space->heap_size);
+  uintptr_t granule = (((uintptr_t) obj) - space->heap_base)  / GRANULE_SIZE;
+  return &space->mark_bytes[granule];
 }
 
 static inline int mark_object(struct mark_space *space, struct gcobj *obj) {
@@ -183,16 +175,15 @@ static inline void trace_one(struct gcobj *obj, void *mark_data) {
   }
 }
 
-static void clear_freelists(struct context *cx) {
+static void clear_freelists(struct mark_space *space) {
   for (int i = 0; i < SMALL_OBJECT_SIZES; i++)
-    cx->small_objects[i] = NULL;
-  cx->large_objects = NULL;
+    space->small_objects[i] = NULL;
+  space->large_objects = NULL;
 }
 
 static void collect(struct mutator *mut) {
   struct mark_space *space = mutator_mark_space(mut);
-  struct context *cx = mutator_context(mut);
-  DEBUG("start collect #%ld:\n", cx->count);
+  DEBUG("start collect #%ld:\n", space->count);
   marker_prepare(space);
   for (struct handle *h = mut->roots; h; h = h->next) {
     struct gcobj *root = h->v;
@@ -202,9 +193,9 @@ static void collect(struct mutator *mut) {
   marker_trace(space);
   marker_release(space);
   DEBUG("done marking\n");
-  cx->sweep = cx->heap_base;
-  clear_freelists(cx);
-  cx->count++;
+  space->sweep = space->heap_base;
+  clear_freelists(space);
+  space->count++;
 }
 
 static void push_free(struct gcobj_free **loc, struct gcobj_free *obj) {
@@ -212,12 +203,12 @@ static void push_free(struct gcobj_free **loc, struct gcobj_free *obj) {
   *loc = obj;
 }
 
-static void push_small(struct context *cx, void *region,
+static void push_small(struct mark_space *space, void *region,
                        enum small_object_size kind, size_t region_granules) {
   uintptr_t addr = (uintptr_t) region;
   while (region_granules) {
     size_t granules = small_object_granule_sizes[kind];
-    struct gcobj_free **loc = get_small_object_freelist(cx, kind);
+    struct gcobj_free **loc = get_small_object_freelist(space, kind);
     while (granules <= region_granules) {
       push_free(loc, (struct gcobj_free*) addr);
       region_granules -= granules;
@@ -228,21 +219,21 @@ static void push_small(struct context *cx, void *region,
   }
 }
 
-static void push_large(struct context *cx, void *region, size_t granules) {
+static void push_large(struct mark_space *space, void *region, size_t granules) {
   struct gcobj_free_large *large = region;
-  large->next = cx->large_objects;
+  large->next = space->large_objects;
   large->granules = granules;
-  cx->large_objects = large;
+  space->large_objects = large;
 }
 
-static void reclaim(struct context *cx, void *obj, size_t granules) {
+static void reclaim(struct mark_space *space, void *obj, size_t granules) {
   if (granules <= LARGE_OBJECT_GRANULE_THRESHOLD)
-    push_small(cx, obj, SMALL_OBJECT_SIZES - 1, granules);
+    push_small(space, obj, SMALL_OBJECT_SIZES - 1, granules);
   else
-    push_large(cx, obj, granules);
+    push_large(space, obj, granules);
 }
 
-static void split_large_object(struct context *cx,
+static void split_large_object(struct mark_space *space,
                                 struct gcobj_free_large *large,
                                 size_t granules) {
   size_t large_granules = large->granules;
@@ -258,7 +249,7 @@ static void split_large_object(struct context *cx,
     return;
   
   char *tail = ((char*)large) + granules * GRANULE_SIZE;
-  reclaim(cx, tail, large_granules - granules);
+  reclaim(space, tail, large_granules - granules);
 }
 
 static void unlink_large_object(struct gcobj_free_large **prev,
@@ -311,10 +302,9 @@ static size_t next_mark(const uint8_t *mark, size_t limit) {
 static int sweep(struct mark_space *space, size_t for_granules) {
   // Sweep until we have reclaimed 128 granules (1024 kB), or we reach
   // the end of the heap.
-  struct context *cx = mark_space_context(space);
   ssize_t to_reclaim = 128;
-  uintptr_t sweep = cx->sweep;
-  uintptr_t limit = cx->heap_base + cx->heap_size;
+  uintptr_t sweep = space->sweep;
+  uintptr_t limit = space->heap_base + space->heap_size;
 
   if (sweep == limit)
     return 0;
@@ -328,7 +318,7 @@ static int sweep(struct mark_space *space, size_t for_granules) {
     if (free_granules) {
       size_t free_bytes = free_granules * GRANULE_SIZE;
       clear_memory(sweep + GRANULE_SIZE, free_bytes - GRANULE_SIZE);
-      reclaim(cx, (void*)sweep, free_granules);
+      reclaim(space, (void*)sweep, free_granules);
       sweep += free_bytes;
       to_reclaim -= free_granules;
 
@@ -342,35 +332,35 @@ static int sweep(struct mark_space *space, size_t for_granules) {
     sweep += live_object_granules((struct gcobj *)sweep) * GRANULE_SIZE;
   }
 
-  cx->sweep = sweep;
+  space->sweep = sweep;
   return 1;
 }
 
 static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
                             size_t granules) {
-  struct context *cx = mutator_context(mut);
+  struct mark_space *space = mutator_mark_space(mut);
   int swept_from_beginning = 0;
   struct gcobj_free_large *already_scanned = NULL;
   while (1) {
     do {
-      struct gcobj_free_large **prev = &cx->large_objects;
-      for (struct gcobj_free_large *large = cx->large_objects;
+      struct gcobj_free_large **prev = &space->large_objects;
+      for (struct gcobj_free_large *large = space->large_objects;
            large != already_scanned;
            prev = &large->next, large = large->next) {
         if (large->granules >= granules) {
           unlink_large_object(prev, large);
-          split_large_object(cx, large, granules);
+          split_large_object(space, large, granules);
           struct gcobj *obj = (struct gcobj *)large;
           obj->tag = tag_live(kind);
           return large;
         }
       }
-      already_scanned = cx->large_objects;
+      already_scanned = space->large_objects;
     } while (sweep(mutator_mark_space(mut), granules));
 
     // No large object, and we swept across the whole heap.  Collect.
     if (swept_from_beginning) {
-      fprintf(stderr, "ran out of space, heap size %zu\n", cx->heap_size);
+      fprintf(stderr, "ran out of space, heap size %zu\n", space->heap_size);
       abort();
     } else {
       collect(mut);
@@ -380,7 +370,7 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
 }
   
 static void fill_small(struct mutator *mut, enum small_object_size kind) {
-  struct context *cx = mutator_context(mut);
+  struct mark_space *space = mutator_mark_space(mut);
   int swept_from_beginning = 0;
   while (1) {
     // First see if there are small objects already on the freelists
@@ -388,12 +378,12 @@ static void fill_small(struct mutator *mut, enum small_object_size kind) {
     for (enum small_object_size next_kind = kind;
          next_kind < SMALL_OBJECT_SIZES;
          next_kind++) {
-      struct gcobj_free **loc = get_small_object_freelist(cx, next_kind);
+      struct gcobj_free **loc = get_small_object_freelist(space, next_kind);
       if (*loc) {
         if (kind != next_kind) {
           struct gcobj_free *ret = *loc;
           *loc = ret->next;
-          push_small(cx, ret, kind,
+          push_small(space, ret, kind,
                      small_object_granule_sizes[next_kind]);
         }
         return;
@@ -401,17 +391,17 @@ static void fill_small(struct mutator *mut, enum small_object_size kind) {
     }
 
     // Otherwise if there is a large object, take and split it.
-    struct gcobj_free_large *large = cx->large_objects;
+    struct gcobj_free_large *large = space->large_objects;
     if (large) {
-      unlink_large_object(&cx->large_objects, large);
-      split_large_object(cx, large, LARGE_OBJECT_GRANULE_THRESHOLD);
-      push_small(cx, large, kind, LARGE_OBJECT_GRANULE_THRESHOLD);
+      unlink_large_object(&space->large_objects, large);
+      split_large_object(space, large, LARGE_OBJECT_GRANULE_THRESHOLD);
+      push_small(space, large, kind, LARGE_OBJECT_GRANULE_THRESHOLD);
       return;
     }
 
     if (!sweep(mutator_mark_space(mut), LARGE_OBJECT_GRANULE_THRESHOLD)) {
       if (swept_from_beginning) {
-        fprintf(stderr, "ran out of space, heap size %zu\n", cx->heap_size);
+        fprintf(stderr, "ran out of space, heap size %zu\n", space->heap_size);
         abort();
       } else {
         collect(mut);
@@ -424,8 +414,8 @@ static void fill_small(struct mutator *mut, enum small_object_size kind) {
 static inline void* allocate_small(struct mutator *mut,
                                    enum alloc_kind alloc_kind,
                                    enum small_object_size small_kind) {
-  struct context *cx = mutator_context(mut);
-  struct gcobj_free **loc = get_small_object_freelist(cx, small_kind);
+  struct mark_space *space = mutator_mark_space(mut);
+  struct gcobj_free **loc = get_small_object_freelist(space, small_kind);
   if (!*loc)
     fill_small(mut, small_kind);
   struct gcobj_free *ret = *loc;
@@ -481,29 +471,28 @@ static int initialize_gc(size_t size, struct heap **heap,
   *heap = calloc(1, sizeof(struct heap));
   if (!*heap) abort();
   struct mark_space *space = heap_mark_space(*heap);
-  struct context *cx = &space->cx;
 
-  cx->mem = mem;
-  cx->mem_size = size;
+  space->mem = mem;
+  space->mem_size = size;
   // If there is 1 mark byte per granule, and SIZE bytes available for
   // HEAP_SIZE + MARK_BYTES, then:
   //
   //   size = (granule_size + 1) / granule_size * heap_size
   //   mark_bytes = 1/granule_size * heap_size
   //   mark_bytes = ceil(size / (granule_size + 1))
-  cx->mark_bytes = (uint8_t *)mem;
+  space->mark_bytes = (uint8_t *)mem;
   size_t mark_bytes_size = (size + GRANULE_SIZE) / (GRANULE_SIZE + 1);
   size_t overhead = align_up(mark_bytes_size, GRANULE_SIZE);
 
-  cx->heap_base = ((uintptr_t) mem) + overhead;
-  cx->heap_size = size - overhead;
+  space->heap_base = ((uintptr_t) mem) + overhead;
+  space->heap_size = size - overhead;
 
-  clear_freelists(cx);
-  cx->sweep = cx->heap_base + cx->heap_size;
-  cx->count = 0;
+  clear_freelists(space);
+  space->sweep = space->heap_base + space->heap_size;
+  space->count = 0;
   if (!marker_init(space))
     abort();
-  reclaim(cx, (void*)cx->heap_base, size_to_granules(cx->heap_size));
+  reclaim(space, (void*)space->heap_base, size_to_granules(space->heap_size));
 
   *mut = calloc(1, sizeof(struct mutator));
   if (!*mut) abort();
@@ -526,7 +515,7 @@ static inline void print_start_gc_stats(struct heap *heap) {
 }
 
 static inline void print_end_gc_stats(struct heap *heap) {
-  struct context *cx = mark_space_context(heap_mark_space(heap));
-  printf("Completed %ld collections\n", cx->count);
-  printf("Heap size with overhead is %zd\n", cx->mem_size);
+  struct mark_space *space = heap_mark_space(heap);
+  printf("Completed %ld collections\n", space->count);
+  printf("Heap size with overhead is %zd\n", space->mem_size);
 }
