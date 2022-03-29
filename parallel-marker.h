@@ -17,10 +17,12 @@
 // for Weak Memory Models" (Lê et al, PPoPP'13)
 // (http://www.di.ens.fr/%7Ezappa/readings/ppopp13.pdf).
 
+struct gcobj;
+
 struct mark_buf {
   unsigned log_size;
   size_t size;
-  atomic_uintptr_t *data;
+  struct gcobj **data;
 };
 
 // Min size: 8 kB on 64-bit systems, 4 kB on 32-bit.
@@ -32,7 +34,7 @@ static int
 mark_buf_init(struct mark_buf *buf, unsigned log_size) {
   ASSERT(log_size >= mark_buf_min_log_size);
   ASSERT(log_size <= mark_buf_max_log_size);
-  size_t size = (1 << log_size) * sizeof(uintptr_t);
+  size_t size = (1 << log_size) * sizeof(struct gcobj *);
   void *mem = mmap(NULL, size, PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
@@ -53,7 +55,7 @@ mark_buf_size(struct mark_buf *buf) {
 
 static inline size_t
 mark_buf_byte_size(struct mark_buf *buf) {
-  return mark_buf_size(buf) * sizeof(uintptr_t);
+  return mark_buf_size(buf) * sizeof(struct gcobj *);
 }
 
 static void
@@ -72,14 +74,14 @@ mark_buf_destroy(struct mark_buf *buf) {
   }
 }
 
-static inline uintptr_t
+static inline struct gcobj *
 mark_buf_get(struct mark_buf *buf, size_t i) {
   return atomic_load_explicit(&buf->data[i & (buf->size - 1)],
                               memory_order_relaxed);
 }
 
 static inline void
-mark_buf_put(struct mark_buf *buf, size_t i, uintptr_t o) {
+mark_buf_put(struct mark_buf *buf, size_t i, struct gcobj * o) {
   return atomic_store_explicit(&buf->data[i & (buf->size - 1)],
                                o,
                                memory_order_relaxed);
@@ -96,9 +98,6 @@ mark_buf_grow(struct mark_buf *from, struct mark_buf *to,
     mark_buf_put(to, i, mark_buf_get(from, i));
   return 1;
 }
-
-static const uintptr_t mark_deque_empty = 0;
-static const uintptr_t mark_deque_abort = 1;
 
 // Chase-Lev work-stealing deque.  One thread pushes data into the deque
 // at the bottom, and many threads compete to steal data from the top.
@@ -158,7 +157,7 @@ mark_deque_grow(struct mark_deque *q, int cur, size_t b, size_t t) {
 }
 
 static void
-mark_deque_push(struct mark_deque *q, uintptr_t x) {
+mark_deque_push(struct mark_deque *q, struct gcobj * x) {
   size_t b = LOAD_RELAXED(&q->bottom);
   size_t t = LOAD_ACQUIRE(&q->top);
   int active = LOAD_RELAXED(&q->active);
@@ -171,7 +170,22 @@ mark_deque_push(struct mark_deque *q, uintptr_t x) {
   STORE_RELAXED(&q->bottom, b + 1);
 }
 
-static uintptr_t
+static void
+mark_deque_push_many(struct mark_deque *q, struct gcobj **objv, size_t count) {
+  size_t b = LOAD_RELAXED(&q->bottom);
+  size_t t = LOAD_ACQUIRE(&q->top);
+  int active = LOAD_RELAXED(&q->active);
+
+  while (b - t > mark_buf_size(&q->bufs[active]) - count) /* Full queue. */
+    active = mark_deque_grow(q, active, b, t);
+
+  for (size_t i = 0; i < count; i++)
+    mark_buf_put(&q->bufs[active], b + i, objv[i]);
+  atomic_thread_fence(memory_order_release);
+  STORE_RELAXED(&q->bottom, b + count);
+}
+
+static struct gcobj *
 mark_deque_try_pop(struct mark_deque *q) {
   size_t b = LOAD_RELAXED(&q->bottom);
   b = b - 1;
@@ -179,7 +193,7 @@ mark_deque_try_pop(struct mark_deque *q) {
   STORE_RELAXED(&q->bottom, b);
   atomic_thread_fence(memory_order_seq_cst);
   size_t t = LOAD_RELAXED(&q->top);
-  uintptr_t x;
+  struct gcobj * x;
   if (t <= b) { // Non-empty queue.
     x = mark_buf_get(&q->bufs[active], b);
     if (t == b) { // Single last element in queue.
@@ -187,32 +201,33 @@ mark_deque_try_pop(struct mark_deque *q) {
                                                    memory_order_seq_cst,
                                                    memory_order_relaxed))
         // Failed race.
-        x = mark_deque_empty;
+        x = NULL;
       STORE_RELAXED(&q->bottom, b + 1);
     }
   } else { // Empty queue.
-    x = mark_deque_empty;
+    x = NULL;
     STORE_RELAXED(&q->bottom, b + 1);
   }
   return x;
 }
 
-static uintptr_t
+static struct gcobj *
 mark_deque_steal(struct mark_deque *q) {
-  size_t t = LOAD_ACQUIRE(&q->top);
-  atomic_thread_fence(memory_order_seq_cst);
-  size_t b = LOAD_ACQUIRE(&q->bottom);
-  uintptr_t x = mark_deque_empty;
-  if (t < b) { // Non-empty queue.
+  while (1) {
+    size_t t = LOAD_ACQUIRE(&q->top);
+    atomic_thread_fence(memory_order_seq_cst);
+    size_t b = LOAD_ACQUIRE(&q->bottom);
+    if (t >= b)
+      return NULL;
     int active = LOAD_CONSUME(&q->active);
-    x = mark_buf_get(&q->bufs[active], t);
+    struct gcobj *x = x = mark_buf_get(&q->bufs[active], t);
     if (!atomic_compare_exchange_strong_explicit(&q->top, &t, t + 1,
                                                  memory_order_seq_cst,
                                                  memory_order_relaxed))
       // Failed race.
-      return mark_deque_abort;
+      continue;
+    return x;
   }
-  return x;
 }
 
 static int
@@ -235,7 +250,7 @@ mark_deque_can_steal(struct mark_deque *q) {
 struct local_mark_queue {
   size_t read;
   size_t write;
-  uintptr_t data[LOCAL_MARK_QUEUE_SIZE];
+  struct gcobj * data[LOCAL_MARK_QUEUE_SIZE];
 };
 
 static inline void
@@ -259,10 +274,10 @@ local_mark_queue_full(struct local_mark_queue *q) {
   return local_mark_queue_size(q) >= LOCAL_MARK_QUEUE_SIZE;
 }
 static inline void
-local_mark_queue_push(struct local_mark_queue *q, uintptr_t v) {
+local_mark_queue_push(struct local_mark_queue *q, struct gcobj * v) {
   q->data[q->write++ & LOCAL_MARK_QUEUE_MASK] = v;
 }
-static inline uintptr_t
+static inline struct gcobj *
 local_mark_queue_pop(struct local_mark_queue *q) {
   return q->data[q->read++ & LOCAL_MARK_QUEUE_MASK];
 }
@@ -455,40 +470,33 @@ marker_visit(void **loc, void *mark_data) {
   if (obj && mark_object(mark->space, obj)) {
     if (local_mark_queue_full(&mark->local))
       marker_share(mark);
-    local_mark_queue_push(&mark->local, (uintptr_t)obj);
+    local_mark_queue_push(&mark->local, obj);
   }
 }
 
-static uintptr_t
+static struct gcobj *
 marker_steal_from_worker(struct marker *marker, size_t id) {
   ASSERT(id < marker->worker_count);
-  while (1) {
-    uintptr_t res = mark_deque_steal(&marker->workers[id].deque);
-    if (res == mark_deque_empty)
-      return 0;
-    if (res == mark_deque_abort)
-      continue;
-    return res;
-  }
+  return mark_deque_steal(&marker->workers[id].deque);
 }
 
-static uintptr_t
+static int
 marker_can_steal_from_worker(struct marker *marker, size_t id) {
   ASSERT(id < marker->worker_count);
   return mark_deque_can_steal(&marker->workers[id].deque);
 }
 
-static uintptr_t
+static struct gcobj *
 mark_worker_steal_from_any(struct mark_worker *worker, struct marker *marker) {
   size_t steal_id = worker->steal_id;
   for (size_t i = 0; i < marker->worker_count; i++) {
     steal_id = (steal_id + 1) % marker->worker_count;
     DEBUG("marker #%zu: stealing from #%zu\n", worker->id, steal_id);
-    uintptr_t addr = marker_steal_from_worker(marker, steal_id);
-    if (addr) {
-      DEBUG("marker #%zu: stealing got 0x%zx\n", worker->id, addr);
+    struct gcobj * obj = marker_steal_from_worker(marker, steal_id);
+    if (obj) {
+      DEBUG("marker #%zu: stealing got %p\n", worker->id, obj);
       worker->steal_id = steal_id;
-      return addr;
+      return obj;
     }
   }
   DEBUG("marker #%zu: failed to steal\n", worker->id);
@@ -548,19 +556,19 @@ mark_worker_check_termination(struct mark_worker *worker,
   }
 }
 
-static uintptr_t
+static struct gcobj *
 mark_worker_steal(struct local_marker *mark) {
   struct marker *marker = mark_space_marker(mark->space);
   struct mark_worker *worker = mark->worker;
 
   while (1) {
     DEBUG("marker #%zu: trying to steal\n", worker->id);
-    uintptr_t addr = mark_worker_steal_from_any(worker, marker);
-    if (addr)
-      return addr;
+    struct gcobj *obj = mark_worker_steal_from_any(worker, marker);
+    if (obj)
+      return obj;
 
     if (mark_worker_check_termination(worker, marker))
-      return 0;
+      return NULL;
   }
 }
 
@@ -575,15 +583,15 @@ mark_worker_mark(struct mark_worker *worker) {
   size_t n = 0;
   DEBUG("marker #%zu: running mark loop\n", worker->id);
   while (1) {
-    uintptr_t addr;
+    struct gcobj * obj;
     if (!local_mark_queue_empty(&mark.local)) {
-      addr = local_mark_queue_pop(&mark.local);
+      obj = local_mark_queue_pop(&mark.local);
     } else {
-      addr = mark_worker_steal(&mark);
-      if (!addr)
+      obj = mark_worker_steal(&mark);
+      if (!obj)
         break;
     }
-    trace_one((struct gcobj*)addr, &mark);
+    trace_one(obj, &mark);
     n++;
   }
   DEBUG("marker #%zu: done marking, %zu objects traced\n", worker->id, n);
@@ -594,7 +602,14 @@ mark_worker_mark(struct mark_worker *worker) {
 static inline void
 marker_enqueue_root(struct marker *marker, struct gcobj *obj) {
   struct mark_deque *worker0_deque = &marker->workers[0].deque;
-  mark_deque_push(worker0_deque, (uintptr_t)obj);
+  mark_deque_push(worker0_deque, obj);
+}
+
+static inline void
+marker_enqueue_roots(struct marker *marker, struct gcobj **objv,
+                     size_t count) {
+  struct mark_deque *worker0_deque = &marker->workers[0].deque;
+  mark_deque_push_many(worker0_deque, objv, count);
 }
 
 static inline void
