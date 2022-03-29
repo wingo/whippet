@@ -22,9 +22,9 @@ visit_quad_fields(Quad *quad,
 }
 typedef HANDLE_TO(Quad) QuadHandle;
 
-static Quad* allocate_quad(struct context *cx) {
+static Quad* allocate_quad(struct mutator *mut) {
   // memset to 0 by the collector.
-  return allocate(cx, ALLOC_KIND_QUAD, sizeof (Quad));
+  return allocate(mut, ALLOC_KIND_QUAD, sizeof (Quad));
 }
 
 /* Get the current time in microseconds */
@@ -37,22 +37,22 @@ static unsigned long current_time(void)
 }
 
 // Build tree bottom-up
-static Quad* make_tree(struct context *cx, int depth) {
+static Quad* make_tree(struct mutator *mut, int depth) {
   if (depth<=0) {
-    return allocate_quad(cx);
+    return allocate_quad(mut);
   } else {
     QuadHandle kids[4] = { { NULL }, };
     for (size_t i = 0; i < 4; i++) {
-      HANDLE_SET(kids[i], make_tree(cx, depth-1));
-      PUSH_HANDLE(cx, kids[i]);
+      HANDLE_SET(kids[i], make_tree(mut, depth-1));
+      PUSH_HANDLE(mut, kids[i]);
     }
 
-    Quad *result = allocate_quad(cx);
+    Quad *result = allocate_quad(mut);
     for (size_t i = 0; i < 4; i++)
       init_field((void**)&result->kids[i], HANDLE_REF(kids[i]));
 
     for (size_t i = 0; i < 4; i++)
-      POP_HANDLE(cx);
+      POP_HANDLE(mut);
 
     return result;
   }
@@ -127,18 +127,24 @@ int main(int argc, char *argv[]) {
   unsigned long gc_start = current_time();
   printf("Allocating heap of %.3fGB (%.2f multiplier of live data).\n",
          heap_size / 1e9, multiplier);
-  struct context *cx = initialize_gc(heap_size);
+  struct heap *heap;
+  struct mutator *mut;
+  if (!initialize_gc(heap_size, &heap, &mut)) {
+    fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
+            heap_size);
+    return 1;
+  }
 
   QuadHandle quad = { NULL };
 
-  PUSH_HANDLE(cx, quad);
+  PUSH_HANDLE(mut, quad);
 
-  print_start_gc_stats(cx);
+  print_start_gc_stats(heap);
 
   printf("Making quad tree of depth %zu (%zu nodes).  Total size %.3fGB.\n",
          depth, nquads, (nquads * sizeof(Quad)) / 1e9);
   unsigned long start = current_time();
-  HANDLE_SET(quad, make_tree(cx, depth));
+  HANDLE_SET(quad, make_tree(mut, depth));
   print_elapsed("construction", start);
 
   validate_tree(HANDLE_REF(quad), depth);
@@ -151,7 +157,7 @@ int main(int argc, char *argv[]) {
     size_t garbage_depth = 3;
     start = current_time();
     for (size_t i = garbage_step/(tree_size(garbage_depth)*4*sizeof(Quad*)); i; i--)
-      make_tree(cx, garbage_depth);
+      make_tree(mut, garbage_depth);
     print_elapsed("allocating garbage", start);
 
     start = current_time();
@@ -160,9 +166,9 @@ int main(int argc, char *argv[]) {
   print_elapsed("allocation loop", garbage_start);
   print_elapsed("quads test", gc_start);
 
-  print_end_gc_stats(cx);
+  print_end_gc_stats(heap);
 
-  POP_HANDLE(cx);
+  POP_HANDLE(mut);
   return 0;
 }
 
