@@ -116,12 +116,12 @@ struct context {
 struct mark_space { struct context cx; };
 struct heap { struct mark_space mark_space; };
 struct mutator {
-  struct heap heap;
+  struct heap *heap;
   struct handle *roots;
 };
 
 static inline struct heap* mutator_heap(struct mutator *mut) {
-  return &mut->heap;
+  return mut->heap;
 }
 static inline struct mark_space* heap_mark_space(struct heap *heap) {
   return &heap->mark_space;
@@ -472,11 +472,9 @@ static int initialize_gc(size_t size, struct heap **heap,
     return 0;
   }
 
-  *mut = calloc(1, sizeof(struct mutator));
-  if (!*mut) abort();
-  (*mut)->roots = NULL;
-  *heap = mutator_heap(*mut);
-  struct mark_space *space = mutator_mark_space(*mut);
+  *heap = calloc(1, sizeof(struct heap));
+  if (!*heap) abort();
+  struct mark_space *space = heap_mark_space(*heap);
   struct context *cx = &space->cx;
 
   cx->mem = mem;
@@ -500,6 +498,11 @@ static int initialize_gc(size_t size, struct heap **heap,
   if (!marker_init(cx))
     abort();
   reclaim(cx, (void*)cx->heap_base, size_to_granules(cx->heap_size));
+
+  *mut = calloc(1, sizeof(struct mutator));
+  if (!*mut) abort();
+  (*mut)->heap = *heap;
+  (*mut)->roots = NULL;
 
   return 1;
 }
