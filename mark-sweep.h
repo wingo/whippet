@@ -125,6 +125,7 @@ struct mark_space {
   size_t mem_size;
   long count;
   struct marker marker;
+  struct mutator *deactivated_mutators;
 };
 
 struct heap {
@@ -144,6 +145,7 @@ struct mutator {
   struct heap *heap;
   struct handle *roots;
   struct mutator_mark_buf mark_buf;
+  struct mutator *next;
 };
 
 static inline struct marker* mark_space_marker(struct mark_space *space) {
@@ -352,6 +354,11 @@ static void wait_for_mutators_to_stop(struct mark_space *space) {
     pthread_cond_wait(&space->collector_cond, &space->lock);
 }
 
+static void mark_inactive_mutators(struct mark_space *space) {
+  for (struct mutator *mut = space->deactivated_mutators; mut; mut = mut->next)
+    mark_controlling_mutator_roots(mut);
+}
+
 static void mark_global_roots(struct mark_space *space) {
   for (struct handle *h = space->global_roots; h; h = h->next) {
     struct gcobj *obj = h->v;
@@ -424,6 +431,7 @@ static void collect(struct mark_space *space, struct mutator *mut) {
   request_mutators_to_stop(space);
   mark_controlling_mutator_roots(mut);
   wait_for_mutators_to_stop(space);
+  mark_inactive_mutators(space);
   mark_global_roots(space);
   marker_trace(space);
   marker_release(space);
@@ -832,6 +840,42 @@ static void finish_gc_for_thread(struct mutator *mut) {
   remove_mutator(mutator_heap(mut), mut);
   mutator_mark_buf_destroy(&mut->mark_buf);
   free(mut);
+}
+
+static void deactivate_mutator(struct mark_space *space, struct mutator *mut) {
+  ASSERT(mut->next == NULL);
+  mark_space_lock(space);
+  mut->next = space->deactivated_mutators;
+  space->deactivated_mutators = mut;
+  space->active_mutator_count--;
+  if (!space->active_mutator_count && mutators_are_stopping(space))
+    pthread_cond_signal(&space->collector_cond);
+  mark_space_unlock(space);
+}
+
+static void reactivate_mutator(struct mark_space *space, struct mutator *mut) {
+  mark_space_lock(space);
+  while (mutators_are_stopping(space))
+    pthread_cond_wait(&space->mutator_cond, &space->lock);
+  struct mutator **prev = &space->deactivated_mutators;
+  while (*prev != mut)
+    prev = &(*prev)->next;
+  *prev = mut->next;
+  mut->next = NULL;
+  space->active_mutator_count++;
+  mark_space_unlock(space);
+}
+
+static void* call_without_gc(struct mutator *mut, void* (*f)(void*),
+                             void *data) NEVER_INLINE;
+static void* call_without_gc(struct mutator *mut,
+                             void* (*f)(void*),
+                             void *data) {
+  struct mark_space *space = mutator_mark_space(mut);
+  deactivate_mutator(space, mut);
+  void *ret = f(data);
+  reactivate_mutator(space, mut);
+  return ret;
 }
 
 static inline void print_start_gc_stats(struct heap *heap) {

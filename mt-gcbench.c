@@ -297,6 +297,14 @@ static void* run_one_test_in_thread(void *arg) {
   return call_with_gc(run_one_test, heap);
 }
 
+struct join_data { int status; pthread_t thread; };
+static void *join_thread(void *data) {
+  struct join_data *join_data = data;
+  void *ret;
+  join_data->status = pthread_join(join_data->thread, &ret);
+  return ret;
+}
+
 int main(int argc, char *argv[]) {
   // Define size of Node without any GC header.
   size_t sizeof_node = 2 * sizeof(Node*) + 2 * sizeof(int);
@@ -350,9 +358,10 @@ int main(int argc, char *argv[]) {
   }
   run_one_test(mut);
   for (size_t i = 1; i < nthreads; i++) {
-    int status = pthread_join(threads[i], NULL);
-    if (status) {
-      errno = status;
+    struct join_data data = { 0, threads[i] };
+    call_without_gc(mut, join_thread, &data);
+    if (data.status) {
+      errno = data.status;
       perror("Failed to join thread");
       return 1;
     }

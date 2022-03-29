@@ -204,6 +204,12 @@ static struct mutator* initialize_gc_for_thread(uintptr_t *stack_base,
 static void finish_gc_for_thread(struct mutator *space) {
 }
 
+static void* call_without_gc(struct mutator *mut, void* (*f)(void*),
+                             void *data) {
+  // Can't be threads, then there won't be collection.
+  return f(data);
+}
+
 static inline void print_start_gc_stats(struct heap *heap) {
 }
 

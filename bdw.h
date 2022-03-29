@@ -158,6 +158,14 @@ static void finish_gc_for_thread(struct mutator *mut) {
   GC_unregister_my_thread();
 }
 
+static void* call_without_gc(struct mutator *mut, void* (*f)(void*),
+                             void *data) NEVER_INLINE;
+static void* call_without_gc(struct mutator *mut,
+                             void* (*f)(void*),
+                             void *data) {
+  return GC_do_blocking(f, data);
+}
+
 static inline void print_start_gc_stats(struct heap *heap) {
 }
 static inline void print_end_gc_stats(struct heap *heap) {
