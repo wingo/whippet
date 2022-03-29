@@ -141,6 +141,8 @@ static void populate(struct mutator *mut, int depth, Node *node) {
 
   set_field((void**)&HANDLE_REF(self)->left, HANDLE_REF(l));
   set_field((void**)&HANDLE_REF(self)->right, HANDLE_REF(r));
+  // i is 0 because the memory is zeroed.
+  HANDLE_REF(self)->j = depth;
 
   populate(mut, depth-1, HANDLE_REF(self)->left);
   populate(mut, depth-1, HANDLE_REF(self)->right);
@@ -163,6 +165,8 @@ static Node* make_tree(struct mutator *mut, int depth) {
   Node *result = allocate_node(mut);
   init_field((void**)&result->left, HANDLE_REF(left));
   init_field((void**)&result->right, HANDLE_REF(right));
+  // i is 0 because the memory is zeroed.
+  result->j = depth;
 
   POP_HANDLE(mut);
   POP_HANDLE(mut);
@@ -173,7 +177,7 @@ static Node* make_tree(struct mutator *mut, int depth) {
 static void validate_tree(Node *tree, int depth) {
 #ifndef NDEBUG
   ASSERT_EQ(tree->i, 0);
-  ASSERT_EQ(tree->j, 0);
+  ASSERT_EQ(tree->j, depth);
   if (depth == 0) {
     ASSERT(!tree->left);
     ASSERT(!tree->right);
@@ -278,7 +282,7 @@ static void* run_one_test(struct mutator *mut) {
 
   // Fake reference to LongLivedTree and array to keep them from being optimized
   // away.
-  if (HANDLE_REF(long_lived_tree) == 0
+  if (HANDLE_REF(long_lived_tree)->i != 0
       || HANDLE_REF(array)->values[1000] != 1.0/1000)
     fprintf(stderr, "Failed\n");
 
