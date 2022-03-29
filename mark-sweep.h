@@ -1,3 +1,4 @@
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -102,6 +103,13 @@ struct gcobj {
 };
 
 struct mark_space {
+  pthread_mutex_t lock;
+  pthread_cond_t collector_cond;
+  pthread_cond_t mutator_cond;
+  int collecting;
+  int multithreaded;
+  size_t active_mutator_count;
+  size_t mutator_count;
   struct gcobj_freelists small_objects;
   // Unordered list of large objects.
   struct gcobj_free_large *large_objects;
@@ -110,6 +118,7 @@ struct mark_space {
   uintptr_t heap_base;
   size_t heap_size;
   uintptr_t sweep;
+  struct handle *global_roots;
   struct mutator_mark_buf *mutator_roots;
   void *mem;
   size_t mem_size;
@@ -204,12 +213,61 @@ static void clear_global_freelists(struct mark_space *space) {
   space->large_objects = NULL;
 }
 
+static int space_has_multiple_mutators(struct mark_space *space) {
+  return atomic_load_explicit(&space->multithreaded, memory_order_relaxed);
+}
+
+static int mutators_are_stopping(struct mark_space *space) {
+  return atomic_load_explicit(&space->collecting, memory_order_relaxed);
+}
+
+static inline void mark_space_lock(struct mark_space *space) {
+  pthread_mutex_lock(&space->lock);
+}
+static inline void mark_space_unlock(struct mark_space *space) {
+  pthread_mutex_unlock(&space->lock);
+}
+
 static void add_mutator(struct heap *heap, struct mutator *mut) {
   mut->heap = heap;
+  struct mark_space *space = heap_mark_space(heap);
+  mark_space_lock(space);
+  // We have no roots.  If there is a GC currently in progress, we have
+  // nothing to add.  Just wait until it's done.
+  while (mutators_are_stopping(space))
+    pthread_cond_wait(&space->mutator_cond, &space->lock);
+  if (space->mutator_count == 1)
+    space->multithreaded = 1;
+  space->active_mutator_count++;
+  space->mutator_count++;
+  mark_space_unlock(space);
 }
 
 static void remove_mutator(struct heap *heap, struct mutator *mut) {
   mut->heap = NULL;
+  struct mark_space *space = heap_mark_space(heap);
+  mark_space_lock(space);
+  space->active_mutator_count--;
+  space->mutator_count--;
+  // We have no roots.  If there is a GC stop currently in progress,
+  // maybe tell the controller it can continue.
+  if (mutators_are_stopping(space) && space->active_mutator_count == 0)
+    pthread_cond_signal(&space->collector_cond);
+  mark_space_unlock(space);
+}
+
+static void request_mutators_to_stop(struct mark_space *space) {
+  ASSERT(!mutators_are_stopping(space));
+  atomic_store_explicit(&space->collecting, 1, memory_order_relaxed);
+}
+
+static void allow_mutators_to_continue(struct mark_space *space) {
+  ASSERT(mutators_are_stopping(space));
+  ASSERT(space->active_mutator_count == 0);
+  space->active_mutator_count++;
+  atomic_store_explicit(&space->collecting, 0, memory_order_relaxed);
+  ASSERT(!mutators_are_stopping(space));
+  pthread_cond_broadcast(&space->mutator_cond);
 }
 
 static void mutator_mark_buf_grow(struct mutator_mark_buf *buf) {
@@ -253,7 +311,9 @@ static void mutator_mark_buf_destroy(struct mutator_mark_buf *buf) {
     munmap(buf->objects, bytes);
 }
 
-static void mark_mutator_roots(struct mutator *mut) {
+// Mark the roots of a mutator that is stopping for GC.  We can't
+// enqueue them directly, so we send them to the controller in a buffer.
+static void mark_stopping_mutator_roots(struct mutator *mut) {
   struct mark_space *space = mutator_mark_space(mut);
   struct mutator_mark_buf *local_roots = &mut->mark_buf;
   for (struct handle *h = mut->roots; h; h = h->next) {
@@ -263,20 +323,78 @@ static void mark_mutator_roots(struct mutator *mut) {
   }
 
   // Post to global linked-list of thread roots.
-  struct mutator_mark_buf *next = space->mutator_roots;
-  local_roots->next = next;
-  space->mutator_roots = local_roots;
+  struct mutator_mark_buf *next =
+    atomic_load_explicit(&space->mutator_roots, memory_order_acquire);
+  do {
+    local_roots->next = next;
+  } while (!atomic_compare_exchange_weak(&space->mutator_roots,
+                                         &next, local_roots));
 }
 
-static void release_mutator_roots(struct mutator *mut) {
+// Mark the roots of the mutator that causes GC.
+static void mark_controlling_mutator_roots(struct mutator *mut) {
+  struct mark_space *space = mutator_mark_space(mut);
+  for (struct handle *h = mut->roots; h; h = h->next) {
+    struct gcobj *root = h->v;
+    if (root && mark_object(space, root))
+      marker_enqueue_root(&space->marker, root);
+  }
+}
+
+static void release_stopping_mutator_roots(struct mutator *mut) {
   mutator_mark_buf_release(&mut->mark_buf);
 }
 
+static void wait_for_mutators_to_stop(struct mark_space *space) {
+  space->active_mutator_count--;
+  while (space->active_mutator_count)
+    pthread_cond_wait(&space->collector_cond, &space->lock);
+}
+
 static void mark_global_roots(struct mark_space *space) {
-  struct mutator_mark_buf *roots = space->mutator_roots;
+  for (struct handle *h = space->global_roots; h; h = h->next) {
+    struct gcobj *obj = h->v;
+    if (obj && mark_object(space, obj))
+      marker_enqueue_root(&space->marker, obj);
+  }
+
+  struct mutator_mark_buf *roots = atomic_load(&space->mutator_roots);
   for (; roots; roots = roots->next)
     marker_enqueue_roots(&space->marker, roots->objects, roots->size);
-  space->mutator_roots = NULL;
+  atomic_store(&space->mutator_roots, NULL);
+}
+
+static void pause_mutator_for_collection(struct mutator *mut) NEVER_INLINE;
+static void pause_mutator_for_collection(struct mutator *mut) {
+  struct mark_space *space = mutator_mark_space(mut);
+  ASSERT(mutators_are_stopping(space));
+  mark_stopping_mutator_roots(mut);
+  mark_space_lock(space);
+  ASSERT(space->active_mutator_count);
+  space->active_mutator_count--;
+  if (space->active_mutator_count == 0)
+    pthread_cond_signal(&space->collector_cond);
+
+  // Go to sleep and wake up when the collector is done.  Note,
+  // however, that it may be that some other mutator manages to
+  // trigger collection before we wake up.  In that case we need to
+  // mark roots, not just sleep again.  To detect a wakeup on this
+  // collection vs a future collection, we use the global GC count.
+  // This is safe because the count is protected by the space lock,
+  // which we hold.
+  long epoch = space->count;
+  do
+    pthread_cond_wait(&space->mutator_cond, &space->lock);
+  while (mutators_are_stopping(space) && space->count == epoch);
+
+  space->active_mutator_count++;
+  mark_space_unlock(space);
+  release_stopping_mutator_roots(mut);
+}
+
+static inline void maybe_pause_mutator_for_collection(struct mutator *mut) {
+  while (mutators_are_stopping(mutator_mark_space(mut)))
+    pause_mutator_for_collection(mut);
 }
 
 static void reset_sweeper(struct mark_space *space) {
@@ -286,14 +404,16 @@ static void reset_sweeper(struct mark_space *space) {
 static void collect(struct mark_space *space, struct mutator *mut) {
   DEBUG("start collect #%ld:\n", space->count);
   marker_prepare(space);
-  mark_mutator_roots(mut);
+  request_mutators_to_stop(space);
+  mark_controlling_mutator_roots(mut);
+  wait_for_mutators_to_stop(space);
   mark_global_roots(space);
   marker_trace(space);
   marker_release(space);
   clear_global_freelists(space);
   reset_sweeper(space);
   space->count++;
-  release_mutator_roots(mut);
+  allow_mutators_to_continue(space);
   clear_mutator_freelists(mut);
   DEBUG("collect done\n");
 }
@@ -443,8 +563,12 @@ static int sweep(struct mark_space *space,
 static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
                             size_t granules) {
   struct mark_space *space = mutator_mark_space(mut);
-  struct gcobj_freelists *small_objects = &mut->small_objects;
+  struct gcobj_freelists *small_objects = space_has_multiple_mutators(space) ?
+    &space->small_objects : &mut->small_objects;
 
+  maybe_pause_mutator_for_collection(mut);
+
+  mark_space_lock(space);
   int swept_from_beginning = 0;
   while (1) {
     struct gcobj_free_large *already_scanned = NULL;
@@ -456,6 +580,7 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
         if (large->granules >= granules) {
           unlink_large_object(prev, large);
           split_large_object(space, small_objects, large, granules);
+          mark_space_unlock(space);
           struct gcobj *obj = (struct gcobj *)large;
           obj->tag = tag_live(kind);
           return large;
@@ -469,7 +594,13 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
       fprintf(stderr, "ran out of space, heap size %zu\n", space->heap_size);
       abort();
     } else {
-      collect(space, mut);
+      if (mutators_are_stopping(space)) {
+        mark_space_unlock(space);
+        pause_mutator_for_collection(mut);
+        mark_space_lock(space);
+      } else {
+        collect(space, mut);
+      }
       swept_from_beginning = 1;
     }
   }
@@ -497,6 +628,7 @@ static int fill_small_from_local(struct gcobj_freelists *small_objects,
   return 0;
 }
 
+// with space lock
 static int fill_small_from_large(struct mark_space *space,
                                  struct gcobj_freelists *small_objects,
                                  enum small_object_size kind) {
@@ -516,6 +648,8 @@ static int fill_small_from_large(struct mark_space *space,
 static int fill_small_from_global_small(struct mark_space *space,
                                         struct gcobj_freelists *small_objects,
                                         enum small_object_size kind) {
+  if (!space_has_multiple_mutators(space))
+    return 0;
   struct gcobj_freelists *global_small = &space->small_objects;
   if (*get_small_object_freelist(global_small, kind)
       || fill_small_from_local(global_small, kind)) {
@@ -538,6 +672,9 @@ static void fill_small_from_global(struct mutator *mut,
   struct gcobj_freelists *small_objects = &mut->small_objects;
   struct mark_space *space = mutator_mark_space(mut);
 
+  maybe_pause_mutator_for_collection(mut);
+
+  mark_space_lock(space);
   int swept_from_beginning = 0;
   while (1) {
     if (fill_small_from_global_small(space, small_objects, kind))
@@ -551,7 +688,13 @@ static void fill_small_from_global(struct mutator *mut,
         fprintf(stderr, "ran out of space, heap size %zu\n", space->heap_size);
         abort();
       } else {
-        collect(space, mut);
+        if (mutators_are_stopping(space)) {
+          mark_space_unlock(space);
+          pause_mutator_for_collection(mut);
+          mark_space_lock(space);
+        } else {
+          collect(space, mut);
+        }
         swept_from_beginning = 1;
       }
     }
@@ -561,6 +704,7 @@ static void fill_small_from_global(struct mutator *mut,
     if (fill_small_from_local(small_objects, kind))
       break;
   }
+  mark_space_unlock(space);
 }
 
 static void fill_small(struct mutator *mut, enum small_object_size kind) {
@@ -644,6 +788,10 @@ static int initialize_gc(size_t size, struct heap **heap,
   size_t mark_bytes_size = (size + GRANULE_SIZE) / (GRANULE_SIZE + 1);
   size_t overhead = align_up(mark_bytes_size, GRANULE_SIZE);
 
+  pthread_mutex_init(&space->lock, NULL);
+  pthread_cond_init(&space->mutator_cond, NULL);
+  pthread_cond_init(&space->collector_cond, NULL);
+
   space->heap_base = ((uintptr_t) mem) + overhead;
   space->heap_size = size - overhead;
   space->sweep = space->heap_base + space->heap_size;
@@ -659,12 +807,18 @@ static int initialize_gc(size_t size, struct heap **heap,
 }
 
 static struct mutator* initialize_gc_for_thread(uintptr_t *stack_base,
-                                                struct heap *parent) {
-  fprintf(stderr,
-          "Multiple mutator threads not yet implemented.\n");
-  exit(1);
+                                                struct heap *heap) {
+  struct mutator *ret = calloc(1, sizeof(struct mutator));
+  if (!ret)
+    abort();
+  add_mutator(heap, ret);
+  return ret;
 }
-static void finish_gc_for_thread(struct mutator *heap) {
+
+static void finish_gc_for_thread(struct mutator *mut) {
+  remove_mutator(mutator_heap(mut), mut);
+  mutator_mark_buf_destroy(&mut->mark_buf);
+  free(mut);
 }
 
 static inline void print_start_gc_stats(struct heap *heap) {
