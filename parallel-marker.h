@@ -276,7 +276,7 @@ enum mark_worker_state {
 };
 
 struct mark_worker {
-  struct context *cx;
+  struct mark_space *space;
   size_t id;
   size_t steal_id;
   pthread_t thread;
@@ -301,19 +301,19 @@ struct marker {
 struct local_marker {
   struct mark_worker *worker;
   struct mark_deque *share_deque;
-  struct context *cx;
+  struct mark_space *space;
   struct local_mark_queue local;
 };
 
 struct context;
-static inline struct marker* context_marker(struct context *cx);
+static inline struct marker* mark_space_marker(struct mark_space *space);
 
 static size_t number_of_current_processors(void) { return 1; }
 
 static int
-mark_worker_init(struct mark_worker *worker, struct context *cx,
+mark_worker_init(struct mark_worker *worker, struct mark_space *space,
                  struct marker *marker, size_t id) {
-  worker->cx = cx;
+  worker->space = space;
   worker->id = id;
   worker->steal_id = 0;
   worker->thread = 0;
@@ -367,7 +367,7 @@ mark_worker_spawn(struct mark_worker *worker) {
 
 static void
 mark_worker_request_mark(struct mark_worker *worker) {
-  struct marker *marker = context_marker(worker->cx);
+  struct marker *marker = mark_space_marker(worker->space);
     
   pthread_mutex_lock(&worker->lock);
   ASSERT(worker->state == MARK_WORKER_IDLE);
@@ -379,7 +379,7 @@ mark_worker_request_mark(struct mark_worker *worker) {
 static void
 mark_worker_finished_marking(struct mark_worker *worker) {
   // Signal controller that we are done with marking.
-  struct marker *marker = context_marker(worker->cx);
+  struct marker *marker = mark_space_marker(worker->space);
     
   if (atomic_fetch_sub(&marker->running_markers, 1) == 1) {
     pthread_mutex_lock(&marker->lock);
@@ -399,8 +399,8 @@ mark_worker_request_stop(struct mark_worker *worker) {
 }  
 
 static int
-marker_init(struct context *cx) {
-  struct marker *marker = context_marker(cx);
+marker_init(struct mark_space *space) {
+  struct marker *marker = mark_space_marker(space);
   atomic_init(&marker->active_markers, 0);
   atomic_init(&marker->running_markers, 0);
   marker->count = 0;
@@ -414,7 +414,7 @@ marker_init(struct context *cx) {
   if (desired_worker_count > MARK_WORKERS_MAX_COUNT)
     desired_worker_count = MARK_WORKERS_MAX_COUNT;
   for (size_t i = 0; i < desired_worker_count; i++) {
-    if (!mark_worker_init(&marker->workers[i], cx, marker, i))
+    if (!mark_worker_init(&marker->workers[i], space, marker, i))
       break;
     if (mark_worker_spawn(&marker->workers[i]))
       marker->worker_count++;
@@ -424,13 +424,13 @@ marker_init(struct context *cx) {
   return marker->worker_count > 0;
 }
 
-static void marker_prepare(struct context *cx) {
-  struct marker *marker = context_marker(cx);
+static void marker_prepare(struct mark_space *space) {
+  struct marker *marker = mark_space_marker(space);
   for (size_t i = 0; i < marker->worker_count; i++)
     marker->workers[i].steal_id = 0;
 }
-static void marker_release(struct context *cx) {
-  struct marker *marker = context_marker(cx);
+static void marker_release(struct mark_space *space) {
+  struct marker *marker = mark_space_marker(space);
   for (size_t i = 0; i < marker->worker_count; i++)
     mark_deque_release(&marker->workers[i].deque);
 }
@@ -438,7 +438,7 @@ static void marker_release(struct context *cx) {
 struct gcobj;
 static inline void marker_visit(void **loc, void *mark_data) ALWAYS_INLINE;
 static inline void trace_one(struct gcobj *obj, void *mark_data) ALWAYS_INLINE;
-static inline int mark_object(struct context *cx,
+static inline int mark_object(struct mark_space *space,
                               struct gcobj *obj) ALWAYS_INLINE;
 
 static inline void
@@ -452,7 +452,7 @@ static inline void
 marker_visit(void **loc, void *mark_data) {
   struct local_marker *mark = mark_data;
   struct gcobj *obj = *loc;
-  if (obj && mark_object(mark->cx, obj)) {
+  if (obj && mark_object(mark->space, obj)) {
     if (local_mark_queue_full(&mark->local))
       marker_share(mark);
     local_mark_queue_push(&mark->local, (uintptr_t)obj);
@@ -550,7 +550,7 @@ mark_worker_check_termination(struct mark_worker *worker,
 
 static uintptr_t
 mark_worker_steal(struct local_marker *mark) {
-  struct marker *marker = context_marker(mark->cx);
+  struct marker *marker = mark_space_marker(mark->space);
   struct mark_worker *worker = mark->worker;
 
   while (1) {
@@ -569,7 +569,7 @@ mark_worker_mark(struct mark_worker *worker) {
   struct local_marker mark;
   mark.worker = worker;
   mark.share_deque = &worker->deque;
-  mark.cx = worker->cx;
+  mark.space = worker->space;
   local_mark_queue_init(&mark.local);
 
   size_t n = 0;
@@ -592,16 +592,14 @@ mark_worker_mark(struct mark_worker *worker) {
 }
 
 static inline void
-marker_visit_root(void **loc, struct context *cx) {
-  struct gcobj *obj = *loc;
-  struct mark_deque *worker0_deque = &context_marker(cx)->workers[0].deque;
-  if (obj && mark_object(cx, obj))
-    mark_deque_push(worker0_deque, (uintptr_t)obj);
+marker_enqueue_root(struct marker *marker, struct gcobj *obj) {
+  struct mark_deque *worker0_deque = &marker->workers[0].deque;
+  mark_deque_push(worker0_deque, (uintptr_t)obj);
 }
 
 static inline void
-marker_trace(struct context *cx) {
-  struct marker *marker = context_marker(cx);
+marker_trace(struct mark_space *space) {
+  struct marker *marker = mark_space_marker(space);
 
   pthread_mutex_lock(&marker->lock);
   long mark_count = marker->count;

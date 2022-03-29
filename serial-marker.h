@@ -124,40 +124,45 @@ struct marker {
   struct mark_queue queue;
 };
 
-struct context;
-static inline struct marker* context_marker(struct context *cx);
+struct mark_space;
+static inline struct marker* mark_space_marker(struct mark_space *space);
 
 static int
-marker_init(struct context *cx) {
-  return mark_queue_init(&context_marker(cx)->queue);
+marker_init(struct mark_space *space) {
+  return mark_queue_init(&mark_space_marker(space)->queue);
 }
-static void marker_prepare(struct context *cx) {}
-static void marker_release(struct context *cx) {
-  mark_queue_release(&context_marker(cx)->queue);
+static void marker_prepare(struct mark_space *space) {}
+static void marker_release(struct mark_space *space) {
+  mark_queue_release(&mark_space_marker(space)->queue);
 }
 
 struct gcobj;
 static inline void marker_visit(void **loc, void *mark_data) ALWAYS_INLINE;
 static inline void trace_one(struct gcobj *obj, void *mark_data) ALWAYS_INLINE;
-static inline int mark_object(struct context *cx,
+static inline int mark_object(struct mark_space *space,
                               struct gcobj *obj) ALWAYS_INLINE;
 
 static inline void
+marker_enqueue_root(struct marker *marker, struct gcobj *obj) {
+  mark_queue_push(&marker->queue, obj);
+}
+static inline void
+marker_enqueue_roots(struct marker *marker, struct gcobj **objs,
+                     size_t count) {
+  mark_queue_push_many(&marker->queue, objs, count);
+}
+static inline void
 marker_visit(void **loc, void *mark_data) {
-  struct context *cx = mark_data;
+  struct mark_space *space = mark_data;
   struct gcobj *obj = *loc;
-  if (obj && mark_object(cx, obj))
-    mark_queue_push(&context_marker(cx)->queue, obj);
+  if (obj && mark_object(space, obj))
+    marker_enqueue_root(mark_space_marker(space), obj);
 }
 static inline void
-marker_visit_root(void **loc, struct context *cx) {
-  marker_visit(loc, cx);
-}
-static inline void
-marker_trace(struct context *cx) {
+marker_trace(struct mark_space *space) {
   struct gcobj *obj;
-  while ((obj = mark_queue_pop(&context_marker(cx)->queue)))
-    trace_one(obj, cx);
+  while ((obj = mark_queue_pop(&mark_space_marker(space)->queue)))
+    trace_one(obj, space);
 }
 
 #endif // SERIAL_MARK_H

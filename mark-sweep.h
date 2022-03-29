@@ -136,8 +136,8 @@ static inline struct context* mutator_context(struct mutator *mut) {
   return mark_space_context(mutator_mark_space(mut));
 }
 
-static inline struct marker* context_marker(struct context *cx) {
-  return &cx->marker;
+static inline struct marker* mark_space_marker(struct mark_space *space) {
+  return &mark_space_context(space)->marker;
 }
 
 static inline struct gcobj_free**
@@ -154,15 +154,16 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
 
 static void collect(struct mutator *mut) NEVER_INLINE;
 
-static inline uint8_t* mark_byte(struct context *cx, struct gcobj *obj) {
+static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
+  struct context *cx = mark_space_context(space);
   ASSERT(cx->heap_base <= (uintptr_t) obj);
   ASSERT((uintptr_t) obj < cx->heap_base + cx->heap_size);
   uintptr_t granule = (((uintptr_t) obj) - cx->heap_base)  / GRANULE_SIZE;
   return &cx->mark_bytes[granule];
 }
 
-static inline int mark_object(struct context *cx, struct gcobj *obj) {
-  uint8_t *byte = mark_byte(cx, obj);
+static inline int mark_object(struct mark_space *space, struct gcobj *obj) {
+  uint8_t *byte = mark_byte(space, obj);
   if (*byte)
     return 0;
   *byte = 1;
@@ -189,13 +190,17 @@ static void clear_freelists(struct context *cx) {
 }
 
 static void collect(struct mutator *mut) {
+  struct mark_space *space = mutator_mark_space(mut);
   struct context *cx = mutator_context(mut);
   DEBUG("start collect #%ld:\n", cx->count);
-  marker_prepare(cx);
-  for (struct handle *h = mut->roots; h; h = h->next)
-    marker_visit_root(&h->v, cx);
-  marker_trace(cx);
-  marker_release(cx);
+  marker_prepare(space);
+  for (struct handle *h = mut->roots; h; h = h->next) {
+    struct gcobj *root = h->v;
+    if (root && mark_object(space, root))
+      marker_enqueue_root(mark_space_marker(space), root);
+  }
+  marker_trace(space);
+  marker_release(space);
   DEBUG("done marking\n");
   cx->sweep = cx->heap_base;
   clear_freelists(cx);
@@ -303,9 +308,10 @@ static size_t next_mark(const uint8_t *mark, size_t limit) {
 
 // Sweep some heap to reclaim free space.  Return 1 if there is more
 // heap to sweep, or 0 if we reached the end.
-static int sweep(struct context *cx, size_t for_granules) {
+static int sweep(struct mark_space *space, size_t for_granules) {
   // Sweep until we have reclaimed 128 granules (1024 kB), or we reach
   // the end of the heap.
+  struct context *cx = mark_space_context(space);
   ssize_t to_reclaim = 128;
   uintptr_t sweep = cx->sweep;
   uintptr_t limit = cx->heap_base + cx->heap_size;
@@ -314,7 +320,7 @@ static int sweep(struct context *cx, size_t for_granules) {
     return 0;
 
   while (to_reclaim > 0 && sweep < limit) {
-    uint8_t* mark = mark_byte(cx, (struct gcobj*)sweep);
+    uint8_t* mark = mark_byte(space, (struct gcobj*)sweep);
     size_t limit_granules = (limit - sweep) >> GRANULE_SIZE_LOG_2;
     if (limit_granules > for_granules)
       limit_granules = for_granules;
@@ -360,7 +366,7 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
         }
       }
       already_scanned = cx->large_objects;
-    } while (sweep(cx, granules));
+    } while (sweep(mutator_mark_space(mut), granules));
 
     // No large object, and we swept across the whole heap.  Collect.
     if (swept_from_beginning) {
@@ -403,7 +409,7 @@ static void fill_small(struct mutator *mut, enum small_object_size kind) {
       return;
     }
 
-    if (!sweep(cx, LARGE_OBJECT_GRANULE_THRESHOLD)) {
+    if (!sweep(mutator_mark_space(mut), LARGE_OBJECT_GRANULE_THRESHOLD)) {
       if (swept_from_beginning) {
         fprintf(stderr, "ran out of space, heap size %zu\n", cx->heap_size);
         abort();
@@ -495,7 +501,7 @@ static int initialize_gc(size_t size, struct heap **heap,
   clear_freelists(cx);
   cx->sweep = cx->heap_base + cx->heap_size;
   cx->count = 0;
-  if (!marker_init(cx))
+  if (!marker_init(space))
     abort();
   reclaim(cx, (void*)cx->heap_base, size_to_granules(cx->heap_size));
 
