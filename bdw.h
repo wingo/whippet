@@ -34,7 +34,6 @@ struct heap {
 
 struct mutator {
   void *freelists[GC_INLINE_FREELIST_COUNT];
-  void *pointerless_freelists[GC_INLINE_FREELIST_COUNT];
   struct heap *heap;
 };
 
@@ -94,13 +93,10 @@ static inline void* allocate(struct mutator *mut, enum alloc_kind kind,
 
 static inline void* allocate_pointerless(struct mutator *mut,
                                          enum alloc_kind kind, size_t size) {
-  size_t idx = gc_inline_bytes_to_freelist_index(size);
-
-  if (UNLIKELY (idx >= GC_INLINE_FREELIST_COUNT))
-    return GC_malloc_atomic(size);
-
-  return allocate_small(&mut->pointerless_freelists[idx], idx,
-                        GC_INLINE_KIND_POINTERLESS);
+  // Because the BDW API requires us to implement a custom marker so
+  // that the pointerless freelist gets traced, even though it's in a
+  // pointerless region, we punt on thread-local pointerless freelists.
+  return GC_malloc_atomic(size);
 }
 
 static inline void collect(struct mutator *mut) {
@@ -138,6 +134,7 @@ static int initialize_gc(size_t heap_size, struct heap **heap,
     GC_set_max_heap_size (heap_size);
     GC_expand_hp(heap_size - current_heap_size);
   }
+  GC_allow_register_threads();
   *heap = GC_malloc(sizeof(struct heap));
   pthread_mutex_init(&(*heap)->lock, NULL);
   *mutator = add_mutator(*heap);
