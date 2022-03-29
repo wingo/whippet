@@ -102,6 +102,7 @@ struct gcobj {
 };
 
 struct mark_space {
+  struct gcobj_freelists small_objects;
   // Unordered list of large objects.
   struct gcobj_free_large *large_objects;
   uintptr_t base;
@@ -199,6 +200,7 @@ static void clear_mutator_freelists(struct mutator *mut) {
   clear_small_freelists(&mut->small_objects);
 }
 static void clear_global_freelists(struct mark_space *space) {
+  clear_small_freelists(&space->small_objects);
   space->large_objects = NULL;
 }
 
@@ -511,6 +513,24 @@ static int fill_small_from_large(struct mark_space *space,
   return 1;
 }
 
+static int fill_small_from_global_small(struct mark_space *space,
+                                        struct gcobj_freelists *small_objects,
+                                        enum small_object_size kind) {
+  struct gcobj_freelists *global_small = &space->small_objects;
+  if (*get_small_object_freelist(global_small, kind)
+      || fill_small_from_local(global_small, kind)) {
+    struct gcobj_free **src = get_small_object_freelist(global_small, kind);
+    ASSERT(*src);
+    struct gcobj_free **dst = get_small_object_freelist(small_objects, kind);
+    ASSERT(!*dst);
+    // FIXME: just take a few?
+    *dst = *src;
+    *src = NULL;
+    return 1;
+  }
+  return 0;
+}
+
 static void fill_small_from_global(struct mutator *mut,
                                    enum small_object_size kind) NEVER_INLINE;
 static void fill_small_from_global(struct mutator *mut,
@@ -520,6 +540,9 @@ static void fill_small_from_global(struct mutator *mut,
 
   int swept_from_beginning = 0;
   while (1) {
+    if (fill_small_from_global_small(space, small_objects, kind))
+      break;
+
     if (fill_small_from_large(space, small_objects, kind))
       break;
 
@@ -648,7 +671,6 @@ static inline void print_start_gc_stats(struct heap *heap) {
 }
 
 static inline void print_end_gc_stats(struct heap *heap) {
-  struct mark_space *space = heap_mark_space(heap);
-  printf("Completed %ld collections\n", space->count);
-  printf("Heap size with overhead is %zd\n", space->mem_size);
+  printf("Completed %ld collections\n", heap_mark_space(heap)->count);
+  printf("Heap size with overhead is %zd\n", heap_mark_space(heap)->mem_size);
 }
