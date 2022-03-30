@@ -471,13 +471,32 @@ static void push_large(struct mark_space *space, void *region, size_t granules) 
   space->large_objects = large;
 }
 
+static void reclaim_small(struct gcobj_freelists *small_objects,
+                          enum small_object_size kind,
+                          void *region, size_t region_granules) {
+  ASSERT(kind != NOT_SMALL_OBJECT);
+  struct gcobj_free **loc = get_small_object_freelist(small_objects, kind);
+  uintptr_t addr = (uintptr_t) region;
+  size_t object_granules = small_object_granule_sizes[kind];
+  while (region_granules >= object_granules) {
+    push_free(loc, (struct gcobj_free*) addr);
+    region_granules -= object_granules;
+    addr += object_granules * GRANULE_SIZE;
+  }
+  // Any leftover granules are wasted!
+}
+
 static void reclaim(struct mark_space *space,
                     struct gcobj_freelists *small_objects,
-                    void *obj, size_t granules) {
-  if (granules <= LARGE_OBJECT_GRANULE_THRESHOLD)
-    push_small(small_objects, obj, SMALL_OBJECT_SIZES - 1, granules);
+                    enum small_object_size kind,
+                    void *region,
+                    size_t region_granules) {
+  if (kind != NOT_SMALL_OBJECT)
+    reclaim_small(small_objects, kind, region, region_granules);
+  else if (region_granules <= LARGE_OBJECT_GRANULE_THRESHOLD)
+    push_small(small_objects, region, SMALL_OBJECT_SIZES - 1, region_granules);
   else
-    push_large(space, obj, granules);
+    push_large(space, region, region_granules);
 }
 
 static void split_large_object(struct mark_space *space,
@@ -497,7 +516,8 @@ static void split_large_object(struct mark_space *space,
     return;
   
   char *tail = ((char*)large) + granules * GRANULE_SIZE;
-  reclaim(space, small_objects, tail, large_granules - granules);
+  reclaim(space, small_objects, NOT_SMALL_OBJECT, tail,
+          large_granules - granules);
 }
 
 static void unlink_large_object(struct gcobj_free_large **prev,
@@ -548,10 +568,12 @@ static size_t next_mark(const uint8_t *mark, size_t limit) {
 // Sweep some heap to reclaim free space.  Return 1 if there is more
 // heap to sweep, or 0 if we reached the end.
 static int sweep(struct mark_space *space,
-                 struct gcobj_freelists *small_objects, size_t for_granules) {
-  // Sweep until we have reclaimed 128 granules (1024 kB), or we reach
-  // the end of the heap.
-  ssize_t to_reclaim = 128;
+                 struct gcobj_freelists *small_objects,
+                 enum small_object_size kind,
+                 size_t large_object_granules) {
+  // Sweep until we have reclaimed 32 kB of free memory, or we reach the
+  // end of the heap.
+  ssize_t to_reclaim = 32 * 1024 / GRANULE_SIZE;
   uintptr_t sweep = space->sweep;
   uintptr_t limit = space->heap_base + space->heap_size;
 
@@ -561,13 +583,19 @@ static int sweep(struct mark_space *space,
   while (to_reclaim > 0 && sweep < limit) {
     uint8_t* mark = mark_byte(space, (struct gcobj*)sweep);
     size_t limit_granules = (limit - sweep) >> GRANULE_SIZE_LOG_2;
-    if (limit_granules > for_granules)
-      limit_granules = for_granules;
+    if (limit_granules > to_reclaim) {
+      if (kind == NOT_SMALL_OBJECT) {
+        if (large_object_granules < limit_granules)
+          limit_granules = large_object_granules;
+      } else {
+        limit_granules = to_reclaim;
+      }
+    }
     size_t free_granules = next_mark(mark, limit_granules);
     if (free_granules) {
       size_t free_bytes = free_granules * GRANULE_SIZE;
       clear_memory(sweep + GRANULE_SIZE, free_bytes - GRANULE_SIZE);
-      reclaim(space, small_objects, (void*)sweep, free_granules);
+      reclaim(space, small_objects, kind, (void*)sweep, free_granules);
       sweep += free_bytes;
       to_reclaim -= free_granules;
 
@@ -616,7 +644,7 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
         }
       }
       already_scanned = space->large_objects;
-    } while (sweep(space, small_objects, granules));
+    } while (sweep(space, small_objects, NOT_SMALL_OBJECT, granules));
 
     // No large object, and we swept across the whole heap.  Collect.
     if (swept_from_beginning) {
@@ -671,16 +699,11 @@ static int fill_small_from_large(struct mark_space *space,
 static int fill_small_from_global_small(struct mark_space *space,
                                         struct gcobj_freelists *small_objects,
                                         enum small_object_size kind) {
-  if (!space_has_multiple_mutators(space))
-    return 0;
-  struct gcobj_freelists *global_small = &space->small_objects;
-  if (*get_small_object_freelist(global_small, kind)
-      || fill_small_from_local(global_small, kind)) {
-    struct gcobj_free **src = get_small_object_freelist(global_small, kind);
-    ASSERT(*src);
+  struct gcobj_free **src =
+    get_small_object_freelist(&space->small_objects, kind);
+  if (*src) {
     struct gcobj_free **dst = get_small_object_freelist(small_objects, kind);
     ASSERT(!*dst);
-    // FIXME: just take a few?
     *dst = *src;
     *src = NULL;
     return 1;
@@ -710,7 +733,8 @@ static void fill_small_from_global(struct mutator *mut,
     if (fill_small_from_large(space, small_objects, kind))
       break;
 
-    if (!sweep(space, small_objects, LARGE_OBJECT_GRANULE_THRESHOLD)) {
+    // By default, pull in 16 kB of data at a time.
+    if (!sweep(space, small_objects, kind, 0)) {
       if (swept_from_beginning) {
         fprintf(stderr, "ran out of space, heap size %zu\n", space->heap_size);
         abort();
@@ -721,8 +745,6 @@ static void fill_small_from_global(struct mutator *mut,
     }
 
     if (*get_small_object_freelist(small_objects, kind))
-      break;
-    if (fill_small_from_local(small_objects, kind))
       break;
   }
   mark_space_unlock(space);
@@ -818,7 +840,7 @@ static int initialize_gc(size_t size, struct heap **heap,
   space->sweep = space->heap_base + space->heap_size;
   if (!marker_init(space))
     abort();
-  reclaim(space, NULL, (void*)space->heap_base,
+  reclaim(space, NULL, NOT_SMALL_OBJECT, (void*)space->heap_base,
           size_to_granules(space->heap_size));
 
   *mut = calloc(1, sizeof(struct mutator));
