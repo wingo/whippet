@@ -68,7 +68,7 @@ majority of use cases.
 ## To do
 
  - [X] Implement a parallel marker for the mark-sweep collector.
- - [ ] Adapt all GC implementations to allow multiple mutator threads.
+ - [X] Adapt all GC implementations to allow multiple mutator threads.
    Update gcbench.c.
  - [ ] Implement precise non-moving Immix whole-heap collector.
  - [ ] Add evacuation to Immix whole-heap collector.
