@@ -5,6 +5,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "large-object-space.h"
 #include "precise-roots.h"
 
 struct semi_space {
@@ -16,6 +17,7 @@ struct semi_space {
 };
 struct heap {
   struct semi_space semi_space;
+  struct large_object_space large_object_space;
 };
 // One mutator per space, can just store the heap in the mutator.
 struct mutator {
@@ -28,6 +30,9 @@ static inline struct heap* mutator_heap(struct mutator *mut) {
 }
 static inline struct semi_space* heap_semi_space(struct heap *heap) {
   return &heap->semi_space;
+}
+static inline struct large_object_space* heap_large_object_space(struct heap *heap) {
+  return &heap->large_object_space;
 }
 static inline struct semi_space* mutator_semi_space(struct mutator *mut) {
   return heap_semi_space(mutator_heap(mut));
@@ -172,24 +177,34 @@ static inline void* get_field(void **addr) {
   return *addr;
 }
 
-static int initialize_gc(size_t heap_size, struct heap **heap,
-                         struct mutator **mut) {
-  void *mem = mmap(NULL, heap_size, PROT_READ|PROT_WRITE,
+static int initialize_semi_space(struct semi_space *space, size_t size) {
+  void *mem = mmap(NULL, size, PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
     perror("mmap failed");
     return 0;
   }
 
+  space->hp = space->base = (uintptr_t) mem;
+  space->size = size;
+  space->count = -1;
+  flip(space);
+
+  return 1;
+}
+  
+static int initialize_gc(size_t heap_size, struct heap **heap,
+                         struct mutator **mut) {
   *mut = calloc(1, sizeof(struct mutator));
   if (!*mut) abort();
   *heap = mutator_heap(*mut);
-  struct semi_space *space = mutator_semi_space(*mut);
 
-  space->hp = space->base = (uintptr_t) mem;
-  space->size = heap_size;
-  space->count = -1;
-  flip(space);
+  struct semi_space *space = mutator_semi_space(*mut);
+  if (!initialize_semi_space(space, heap_size))
+    return 0;
+  if (!large_object_space_init(heap_large_object_space(*heap), *heap))
+    return 0;
+  
   (*mut)->roots = NULL;
 
   return 1;

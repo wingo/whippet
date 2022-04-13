@@ -136,13 +136,14 @@ static int hash_set_contains(struct hash_set *set, uintptr_t v) {
   }
   return 0;
 }
-static inline void hash_set_for_each (struct hash_set *set,
-                                      void (*f)(uintptr_t, void*), void *data) __attribute__((always_inline));
-static inline void hash_set_for_each(struct hash_set *set,
-                                     void (*f)(uintptr_t, void*), void *data) {
+static inline void hash_set_find(struct hash_set *set,
+                                 int (*f)(uintptr_t, void*), void *data) __attribute__((always_inline));
+static inline void hash_set_find(struct hash_set *set,
+                                 int (*f)(uintptr_t, void*), void *data) {
   for (size_t i = 0; i < set->size; i++)
     if (!hash_set_slot_is_empty(set, i))
-      f(hash_set_slot_ref(set, i), data);
+      if (f(hash_set_slot_ref(set, i), data))
+        return;
 }
   
 struct address_set {
@@ -178,16 +179,33 @@ struct address_set_for_each_data {
   void (*f)(uintptr_t, void *);
   void *data;
 };
-static void address_set_do_for_each(uintptr_t v, void *data) {
+static int address_set_do_for_each(uintptr_t v, void *data) {
   struct address_set_for_each_data *for_each_data = data;
   for_each_data->f(unhash_address(v), for_each_data->data);
+  return 0;
 }
-static inline void address_set_for_each (struct address_set *set,
-                                         void (*f)(uintptr_t, void*), void *data) __attribute__((always_inline));
-static inline void address_set_for_each (struct address_set *set,
-                                         void (*f)(uintptr_t, void*), void *data) {
+static inline void address_set_for_each(struct address_set *set,
+                                        void (*f)(uintptr_t, void*), void *data) __attribute__((always_inline));
+static inline void address_set_for_each(struct address_set *set,
+                                        void (*f)(uintptr_t, void*), void *data) {
   struct address_set_for_each_data for_each_data = { f, data };
-  hash_set_for_each(&set->hash_set, address_set_do_for_each, &for_each_data);
+  hash_set_find(&set->hash_set, address_set_do_for_each, &for_each_data);
+}
+
+struct address_set_find_data {
+  int (*f)(uintptr_t, void *);
+  void *data;
+};
+static int address_set_do_find(uintptr_t v, void *data) {
+  struct address_set_find_data *find_data = data;
+  return find_data->f(unhash_address(v), find_data->data);
+}
+static inline void address_set_find(struct address_set *set,
+                                    int (*f)(uintptr_t, void*), void *data) __attribute__((always_inline));
+static inline void address_set_find(struct address_set *set,
+                                    int (*f)(uintptr_t, void*), void *data) {
+  struct address_set_find_data find_data = { f, data };
+  hash_set_find(&set->hash_set, address_set_do_find, &find_data);
 }
 
 #endif // ADDRESS_SET_H

@@ -45,7 +45,7 @@
 #include <sys/time.h>
 
 #include "assert.h"
-#include "gcbench-types.h"
+#include "mt-gcbench-types.h"
 #include "gc.h"
 #include "inline.h"
 
