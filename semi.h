@@ -55,6 +55,23 @@ static void collect_for_alloc(struct mutator *mut, size_t bytes) NEVER_INLINE;
 
 static void visit(void **loc, void *visit_data);
 
+static int semi_space_steal_pages(struct semi_space *space, size_t npages) {
+  size_t page_size = getpagesize();
+
+  if (npages & 1) npages++;
+  size_t half_size = (npages * page_size) >> 1;
+  if (space->limit - space->hp < half_size)
+    return 0;
+
+  space->limit -= half_size;
+  size_t tospace_offset = space->limit - space->base;
+  madvise((void*)(space->base + tospace_offset), half_size, MADV_DONTNEED);
+  size_t fromspace_offset =
+    (tospace_offset + (space->size >> 1)) & (space->size - 1);
+  madvise((void*)(space->base + fromspace_offset), half_size, MADV_DONTNEED);
+  return 1;
+}
+
 static void flip(struct semi_space *space) {
   uintptr_t split = space->base + (space->size >> 1);
   if (space->hp <= split) {
@@ -86,13 +103,13 @@ static void* copy(struct semi_space *space, uintptr_t kind, void *obj) {
   return new_obj;
 }
 
-static uintptr_t scan(struct semi_space *space, uintptr_t grey) {
+static uintptr_t scan(struct heap *heap, uintptr_t grey) {
   void *obj = (void*)grey;
   uintptr_t kind = *(uintptr_t*) obj;
   switch (kind) {
 #define SCAN_OBJECT(name, Name, NAME) \
     case ALLOC_KIND_##NAME: \
-      visit_##name##_fields((Name*)obj, visit, space); \
+      visit_##name##_fields((Name*)obj, visit, heap); \
       return grey + align_up(name##_size((Name*)obj), ALIGNMENT);
     FOR_EACH_HEAP_OBJECT_KIND(SCAN_OBJECT)
 #undef SCAN_OBJECT
@@ -114,25 +131,53 @@ static void* forward(struct semi_space *space, void *obj) {
   }
 }  
 
-static void visit(void **loc, void *visit_data) {
-  struct semi_space *space = visit_data;
-  void *obj = *loc;
-  if (obj != NULL)
-    *loc = forward(space, obj);
+static void visit_semi_space(struct heap *heap, struct semi_space *space,
+                             void **loc, void *obj) {
+  *loc = forward(space, obj);
 }
-static void collect(struct mutator *mut) {
-  struct semi_space *space = mutator_semi_space(mut);
-  // fprintf(stderr, "start collect #%ld:\n", space->count);
-  flip(space);
-  uintptr_t grey = space->hp;
-  for (struct handle *h = mut->roots; h; h = h->next)
-    visit(&h->v, space);
-  // fprintf(stderr, "pushed %zd bytes in roots\n", space->hp - grey);
-  while(grey < space->hp)
-    grey = scan(space, grey);
-  // fprintf(stderr, "%zd bytes copied\n", (space->size>>1)-(space->limit-space->hp));
 
+static void visit_large_object_space(struct heap *heap,
+                                     struct large_object_space *space,
+                                     void **loc, void *obj) {
+  if (large_object_space_copy(space, (uintptr_t)obj))
+    scan(heap, (uintptr_t)obj);
 }
+
+static int semi_space_contains(struct semi_space *space, void *obj) {
+  return (((uintptr_t)obj) - space->base) < space->size;
+}
+
+static void visit(void **loc, void *visit_data) {
+  struct heap *heap = visit_data;
+  void *obj = *loc;
+  if (obj == NULL)
+    return;
+  if (semi_space_contains(heap_semi_space(heap), obj))
+    visit_semi_space(heap, heap_semi_space(heap), loc, obj);
+  else if (large_object_space_contains(heap_large_object_space(heap), obj))
+    visit_large_object_space(heap, heap_large_object_space(heap), loc, obj);
+  else
+    abort();
+}
+
+static void collect(struct mutator *mut) {
+  struct heap *heap = mutator_heap(mut);
+  struct semi_space *semi = heap_semi_space(heap);
+  struct large_object_space *large = heap_large_object_space(heap);
+  // fprintf(stderr, "start collect #%ld:\n", space->count);
+  large_object_space_start_gc(large);
+  flip(semi);
+  uintptr_t grey = semi->hp;
+  for (struct handle *h = mut->roots; h; h = h->next)
+    visit(&h->v, heap);
+  // fprintf(stderr, "pushed %zd bytes in roots\n", space->hp - grey);
+  while(grey < semi->hp)
+    grey = scan(heap, grey);
+  large_object_space_finish_gc(large);
+  semi_space_steal_pages(semi, large->live_pages_at_last_collection);
+  // fprintf(stderr, "%zd bytes copied\n", (space->size>>1)-(space->limit-space->hp));
+}
+
 static void collect_for_alloc(struct mutator *mut, size_t bytes) {
   collect(mut);
   struct semi_space *space = mutator_semi_space(mut);
@@ -142,8 +187,40 @@ static void collect_for_alloc(struct mutator *mut, size_t bytes) {
   }
 }
 
+static const size_t LARGE_OBJECT_THRESHOLD = 8192;
+static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
+                            size_t size) {
+  struct heap *heap = mutator_heap(mut);
+  struct large_object_space *space = heap_large_object_space(heap);
+  struct semi_space *semi_space = heap_semi_space(heap);
+
+  size_t npages = large_object_space_npages(space, size);
+  if (!semi_space_steal_pages(semi_space, npages)) {
+    collect(mut);
+    if (!semi_space_steal_pages(semi_space, npages)) {
+      fprintf(stderr, "ran out of space, heap size %zu\n", semi_space->size);
+      abort();
+    }
+  }
+
+  void *ret = large_object_space_alloc(space, npages);
+  if (!ret)
+    ret = large_object_space_obtain_and_alloc(space, npages);
+
+  if (!ret) {
+    perror("weird: we have the space but mmap didn't work");
+    abort();
+  }
+
+  *(uintptr_t*)ret = kind;
+  return ret;
+}
+
 static inline void* allocate(struct mutator *mut, enum alloc_kind kind,
                              size_t size) {
+  if (size >= LARGE_OBJECT_THRESHOLD)
+    return allocate_large(mut, kind, size);
+
   struct semi_space *space = mutator_semi_space(mut);
   while (1) {
     uintptr_t addr = space->hp;

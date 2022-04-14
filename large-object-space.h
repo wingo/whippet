@@ -43,13 +43,18 @@ static int large_object_space_init(struct large_object_space *space,
                                    struct heap *heap) {
   pthread_mutex_init(&space->lock, NULL);
   space->page_size = getpagesize();
-  space->page_size_log2 = __builtin_clz(space->page_size);
+  space->page_size_log2 = __builtin_ctz(space->page_size);
   address_set_init(&space->from_space);
   address_set_init(&space->to_space);
   address_set_init(&space->free_space);
   address_map_init(&space->object_pages);
   address_map_init(&space->predecessors);
   return 1;
+}
+
+static size_t large_object_space_npages(struct large_object_space *space,
+                                       size_t bytes) {
+  return (bytes + space->page_size - 1) >> space->page_size_log2;
 }
 
 static void large_object_space_start_gc(struct large_object_space *space) {
@@ -156,12 +161,11 @@ static int large_object_space_best_fit(uintptr_t addr, void *data) {
   return found->min_npages == npages;
 }
     
-static inline void* large_object_space_alloc(struct large_object_space *space,
-                                             size_t size) {
+static void* large_object_space_alloc(struct large_object_space *space,
+                                      size_t npages) {
   void *ret;
   pthread_mutex_lock(&space->lock);
   ret = NULL;
-  size_t npages = (size + space->page_size - 1) >> space->page_size_log2;
   struct large_object_space_candidate found = { space, npages, 0, -1 };
   address_set_find(&space->free_space, large_object_space_best_fit, &found);
   if (found.addr) {
@@ -182,6 +186,26 @@ static inline void* large_object_space_alloc(struct large_object_space *space,
     space->free_pages -= npages;
   }
   pthread_mutex_unlock(&space->lock);
+  return ret;
+}
+
+static void*
+large_object_space_obtain_and_alloc(struct large_object_space *space,
+                                    size_t npages) {
+  size_t bytes = npages * space->page_size;
+  void *ret = mmap(NULL, bytes, PROT_READ|PROT_WRITE,
+                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+  if (ret == MAP_FAILED)
+    return NULL;
+
+  uintptr_t addr = (uintptr_t)ret;
+  pthread_mutex_lock(&space->lock);
+  address_map_add(&space->object_pages, addr, npages);
+  address_map_add(&space->predecessors, addr + bytes, addr);
+  address_set_add(&space->to_space, addr);
+  space->total_pages += npages;
+  pthread_mutex_unlock(&space->lock);
+
   return ret;
 }
 
