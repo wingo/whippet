@@ -11,6 +11,10 @@
 struct semi_space {
   uintptr_t hp;
   uintptr_t limit;
+  uintptr_t from_space;
+  uintptr_t to_space;
+  size_t page_size;
+  size_t stolen_pages;
   uintptr_t base;
   size_t size;
   long count;
@@ -56,31 +60,38 @@ static void collect_for_alloc(struct mutator *mut, size_t bytes) NEVER_INLINE;
 static void visit(void **loc, void *visit_data);
 
 static int semi_space_steal_pages(struct semi_space *space, size_t npages) {
-  size_t page_size = getpagesize();
+  size_t stolen_pages = space->stolen_pages + npages;
+  size_t old_limit_size = space->limit - space->to_space;
+  size_t new_limit_size =
+    (space->size - align_up(stolen_pages, 2) * space->page_size) / 2;
 
-  if (npages & 1) npages++;
-  size_t half_size = (npages * page_size) >> 1;
-  if (space->limit - space->hp < half_size)
+  if (space->to_space + new_limit_size < space->hp)
     return 0;
 
-  space->limit -= half_size;
-  size_t tospace_offset = space->limit - space->base;
-  madvise((void*)(space->base + tospace_offset), half_size, MADV_DONTNEED);
-  size_t fromspace_offset =
-    (tospace_offset + (space->size >> 1)) & (space->size - 1);
-  madvise((void*)(space->base + fromspace_offset), half_size, MADV_DONTNEED);
+  space->limit = space->to_space + new_limit_size;
+  space->stolen_pages = stolen_pages;
+
+  madvise((void*)(space->to_space + new_limit_size),
+          old_limit_size - new_limit_size,
+          MADV_DONTNEED);
+  madvise((void*)(space->from_space + new_limit_size),
+          old_limit_size - new_limit_size,
+          MADV_DONTNEED);
   return 1;
 }
 
+static void semi_space_set_stolen_pages(struct semi_space *space, size_t npages) {
+  space->stolen_pages = npages;
+  size_t limit_size =
+    (space->size - align_up(npages, 2) * space->page_size) / 2;
+  space->limit = space->to_space + limit_size;
+}
+
 static void flip(struct semi_space *space) {
-  uintptr_t split = space->base + (space->size >> 1);
-  if (space->hp <= split) {
-    space->hp = split;
-    space->limit = space->base + space->size;
-  } else {
-    space->hp = space->base;
-    space->limit = split;
-  }
+  space->hp = space->from_space;
+  space->from_space = space->to_space;
+  space->to_space = space->hp;
+  space->limit = space->hp + space->size / 2;
   space->count++;
 }  
 
@@ -174,7 +185,7 @@ static void collect(struct mutator *mut) {
   while(grey < semi->hp)
     grey = scan(heap, grey);
   large_object_space_finish_gc(large);
-  semi_space_steal_pages(semi, large->live_pages_at_last_collection);
+  semi_space_set_stolen_pages(semi, large->live_pages_at_last_collection);
   // fprintf(stderr, "%zd bytes copied\n", (space->size>>1)-(space->limit-space->hp));
 }
 
@@ -255,6 +266,10 @@ static inline void* get_field(void **addr) {
 }
 
 static int initialize_semi_space(struct semi_space *space, size_t size) {
+  // Allocate even numbers of pages.
+  size_t page_size = getpagesize();
+  size = align_up(size, page_size * 2);
+
   void *mem = mmap(NULL, size, PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
@@ -262,10 +277,12 @@ static int initialize_semi_space(struct semi_space *space, size_t size) {
     return 0;
   }
 
-  space->hp = space->base = (uintptr_t) mem;
+  space->to_space = space->hp = space->base = (uintptr_t) mem;
+  space->from_space = space->base + size / 2;
+  space->page_size = page_size;
+  space->stolen_pages = 0;
   space->size = size;
-  space->count = -1;
-  flip(space);
+  space->count = 0;
 
   return 1;
 }
