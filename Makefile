@@ -14,13 +14,13 @@ all: $(ALL_TESTS)
 bdw-%: bdw.h conservative-roots.h %-types.h %.c
 	$(COMPILE) `pkg-config --libs --cflags bdw-gc` -DGC_BDW -o $@ $*.c
 
-semi-%: semi.h precise-roots.h %-types.h heap-objects.h %.c
+semi-%: semi.h precise-roots.h large-object-space.h %-types.h heap-objects.h %.c
 	$(COMPILE) -DGC_SEMI -o $@ $*.c
 
-mark-sweep-%: mark-sweep.h precise-roots.h serial-tracer.h assert.h debug.h %-types.h heap-objects.h %.c
+mark-sweep-%: mark-sweep.h precise-roots.h large-object-space.h serial-tracer.h assert.h debug.h %-types.h heap-objects.h %.c
 	$(COMPILE) -DGC_MARK_SWEEP -o $@ $*.c
 
-parallel-mark-sweep-%: mark-sweep.h precise-roots.h parallel-tracer.h assert.h debug.h %-types.h heap-objects.h %.c
+parallel-mark-sweep-%: mark-sweep.h precise-roots.h large-object-space.h parallel-tracer.h assert.h debug.h %-types.h heap-objects.h %.c
 	$(COMPILE) -DGC_PARALLEL_MARK_SWEEP -o $@ $*.c
 
 check: $(addprefix test-$(TARGET),$(TARGETS))

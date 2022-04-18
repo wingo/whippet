@@ -22,8 +22,6 @@ struct heap;
 struct gcobj;
 
 struct large_object_space {
-  struct heap *heap;
-  
   pthread_mutex_t lock;
 
   size_t page_size;

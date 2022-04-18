@@ -4,6 +4,7 @@
 #define STATIC_ASSERT_EQ(a, b) _Static_assert((a) == (b), "eq")
 
 #define UNLIKELY(e) __builtin_expect(e, 0)
+#define LIKELY(e) __builtin_expect(e, 1)
 
 #ifndef NDEBUG
 #define ASSERT(x) do { if (UNLIKELY(!(x))) __builtin_trap(); } while (0)

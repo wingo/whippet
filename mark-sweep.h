@@ -9,6 +9,7 @@
 #include "assert.h"
 #include "debug.h"
 #include "inline.h"
+#include "large-object-space.h"
 #include "precise-roots.h"
 #ifdef GC_PARALLEL_MARK
 #include "parallel-tracer.h"
@@ -20,10 +21,14 @@
 #define GRANULE_SIZE_LOG_2 3
 #define MEDIUM_OBJECT_THRESHOLD 256
 #define MEDIUM_OBJECT_GRANULE_THRESHOLD 32
+#define LARGE_OBJECT_THRESHOLD 8192
+#define LARGE_OBJECT_GRANULE_THRESHOLD 1024
 
 STATIC_ASSERT_EQ(GRANULE_SIZE, 1 << GRANULE_SIZE_LOG_2);
 STATIC_ASSERT_EQ(MEDIUM_OBJECT_THRESHOLD,
                  MEDIUM_OBJECT_GRANULE_THRESHOLD * GRANULE_SIZE);
+STATIC_ASSERT_EQ(LARGE_OBJECT_THRESHOLD,
+                 LARGE_OBJECT_GRANULE_THRESHOLD * GRANULE_SIZE);
 
 // There are small object pages for allocations of these sizes.
 #define FOR_EACH_SMALL_OBJECT_GRANULES(M) \
@@ -118,6 +123,7 @@ struct mark_space {
 
 struct heap {
   struct mark_space mark_space;
+  struct large_object_space large_object_space;
   pthread_mutex_t lock;
   pthread_cond_t collector_cond;
   pthread_cond_t mutator_cond;
@@ -155,6 +161,9 @@ static inline struct tracer* heap_tracer(struct heap *heap) {
 static inline struct mark_space* heap_mark_space(struct heap *heap) {
   return &heap->mark_space;
 }
+static inline struct large_object_space* heap_large_object_space(struct heap *heap) {
+  return &heap->large_object_space;
+}
 static inline struct heap* mutator_heap(struct mutator *mutator) {
   return mutator->heap;
 }
@@ -172,7 +181,7 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
 
-static void collect(struct heap *heap, struct mutator *mut) NEVER_INLINE;
+static void collect(struct mutator *mut) NEVER_INLINE;
 
 static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
   ASSERT(space->heap_base <= (uintptr_t) obj);
@@ -181,12 +190,33 @@ static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
   return &space->mark_bytes[granule];
 }
 
-static inline int trace_object(struct heap *heap, struct gcobj *obj) {
-  uint8_t *byte = mark_byte(heap_mark_space(heap), obj);
+static inline int mark_space_trace_object(struct mark_space *space,
+                                          struct gcobj *obj) {
+  uint8_t *byte = mark_byte(space, obj);
   if (*byte)
     return 0;
   *byte = 1;
   return 1;
+}
+
+static inline int mark_space_contains(struct mark_space *space,
+                                      struct gcobj *obj) {
+  uintptr_t addr = (uintptr_t)obj;
+  return addr - space->heap_base < space->heap_size;
+}
+
+static inline int large_object_space_trace_object(struct large_object_space *space,
+                                                  struct gcobj *obj) {
+  return large_object_space_copy(space, (uintptr_t)obj);
+}
+
+static inline int trace_object(struct heap *heap, struct gcobj *obj) {
+  if (LIKELY(mark_space_contains(heap_mark_space(heap), obj)))
+    return mark_space_trace_object(heap_mark_space(heap), obj);
+  else if (large_object_space_contains(heap_large_object_space(heap), obj))
+    return large_object_space_trace_object(heap_large_object_space(heap), obj);
+  else
+    abort();
 }
 
 static inline void trace_one(struct gcobj *obj, void *mark_data) {
@@ -267,6 +297,15 @@ static void allow_mutators_to_continue(struct heap *heap) {
   atomic_store_explicit(&heap->collecting, 0, memory_order_relaxed);
   ASSERT(!mutators_are_stopping(heap));
   pthread_cond_broadcast(&heap->mutator_cond);
+}
+
+static int heap_steal_pages(struct heap *heap, size_t npages) {
+  // FIXME: When we have a block-structured mark space, actually return
+  // pages to the OS, and limit to the current heap size.
+  return 1;
+}
+static void heap_reset_stolen_pages(struct heap *heap, size_t npages) {
+  // FIXME: Possibly reclaim blocks from the reclaimed set.
 }
 
 static void mutator_mark_buf_grow(struct mutator_mark_buf *buf) {
@@ -421,9 +460,12 @@ static void reset_sweeper(struct mark_space *space) {
   space->sweep = space->heap_base;
 }
 
-static void collect(struct heap *heap, struct mutator *mut) {
+static void collect(struct mutator *mut) {
+  struct heap *heap = mutator_heap(mut);
   struct mark_space *space = heap_mark_space(heap);
+  struct large_object_space *lospace = heap_large_object_space(heap);
   DEBUG("start collect #%ld:\n", heap->count);
+  large_object_space_start_gc(lospace);
   tracer_prepare(heap);
   request_mutators_to_stop(heap);
   mark_controlling_mutator_roots(mut);
@@ -435,6 +477,8 @@ static void collect(struct heap *heap, struct mutator *mut) {
   clear_global_freelists(space);
   reset_sweeper(space);
   heap->count++;
+  large_object_space_finish_gc(lospace);
+  heap_reset_stolen_pages(heap, lospace->live_pages_at_last_collection);
   allow_mutators_to_continue(heap);
   clear_mutator_freelists(mut);
   DEBUG("collect done\n");
@@ -610,6 +654,34 @@ static int sweep(struct mark_space *space,
   return 1;
 }
 
+static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
+                            size_t granules) {
+  struct heap *heap = mutator_heap(mut);
+  struct large_object_space *space = heap_large_object_space(heap);
+
+  size_t size = granules * GRANULE_SIZE;
+  size_t npages = large_object_space_npages(space, size);
+  if (!heap_steal_pages(heap, npages)) {
+    collect(mut);
+    if (!heap_steal_pages(heap, npages)) {
+      fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
+      abort();
+    }
+  }
+
+  void *ret = large_object_space_alloc(space, npages);
+  if (!ret)
+    ret = large_object_space_obtain_and_alloc(space, npages);
+
+  if (!ret) {
+    perror("weird: we have the space but mmap didn't work");
+    abort();
+  }
+
+  *(uintptr_t*)ret = kind;
+  return ret;
+}
+
 static void* allocate_medium(struct mutator *mut, enum alloc_kind kind,
                              size_t granules) {
   struct heap *heap = mutator_heap(mut);
@@ -649,7 +721,7 @@ static void* allocate_medium(struct mutator *mut, enum alloc_kind kind,
       fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
       abort();
     } else {
-      collect(mutator_heap(mut), mut);
+      collect(mut);
       swept_from_beginning = 1;
     }
   }
@@ -738,7 +810,7 @@ static void fill_small_from_global(struct mutator *mut,
         fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
         abort();
       } else {
-        collect(mutator_heap(mut), mut);
+        collect(mut);
         swept_from_beginning = 1;
       }
     }
@@ -777,7 +849,9 @@ static inline void* allocate(struct mutator *mut, enum alloc_kind kind,
   size_t granules = size_to_granules(size);
   if (granules <= MEDIUM_OBJECT_GRANULE_THRESHOLD)
     return allocate_small(mut, kind, granules_to_small_object_size(granules));
-  return allocate_medium(mut, kind, granules);
+  if (granules <= LARGE_OBJECT_GRANULE_THRESHOLD)
+    return allocate_medium(mut, kind, granules);
+  return allocate_large(mut, kind, granules);
 }
 static inline void* allocate_pointerless(struct mutator *mut,
                                          enum alloc_kind kind,
@@ -854,6 +928,9 @@ static int initialize_gc(size_t size, struct heap **heap,
     return 0;
   }
   
+  if (!large_object_space_init(heap_large_object_space(*heap), *heap))
+    abort();
+
   *mut = calloc(1, sizeof(struct mutator));
   if (!*mut) abort();
   add_mutator(*heap, *mut);
