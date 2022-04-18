@@ -11,9 +11,9 @@
 #include "inline.h"
 #include "precise-roots.h"
 #ifdef GC_PARALLEL_MARK
-#include "parallel-marker.h"
+#include "parallel-tracer.h"
 #else
-#include "serial-marker.h"
+#include "serial-tracer.h"
 #endif
 
 #define GRANULE_SIZE 8
@@ -124,12 +124,12 @@ struct mark_space {
   void *mem;
   size_t mem_size;
   long count;
-  struct marker marker;
   struct mutator *deactivated_mutators;
 };
 
 struct heap {
   struct mark_space mark_space;
+  struct tracer tracer;
 };
 
 struct mutator_mark_buf {
@@ -148,8 +148,8 @@ struct mutator {
   struct mutator *next;
 };
 
-static inline struct marker* mark_space_marker(struct mark_space *space) {
-  return &space->marker;
+static inline struct tracer* heap_tracer(struct heap *heap) {
+  return &heap->tracer;
 }
 static inline struct mark_space* heap_mark_space(struct heap *heap) {
   return &heap->mark_space;
@@ -174,7 +174,7 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
 
-static void collect(struct mark_space *space, struct mutator *mut) NEVER_INLINE;
+static void collect(struct heap *heap, struct mutator *mut) NEVER_INLINE;
 
 static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
   ASSERT(space->heap_base <= (uintptr_t) obj);
@@ -183,8 +183,8 @@ static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
   return &space->mark_bytes[granule];
 }
 
-static inline int mark_object(struct mark_space *space, struct gcobj *obj) {
-  uint8_t *byte = mark_byte(space, obj);
+static inline int trace_object(struct heap *heap, struct gcobj *obj) {
+  uint8_t *byte = mark_byte(heap_mark_space(heap), obj);
   if (*byte)
     return 0;
   *byte = 1;
@@ -195,7 +195,7 @@ static inline void trace_one(struct gcobj *obj, void *mark_data) {
   switch (tag_live_alloc_kind(obj->tag)) {
 #define SCAN_OBJECT(name, Name, NAME) \
     case ALLOC_KIND_##NAME: \
-      visit_##name##_fields((Name*)obj, marker_visit, mark_data); \
+      visit_##name##_fields((Name*)obj, tracer_visit, mark_data); \
       break;
     FOR_EACH_HEAP_OBJECT_KIND(SCAN_OBJECT)
 #undef SCAN_OBJECT
@@ -317,11 +317,12 @@ static void mutator_mark_buf_destroy(struct mutator_mark_buf *buf) {
 // Mark the roots of a mutator that is stopping for GC.  We can't
 // enqueue them directly, so we send them to the controller in a buffer.
 static void mark_stopping_mutator_roots(struct mutator *mut) {
-  struct mark_space *space = mutator_mark_space(mut);
+  struct heap *heap = mutator_heap(mut);
+  struct mark_space *space = heap_mark_space(heap);
   struct mutator_mark_buf *local_roots = &mut->mark_buf;
   for (struct handle *h = mut->roots; h; h = h->next) {
     struct gcobj *root = h->v;
-    if (root && mark_object(space, root))
+    if (root && trace_object(heap, root))
       mutator_mark_buf_push(local_roots, root);
   }
 
@@ -336,11 +337,11 @@ static void mark_stopping_mutator_roots(struct mutator *mut) {
 
 // Mark the roots of the mutator that causes GC.
 static void mark_controlling_mutator_roots(struct mutator *mut) {
-  struct mark_space *space = mutator_mark_space(mut);
+  struct heap *heap = mutator_heap(mut);
   for (struct handle *h = mut->roots; h; h = h->next) {
     struct gcobj *root = h->v;
-    if (root && mark_object(space, root))
-      marker_enqueue_root(&space->marker, root);
+    if (root && trace_object(heap, root))
+      tracer_enqueue_root(&heap->tracer, root);
   }
 }
 
@@ -359,16 +360,17 @@ static void mark_inactive_mutators(struct mark_space *space) {
     mark_controlling_mutator_roots(mut);
 }
 
-static void mark_global_roots(struct mark_space *space) {
+static void mark_global_roots(struct heap *heap) {
+  struct mark_space *space = heap_mark_space(heap);
   for (struct handle *h = space->global_roots; h; h = h->next) {
     struct gcobj *obj = h->v;
-    if (obj && mark_object(space, obj))
-      marker_enqueue_root(&space->marker, obj);
+    if (obj && trace_object(heap, obj))
+      tracer_enqueue_root(&heap->tracer, obj);
   }
 
   struct mutator_mark_buf *roots = atomic_load(&space->mutator_roots);
   for (; roots; roots = roots->next)
-    marker_enqueue_roots(&space->marker, roots->objects, roots->size);
+    tracer_enqueue_roots(&heap->tracer, roots->objects, roots->size);
   atomic_store(&space->mutator_roots, NULL);
 }
 
@@ -425,16 +427,17 @@ static void reset_sweeper(struct mark_space *space) {
   space->sweep = space->heap_base;
 }
 
-static void collect(struct mark_space *space, struct mutator *mut) {
+static void collect(struct heap *heap, struct mutator *mut) {
+  struct mark_space *space = heap_mark_space(heap);
   DEBUG("start collect #%ld:\n", space->count);
-  marker_prepare(space);
+  tracer_prepare(heap);
   request_mutators_to_stop(space);
   mark_controlling_mutator_roots(mut);
   wait_for_mutators_to_stop(space);
   mark_inactive_mutators(space);
-  mark_global_roots(space);
-  marker_trace(space);
-  marker_release(space);
+  mark_global_roots(heap);
+  tracer_trace(heap);
+  tracer_release(heap);
   clear_global_freelists(space);
   reset_sweeper(space);
   space->count++;
@@ -614,7 +617,7 @@ static int sweep(struct mark_space *space,
 }
 
 static void* allocate_medium(struct mutator *mut, enum alloc_kind kind,
-                            size_t granules) {
+                             size_t granules) {
   struct mark_space *space = mutator_mark_space(mut);
   struct gcobj_freelists *small_objects = space_has_multiple_mutators(space) ?
     &space->small_objects : &mut->small_objects;
@@ -651,7 +654,7 @@ static void* allocate_medium(struct mutator *mut, enum alloc_kind kind,
       fprintf(stderr, "ran out of space, heap size %zu\n", space->heap_size);
       abort();
     } else {
-      collect(space, mut);
+      collect(mutator_heap(mut), mut);
       swept_from_beginning = 1;
     }
   }
@@ -739,7 +742,7 @@ static void fill_small_from_global(struct mutator *mut,
         fprintf(stderr, "ran out of space, heap size %zu\n", space->heap_size);
         abort();
       } else {
-        collect(space, mut);
+        collect(mutator_heap(mut), mut);
         swept_from_beginning = 1;
       }
     }
@@ -838,7 +841,7 @@ static int initialize_gc(size_t size, struct heap **heap,
   space->heap_base = ((uintptr_t) mem) + overhead;
   space->heap_size = size - overhead;
   space->sweep = space->heap_base + space->heap_size;
-  if (!marker_init(space))
+  if (!tracer_init(*heap))
     abort();
   reclaim(space, NULL, NOT_SMALL_OBJECT, (void*)space->heap_base,
           size_to_granules(space->heap_size));

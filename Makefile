@@ -17,10 +17,10 @@ bdw-%: bdw.h conservative-roots.h %-types.h %.c
 semi-%: semi.h precise-roots.h %-types.h heap-objects.h %.c
 	$(COMPILE) -DGC_SEMI -o $@ $*.c
 
-mark-sweep-%: mark-sweep.h precise-roots.h serial-marker.h assert.h debug.h %-types.h heap-objects.h %.c
+mark-sweep-%: mark-sweep.h precise-roots.h serial-tracer.h assert.h debug.h %-types.h heap-objects.h %.c
 	$(COMPILE) -DGC_MARK_SWEEP -o $@ $*.c
 
-parallel-mark-sweep-%: mark-sweep.h precise-roots.h parallel-marker.h assert.h debug.h %-types.h heap-objects.h %.c
+parallel-mark-sweep-%: mark-sweep.h precise-roots.h parallel-tracer.h assert.h debug.h %-types.h heap-objects.h %.c
 	$(COMPILE) -DGC_PARALLEL_MARK_SWEEP -o $@ $*.c
 
 check: $(addprefix test-$(TARGET),$(TARGETS))
