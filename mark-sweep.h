@@ -18,12 +18,12 @@
 
 #define GRANULE_SIZE 8
 #define GRANULE_SIZE_LOG_2 3
-#define LARGE_OBJECT_THRESHOLD 256
-#define LARGE_OBJECT_GRANULE_THRESHOLD 32
+#define MEDIUM_OBJECT_THRESHOLD 256
+#define MEDIUM_OBJECT_GRANULE_THRESHOLD 32
 
 STATIC_ASSERT_EQ(GRANULE_SIZE, 1 << GRANULE_SIZE_LOG_2);
-STATIC_ASSERT_EQ(LARGE_OBJECT_THRESHOLD,
-                 LARGE_OBJECT_GRANULE_THRESHOLD * GRANULE_SIZE);
+STATIC_ASSERT_EQ(MEDIUM_OBJECT_THRESHOLD,
+                 MEDIUM_OBJECT_GRANULE_THRESHOLD * GRANULE_SIZE);
 
 // There are small object pages for allocations of these sizes.
 #define FOR_EACH_SMALL_OBJECT_GRANULES(M) \
@@ -44,7 +44,7 @@ static const uint8_t small_object_granule_sizes[] =
 #undef SMALL_OBJECT_GRANULE_SIZE
 };
 
-static const enum small_object_size small_object_sizes_for_granules[LARGE_OBJECT_GRANULE_THRESHOLD + 2] = {
+static const enum small_object_size small_object_sizes_for_granules[MEDIUM_OBJECT_GRANULE_THRESHOLD + 2] = {
   SMALL_OBJECT_1,   SMALL_OBJECT_1, SMALL_OBJECT_2,  SMALL_OBJECT_3,
   SMALL_OBJECT_4,   SMALL_OBJECT_5,   SMALL_OBJECT_6,  SMALL_OBJECT_8,
   SMALL_OBJECT_8,   SMALL_OBJECT_10,  SMALL_OBJECT_10, SMALL_OBJECT_16,
@@ -57,7 +57,7 @@ static const enum small_object_size small_object_sizes_for_granules[LARGE_OBJECT
 };
 
 static enum small_object_size granules_to_small_object_size(unsigned granules) {
-  ASSERT(granules <= LARGE_OBJECT_GRANULE_THRESHOLD);
+  ASSERT(granules <= MEDIUM_OBJECT_GRANULE_THRESHOLD);
   return small_object_sizes_for_granules[granules];
 }
   
@@ -87,9 +87,9 @@ struct gcobj_freelists {
   struct gcobj_free *by_size[SMALL_OBJECT_SIZES];
 };
 
-// Objects larger than LARGE_OBJECT_GRANULE_THRESHOLD.
-struct gcobj_free_large {
-  struct gcobj_free_large *next;
+// Objects larger than MEDIUM_OBJECT_GRANULE_THRESHOLD.
+struct gcobj_free_medium {
+  struct gcobj_free_medium *next;
   size_t granules;
 };
 
@@ -97,7 +97,7 @@ struct gcobj {
   union {
     uintptr_t tag;
     struct gcobj_free free;
-    struct gcobj_free_large free_large;
+    struct gcobj_free_medium free_medium;
     uintptr_t words[0];
     void *pointers[0];
   };
@@ -112,8 +112,8 @@ struct mark_space {
   size_t active_mutator_count;
   size_t mutator_count;
   struct gcobj_freelists small_objects;
-  // Unordered list of large objects.
-  struct gcobj_free_large *large_objects;
+  // Unordered list of medium objects.
+  struct gcobj_free_medium *medium_objects;
   uintptr_t base;
   uint8_t *mark_bytes;
   uintptr_t heap_base;
@@ -213,7 +213,7 @@ static void clear_mutator_freelists(struct mutator *mut) {
 }
 static void clear_global_freelists(struct mark_space *space) {
   clear_small_freelists(&space->small_objects);
-  space->large_objects = NULL;
+  space->medium_objects = NULL;
 }
 
 static int space_has_multiple_mutators(struct mark_space *space) {
@@ -464,11 +464,11 @@ static void push_small(struct gcobj_freelists *small_objects, void *region,
   }
 }
 
-static void push_large(struct mark_space *space, void *region, size_t granules) {
-  struct gcobj_free_large *large = region;
-  large->next = space->large_objects;
-  large->granules = granules;
-  space->large_objects = large;
+static void push_medium(struct mark_space *space, void *region, size_t granules) {
+  struct gcobj_free_medium *medium = region;
+  medium->next = space->medium_objects;
+  medium->granules = granules;
+  space->medium_objects = medium;
 }
 
 static void reclaim_small(struct gcobj_freelists *small_objects,
@@ -493,36 +493,36 @@ static void reclaim(struct mark_space *space,
                     size_t region_granules) {
   if (kind != NOT_SMALL_OBJECT)
     reclaim_small(small_objects, kind, region, region_granules);
-  else if (region_granules <= LARGE_OBJECT_GRANULE_THRESHOLD)
+  else if (region_granules <= MEDIUM_OBJECT_GRANULE_THRESHOLD)
     push_small(small_objects, region, SMALL_OBJECT_SIZES - 1, region_granules);
   else
-    push_large(space, region, region_granules);
+    push_medium(space, region, region_granules);
 }
 
-static void split_large_object(struct mark_space *space,
+static void split_medium_object(struct mark_space *space,
                                struct gcobj_freelists *small_objects,
-                               struct gcobj_free_large *large,
+                               struct gcobj_free_medium *medium,
                                size_t granules) {
-  size_t large_granules = large->granules;
-  ASSERT(large_granules >= granules);
-  ASSERT(granules >= LARGE_OBJECT_GRANULE_THRESHOLD);
-  // Invariant: all words in LARGE are 0 except the two header words.
-  // LARGE is off the freelist.  We return a block of cleared memory, so
+  size_t medium_granules = medium->granules;
+  ASSERT(medium_granules >= granules);
+  ASSERT(granules >= MEDIUM_OBJECT_GRANULE_THRESHOLD);
+  // Invariant: all words in MEDIUM are 0 except the two header words.
+  // MEDIUM is off the freelist.  We return a block of cleared memory, so
   // clear those fields now.
-  large->next = NULL;
-  large->granules = 0;
+  medium->next = NULL;
+  medium->granules = 0;
 
-  if (large_granules == granules)
+  if (medium_granules == granules)
     return;
   
-  char *tail = ((char*)large) + granules * GRANULE_SIZE;
+  char *tail = ((char*)medium) + granules * GRANULE_SIZE;
   reclaim(space, small_objects, NOT_SMALL_OBJECT, tail,
-          large_granules - granules);
+          medium_granules - granules);
 }
 
-static void unlink_large_object(struct gcobj_free_large **prev,
-                                struct gcobj_free_large *large) {
-  *prev = large->next;
+static void unlink_medium_object(struct gcobj_free_medium **prev,
+                                struct gcobj_free_medium *medium) {
+  *prev = medium->next;
 }
 
 static size_t live_object_granules(struct gcobj *obj) {
@@ -538,7 +538,7 @@ static size_t live_object_granules(struct gcobj *obj) {
     abort ();
   }
   size_t granules = size_to_granules(bytes);
-  if (granules > LARGE_OBJECT_GRANULE_THRESHOLD)
+  if (granules > MEDIUM_OBJECT_GRANULE_THRESHOLD)
     return granules;
   return small_object_granule_sizes[granules_to_small_object_size(granules)];
 }  
@@ -570,7 +570,7 @@ static size_t next_mark(const uint8_t *mark, size_t limit) {
 static int sweep(struct mark_space *space,
                  struct gcobj_freelists *small_objects,
                  enum small_object_size kind,
-                 size_t large_object_granules) {
+                 size_t medium_object_granules) {
   // Sweep until we have reclaimed 32 kB of free memory, or we reach the
   // end of the heap.
   ssize_t to_reclaim = 32 * 1024 / GRANULE_SIZE;
@@ -585,8 +585,8 @@ static int sweep(struct mark_space *space,
     size_t limit_granules = (limit - sweep) >> GRANULE_SIZE_LOG_2;
     if (limit_granules > to_reclaim) {
       if (kind == NOT_SMALL_OBJECT) {
-        if (large_object_granules < limit_granules)
-          limit_granules = large_object_granules;
+        if (medium_object_granules < limit_granules)
+          limit_granules = medium_object_granules;
       } else {
         limit_granules = to_reclaim;
       }
@@ -613,7 +613,7 @@ static int sweep(struct mark_space *space,
   return 1;
 }
 
-static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
+static void* allocate_medium(struct mutator *mut, enum alloc_kind kind,
                             size_t granules) {
   struct mark_space *space = mutator_mark_space(mut);
   struct gcobj_freelists *small_objects = space_has_multiple_mutators(space) ?
@@ -628,25 +628,25 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
 
   int swept_from_beginning = 0;
   while (1) {
-    struct gcobj_free_large *already_scanned = NULL;
+    struct gcobj_free_medium *already_scanned = NULL;
     do {
-      struct gcobj_free_large **prev = &space->large_objects;
-      for (struct gcobj_free_large *large = space->large_objects;
-           large != already_scanned;
-           prev = &large->next, large = large->next) {
-        if (large->granules >= granules) {
-          unlink_large_object(prev, large);
-          split_large_object(space, small_objects, large, granules);
+      struct gcobj_free_medium **prev = &space->medium_objects;
+      for (struct gcobj_free_medium *medium = space->medium_objects;
+           medium != already_scanned;
+           prev = &medium->next, medium = medium->next) {
+        if (medium->granules >= granules) {
+          unlink_medium_object(prev, medium);
+          split_medium_object(space, small_objects, medium, granules);
           mark_space_unlock(space);
-          struct gcobj *obj = (struct gcobj *)large;
+          struct gcobj *obj = (struct gcobj *)medium;
           obj->tag = tag_live(kind);
-          return large;
+          return medium;
         }
       }
-      already_scanned = space->large_objects;
+      already_scanned = space->medium_objects;
     } while (sweep(space, small_objects, NOT_SMALL_OBJECT, granules));
 
-    // No large object, and we swept across the whole heap.  Collect.
+    // No medium object, and we swept across the whole heap.  Collect.
     if (swept_from_beginning) {
       fprintf(stderr, "ran out of space, heap size %zu\n", space->heap_size);
       abort();
@@ -680,19 +680,19 @@ static int fill_small_from_local(struct gcobj_freelists *small_objects,
 }
 
 // with space lock
-static int fill_small_from_large(struct mark_space *space,
+static int fill_small_from_medium(struct mark_space *space,
                                  struct gcobj_freelists *small_objects,
                                  enum small_object_size kind) {
-  // If there is a large object, take and split it.
-  struct gcobj_free_large *large = space->large_objects;
-  if (!large)
+  // If there is a medium object, take and split it.
+  struct gcobj_free_medium *medium = space->medium_objects;
+  if (!medium)
     return 0;
 
-  unlink_large_object(&space->large_objects, large);
-  ASSERT(large->granules >= LARGE_OBJECT_GRANULE_THRESHOLD);
-  split_large_object(space, small_objects, large,
-                     LARGE_OBJECT_GRANULE_THRESHOLD);
-  push_small(small_objects, large, kind, LARGE_OBJECT_GRANULE_THRESHOLD);
+  unlink_medium_object(&space->medium_objects, medium);
+  ASSERT(medium->granules >= MEDIUM_OBJECT_GRANULE_THRESHOLD);
+  split_medium_object(space, small_objects, medium,
+                     MEDIUM_OBJECT_GRANULE_THRESHOLD);
+  push_small(small_objects, medium, kind, MEDIUM_OBJECT_GRANULE_THRESHOLD);
   return 1;
 }
 
@@ -730,7 +730,7 @@ static void fill_small_from_global(struct mutator *mut,
     if (fill_small_from_global_small(space, small_objects, kind))
       break;
 
-    if (fill_small_from_large(space, small_objects, kind))
+    if (fill_small_from_medium(space, small_objects, kind))
       break;
 
     // By default, pull in 16 kB of data at a time.
@@ -776,9 +776,9 @@ static inline void* allocate_small(struct mutator *mut,
 static inline void* allocate(struct mutator *mut, enum alloc_kind kind,
                              size_t size) {
   size_t granules = size_to_granules(size);
-  if (granules <= LARGE_OBJECT_GRANULE_THRESHOLD)
+  if (granules <= MEDIUM_OBJECT_GRANULE_THRESHOLD)
     return allocate_small(mut, kind, granules_to_small_object_size(granules));
-  return allocate_large(mut, kind, granules);
+  return allocate_medium(mut, kind, granules);
 }
 static inline void* allocate_pointerless(struct mutator *mut,
                                          enum alloc_kind kind,
@@ -805,7 +805,7 @@ static int initialize_gc(size_t size, struct heap **heap,
 #undef SMALL_OBJECT_GRANULE_SIZE
 
   ASSERT_EQ(SMALL_OBJECT_SIZES - 1,
-            small_object_sizes_for_granules[LARGE_OBJECT_GRANULE_THRESHOLD]);
+            small_object_sizes_for_granules[MEDIUM_OBJECT_GRANULE_THRESHOLD]);
 
   size = align_up(size, getpagesize());
 
