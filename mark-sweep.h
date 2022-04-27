@@ -30,6 +30,92 @@ STATIC_ASSERT_EQ(MEDIUM_OBJECT_THRESHOLD,
 STATIC_ASSERT_EQ(LARGE_OBJECT_THRESHOLD,
                  LARGE_OBJECT_GRANULE_THRESHOLD * GRANULE_SIZE);
 
+#define SLAB_SIZE (4 * 1024 * 1024)
+#define BLOCK_SIZE (64 * 1024)
+#define METADATA_BYTES_PER_BLOCK (BLOCK_SIZE / GRANULE_SIZE)
+#define BLOCKS_PER_SLAB (SLAB_SIZE / BLOCK_SIZE)
+#define META_BLOCKS_PER_SLAB (METADATA_BYTES_PER_BLOCK * BLOCKS_PER_SLAB / BLOCK_SIZE)
+#define NONMETA_BLOCKS_PER_SLAB (BLOCKS_PER_SLAB - META_BLOCKS_PER_SLAB)
+#define METADATA_BYTES_PER_SLAB (NONMETA_BLOCKS_PER_SLAB * METADATA_BYTES_PER_BLOCK)
+#define SLACK_METADATA_BYTES_PER_SLAB (META_BLOCKS_PER_SLAB * METADATA_BYTES_PER_BLOCK)
+#define REMSET_BYTES_PER_BLOCK (SLACK_METADATA_BYTES_PER_SLAB / BLOCKS_PER_SLAB)
+#define REMSET_BYTES_PER_SLAB (REMSET_BYTES_PER_BLOCK * NONMETA_BLOCKS_PER_SLAB)
+#define SLACK_REMSET_BYTES_PER_SLAB (REMSET_BYTES_PER_BLOCK * META_BLOCKS_PER_SLAB)
+#define SUMMARY_BYTES_PER_BLOCK (SLACK_REMSET_BYTES_PER_SLAB / BLOCKS_PER_SLAB)
+#define SUMMARY_BYTES_PER_SLAB (SUMMARY_BYTES_PER_BLOCK * NONMETA_BLOCKS_PER_SLAB)
+#define SLACK_SUMMARY_BYTES_PER_SLAB (SUMMARY_BYTES_PER_BLOCK * META_BLOCKS_PER_SLAB)
+#define HEADER_BYTES_PER_SLAB SLACK_SUMMARY_BYTES_PER_SLAB
+
+struct slab;
+
+struct slab_header {
+  union {
+    struct {
+      struct slab *next;
+      struct slab *prev;
+    };
+    uint8_t padding[HEADER_BYTES_PER_SLAB];
+  };
+};
+STATIC_ASSERT_EQ(sizeof(struct slab_header), HEADER_BYTES_PER_SLAB);
+
+struct block_summary {
+  union {
+    struct {
+      uint16_t wasted_granules;
+      uint16_t wasted_spans;
+      uint8_t out_for_thread;
+      uint8_t has_pin;
+      uint8_t paged_out;
+    };
+    uint8_t padding[SUMMARY_BYTES_PER_BLOCK];
+  };
+};
+STATIC_ASSERT_EQ(sizeof(struct block_summary), SUMMARY_BYTES_PER_BLOCK);
+
+struct block {
+  char data[BLOCK_SIZE];
+};
+
+struct slab {
+  struct slab_header header;
+  struct block_summary summaries[NONMETA_BLOCKS_PER_SLAB];
+  uint8_t remsets[REMSET_BYTES_PER_SLAB];
+  uint8_t metadata[METADATA_BYTES_PER_SLAB];
+  struct block blocks[NONMETA_BLOCKS_PER_SLAB];
+};
+STATIC_ASSERT_EQ(sizeof(struct slab), SLAB_SIZE);
+
+static struct slab *object_slab(void *obj) {
+  uintptr_t addr = (uintptr_t) obj;
+  uintptr_t base = addr & ~(SLAB_SIZE - 1);
+  return (struct slab*) base;
+}
+
+static uint8_t *object_metadata_byte(void *obj) {
+  uintptr_t addr = (uintptr_t) obj;
+  uintptr_t base = addr & ~(SLAB_SIZE - 1);
+  uintptr_t granule = (addr & (SLAB_SIZE - 1)) >> GRANULE_SIZE_LOG_2;
+  return (uint8_t*) (base + granule);
+}
+
+#define GRANULES_PER_BLOCK (BLOCK_SIZE / GRANULE_SIZE)
+#define GRANULES_PER_REMSET_BYTE (GRANULES_PER_BLOCK / REMSET_BYTES_PER_BLOCK)
+static uint8_t *object_remset_byte(void *obj) {
+  uintptr_t addr = (uintptr_t) obj;
+  uintptr_t base = addr & ~(SLAB_SIZE - 1);
+  uintptr_t granule = (addr & (SLAB_SIZE - 1)) >> GRANULE_SIZE_LOG_2;
+  uintptr_t remset_byte = granule / GRANULES_PER_REMSET_BYTE;
+  return (uint8_t*) (base + remset_byte);
+}
+
+static struct block_summary* object_block_summary(void *obj) {
+  uintptr_t addr = (uintptr_t) obj;
+  uintptr_t base = addr & ~(SLAB_SIZE - 1);
+  uintptr_t block = (addr & (SLAB_SIZE - 1)) / BLOCK_SIZE;
+  return (struct block_summary*) (base + block * sizeof(struct block_summary));
+}
+
 static uintptr_t align_up(uintptr_t addr, size_t align) {
   return (addr + align - 1) & ~(align-1);
 }
@@ -76,13 +162,12 @@ struct mark_space {
   struct gcobj_freelists small_objects;
   // Unordered list of medium objects.
   struct gcobj_free_medium *medium_objects;
-  uintptr_t base;
-  uint8_t *mark_bytes;
-  uintptr_t heap_base;
+  uintptr_t low_addr;
+  size_t extent;
   size_t heap_size;
   uintptr_t sweep;
-  void *mem;
-  size_t mem_size;
+  struct slab *slabs;
+  size_t nslabs;
 };
 
 struct heap {
@@ -148,10 +233,7 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
 static void collect(struct mutator *mut) NEVER_INLINE;
 
 static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
-  ASSERT(space->heap_base <= (uintptr_t) obj);
-  ASSERT((uintptr_t) obj < space->heap_base + space->heap_size);
-  uintptr_t granule = (((uintptr_t) obj) - space->heap_base)  / GRANULE_SIZE;
-  return &space->mark_bytes[granule];
+  return object_metadata_byte(obj);
 }
 
 static inline int mark_space_trace_object(struct mark_space *space,
@@ -166,7 +248,7 @@ static inline int mark_space_trace_object(struct mark_space *space,
 static inline int mark_space_contains(struct mark_space *space,
                                       struct gcobj *obj) {
   uintptr_t addr = (uintptr_t)obj;
-  return addr - space->heap_base < space->heap_size;
+  return addr - space->low_addr < space->extent;
 }
 
 static inline int large_object_space_trace_object(struct large_object_space *space,
@@ -421,7 +503,7 @@ static inline void maybe_pause_mutator_for_collection(struct mutator *mut) {
 }
 
 static void reset_sweeper(struct mark_space *space) {
-  space->sweep = space->heap_base;
+  space->sweep = (uintptr_t) &space->slabs[0].blocks;
 }
 
 static void collect(struct mutator *mut) {
@@ -560,10 +642,15 @@ static int sweep(struct mark_space *space,
   // end of the heap.
   ssize_t to_reclaim = 32 * 1024 / GRANULE_SIZE;
   uintptr_t sweep = space->sweep;
-  uintptr_t limit = space->heap_base + space->heap_size;
+  uintptr_t limit = align_up(sweep, SLAB_SIZE);
 
-  if (sweep == limit)
-    return 0;
+  if (sweep == limit) {
+    if (sweep == space->low_addr + space->extent)
+      return 0;
+    // Assumes contiguous slabs.  To relax later.
+    sweep += META_BLOCKS_PER_SLAB * BLOCK_SIZE;
+    limit += SLAB_SIZE;
+  }
 
   while (to_reclaim > 0 && sweep < limit) {
     uint8_t* mark = mark_byte(space, (struct gcobj*)sweep);
@@ -813,33 +900,45 @@ static inline void* get_field(void **addr) {
   return *addr;
 }
 
-static int mark_space_init(struct mark_space *space, struct heap *heap) {
-  size_t size = align_up(heap->size, getpagesize());
+static struct slab* allocate_slabs(size_t nslabs) {
+  size_t size = nslabs * SLAB_SIZE;
+  size_t extent = size + SLAB_SIZE;
 
-  void *mem = mmap(NULL, size, PROT_READ|PROT_WRITE,
+  char *mem = mmap(NULL, extent, PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
     perror("mmap failed");
-    return 0;
+    return NULL;
   }
 
-  space->mem = mem;
-  space->mem_size = size;
-  // If there is 1 mark byte per granule, and SIZE bytes available for
-  // HEAP_SIZE + MARK_BYTES, then:
-  //
-  //   size = (granule_size + 1) / granule_size * heap_size
-  //   mark_bytes = 1/granule_size * heap_size
-  //   mark_bytes = ceil(heap_size / (granule_size + 1))
-  space->mark_bytes = (uint8_t *) mem;
-  size_t mark_bytes_size = (size + GRANULE_SIZE) / (GRANULE_SIZE + 1);
-  size_t overhead = align_up(mark_bytes_size, GRANULE_SIZE);
+  uintptr_t base = (uintptr_t) mem;
+  uintptr_t end = base + extent;
+  uintptr_t aligned_base = align_up(base, SLAB_SIZE);
+  uintptr_t aligned_end = aligned_base + size;
 
-  space->heap_base = ((uintptr_t) mem) + overhead;
-  space->heap_size = size - overhead;
-  space->sweep = space->heap_base + space->heap_size;
-  reclaim(space, NULL, 0, (void*)space->heap_base,
-          size_to_granules(space->heap_size));
+  if (aligned_base - base)
+    munmap((void*)base, aligned_base - base);
+  if (end - aligned_end)
+    munmap((void*)aligned_end, end - aligned_end);
+
+  return (struct slab*) aligned_base;
+}
+
+static int mark_space_init(struct mark_space *space, struct heap *heap) {
+  size_t size = align_up(heap->size, SLAB_SIZE);
+  size_t nslabs = size / SLAB_SIZE;
+  struct slab *slabs = allocate_slabs(nslabs);
+  if (!slabs)
+    return 0;
+
+  space->slabs = slabs;
+  space->nslabs = nslabs;
+  space->low_addr = (uintptr_t) slabs;
+  space->extent = size;
+  space->sweep = space->low_addr + space->extent;
+  for (size_t i = 0; i < nslabs; i++)
+    reclaim(space, NULL, 0, &slabs[i].blocks,
+            NONMETA_BLOCKS_PER_SLAB * GRANULES_PER_BLOCK);
   return 1;
 }
 
