@@ -666,7 +666,7 @@ static int sweep(struct mark_space *space,
     size_t free_granules = next_mark(mark, limit_granules);
     if (free_granules) {
       size_t free_bytes = free_granules * GRANULE_SIZE;
-      clear_memory(sweep + GRANULE_SIZE, free_bytes - GRANULE_SIZE);
+      clear_memory(sweep + sizeof(uintptr_t), free_bytes - sizeof(uintptr_t));
       reclaim(space, small_objects, small_object_granules, (void*)sweep,
               free_granules);
       sweep += free_bytes;
