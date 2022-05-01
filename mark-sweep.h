@@ -30,6 +30,54 @@ STATIC_ASSERT_EQ(MEDIUM_OBJECT_THRESHOLD,
 STATIC_ASSERT_EQ(LARGE_OBJECT_THRESHOLD,
                  LARGE_OBJECT_GRANULE_THRESHOLD * GRANULE_SIZE);
 
+// Each granule has one metadata byte stored in a side table, used for
+// mark bits but also for other per-object metadata.  Already we were
+// using a byte instead of a bit to facilitate parallel marking.
+// (Parallel markers are allowed to race.)  Turns out we can put a
+// pinned bit there too, for objects that can't be moved.  Actually
+// there are two pinned bits: one that's managed by the collector, which
+// pins referents of conservative roots, and one for pins managed
+// externally (maybe because the mutator requested a pin.)  Then there's
+// a "remembered" bit, indicating that the object should be scanned for
+// references to the nursery.  If the remembered bit is set, the
+// corresponding remset byte should also be set in the slab (see below).
+//
+// Getting back to mark bits -- because we want to allow for
+// conservative roots, we need to know whether an address indicates an
+// object or not.  That means that when an object is allocated, it has
+// to set a bit, somewhere.  In our case we use the metadata byte, and
+// set the "young" bit.  In future we could use this for generational
+// GC, with the sticky mark bit strategy.
+//
+// When an object becomes dead after a GC, it will still have a bit set
+// -- maybe the young bit, or maybe a survivor bit.  The sweeper has to
+// clear these bits before the next collection.  But, for concurrent
+// marking, we will also be marking "live" objects, updating their mark
+// bits.  So there are four object states concurrently observable:
+// young, dead, survivor, and marked.  (If we didn't have concurrent
+// marking we would still need the "marked" state, because marking
+// mutator roots before stopping is also a form of concurrent marking.)
+// Even though these states are mutually exclusive, we use separate bits
+// for them because we have the space.  After each collection, the dead,
+// survivor, and marked states rotate by one bit.
+enum metadata_byte {
+  METADATA_BYTE_NONE = 0,
+  METADATA_BYTE_YOUNG = 1,
+  METADATA_BYTE_MARK_0 = 2,
+  METADATA_BYTE_MARK_1 = 4,
+  METADATA_BYTE_MARK_2 = 8,
+  METADATA_BYTE_END = 16,
+  METADATA_BYTE_PINNED = 32,
+  METADATA_BYTE_PERMAPINNED = 64,
+  METADATA_BYTE_REMEMBERED = 128
+};
+
+static uint8_t rotate_dead_survivor_marked(uint8_t mask) {
+  uint8_t all =
+    METADATA_BYTE_MARK_0 | METADATA_BYTE_MARK_1 | METADATA_BYTE_MARK_2;
+  return ((mask << 1) | (mask >> 2)) & all;
+}
+
 #define SLAB_SIZE (4 * 1024 * 1024)
 #define BLOCK_SIZE (64 * 1024)
 #define METADATA_BYTES_PER_BLOCK (BLOCK_SIZE / GRANULE_SIZE)
@@ -155,6 +203,8 @@ struct gcobj {
 };
 
 struct mark_space {
+  uint8_t sweep_live_mask;
+  uint8_t marked_mask;
   uintptr_t low_addr;
   size_t extent;
   size_t heap_size;
@@ -233,10 +283,13 @@ static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
 
 static inline int mark_space_trace_object(struct mark_space *space,
                                           struct gcobj *obj) {
-  uint8_t *byte = mark_byte(space, obj);
-  if (*byte)
+  uint8_t *loc = object_metadata_byte(obj);
+  uint8_t byte = *loc;
+  if (byte & space->marked_mask)
     return 0;
-  *byte = 1;
+  uint8_t mask = METADATA_BYTE_YOUNG | METADATA_BYTE_MARK_0
+    | METADATA_BYTE_MARK_1 | METADATA_BYTE_MARK_2;
+  *loc = (byte & ~mask) | space->marked_mask;
   return 1;
 }
 
@@ -501,6 +554,11 @@ static void reset_sweeper(struct mark_space *space) {
   space->next_block = (uintptr_t) &space->slabs[0].blocks;
 }
 
+static void rotate_mark_bytes(struct mark_space *space) {
+  space->sweep_live_mask = rotate_dead_survivor_marked(space->sweep_live_mask);
+  space->marked_mask = rotate_dead_survivor_marked(space->marked_mask);
+}
+
 static void collect(struct mutator *mut) {
   struct heap *heap = mutator_heap(mut);
   struct mark_space *space = heap_mark_space(heap);
@@ -516,6 +574,7 @@ static void collect(struct mutator *mut) {
   tracer_trace(heap);
   tracer_release(heap);
   reset_sweeper(space);
+  rotate_mark_bytes(space);
   heap->count++;
   large_object_space_finish_gc(lospace);
   heap_reset_stolen_pages(heap, lospace->live_pages_at_last_collection);
@@ -602,24 +661,23 @@ static size_t live_object_granules(struct gcobj *obj) {
   return size_to_granules(bytes);
 }  
 
-static size_t next_mark(const uint8_t *mark, size_t limit) {
-  size_t n = 0;
-  for (; (((uintptr_t)mark) & 7) && n < limit; n++)
-    if (mark[n])
-      return n;
-  uintptr_t *word_mark = (uintptr_t *)(mark + n);
-  for (;
-       n + sizeof(uintptr_t) * 4 <= limit;
-       n += sizeof(uintptr_t) * 4, word_mark += 4)
-    if (word_mark[0] | word_mark[1] | word_mark[2] | word_mark[3])
-      break;
-  for (;
-       n + sizeof(uintptr_t) <= limit;
-       n += sizeof(uintptr_t), word_mark += 1)
-    if (word_mark[0])
-      break;
-  for (; n < limit; n++)
-    if (mark[n])
+static size_t sweep_and_check_live(uint8_t *loc, uint8_t live_mask) {
+  uint8_t metadata = *loc;
+  // If the metadata byte is nonzero, that means either a young, dead,
+  // survived, or marked object.  If it's live (young, survived, or
+  // marked), we found the next mark.  Otherwise it's dead and we clear
+  // the byte.
+  if (metadata) {
+    if (metadata & live_mask)
+      return 1;
+    *loc = 0;
+  }
+  return 0;
+}
+
+static size_t next_mark(uint8_t *mark, size_t limit, uint8_t live_mask) {
+  for (size_t n = 0; n < limit; n++)
+    if (sweep_and_check_live(&mark[n], live_mask))
       return n;
   return limit;
 }
@@ -656,6 +714,7 @@ static int sweep(struct mutator *mut,
   ssize_t to_reclaim = 2 * MEDIUM_OBJECT_GRANULE_THRESHOLD;
   uintptr_t sweep = mut->sweep;
   uintptr_t limit = align_up(sweep, BLOCK_SIZE);
+  uint8_t live_mask = heap_mark_space(mutator_heap(mut))->sweep_live_mask;
 
   if (sweep == limit) {
     sweep = mark_space_next_block(heap_mark_space(mutator_heap(mut)));
@@ -678,7 +737,7 @@ static int sweep(struct mutator *mut,
         limit_granules = to_reclaim;
       }
     }
-    size_t free_granules = next_mark(mark, limit_granules);
+    size_t free_granules = next_mark(mark, limit_granules, live_mask);
     if (free_granules) {
       ASSERT(free_granules <= limit_granules);
       size_t free_bytes = free_granules * GRANULE_SIZE;
@@ -691,9 +750,8 @@ static int sweep(struct mutator *mut,
       if (free_granules == limit_granules)
         break;
     }
-    // Object survived collection; clear mark and continue sweeping.
-    ASSERT(*mark == 1);
-    *mark = 0;
+    // Object survived collection; skip over it and continue sweeping.
+    ASSERT((*mark) & live_mask);
     sweep += live_object_granules((struct gcobj *)sweep) * GRANULE_SIZE;
   }
 
@@ -702,15 +760,32 @@ static int sweep(struct mutator *mut,
 }
 
 // Another thread is triggering GC.  Before we stop, finish clearing the
-// mark bytes for the mutator's block, and release the block.
+// dead mark bytes for the mutator's block, and release the block.
 static void finish_sweeping(struct mutator *mut) {
   uintptr_t sweep = mut->sweep;
+  uintptr_t limit = align_up(sweep, BLOCK_SIZE);
+  uint8_t live_mask = heap_mark_space(mutator_heap(mut))->sweep_live_mask;
   if (sweep) {
-    uintptr_t limit = align_up(sweep, BLOCK_SIZE);
     uint8_t* mark = object_metadata_byte((struct gcobj*)sweep);
     size_t limit_granules = (limit - sweep) >> GRANULE_SIZE_LOG_2;
-    memset(mark, 0, limit_granules);
-    mut->sweep = 0;
+    while (limit_granules) {
+      size_t free_granules = next_mark(mark, limit_granules, live_mask);
+      if (free_granules) {
+        ASSERT(free_granules <= limit_granules);
+        size_t free_bytes = free_granules * GRANULE_SIZE;
+        sweep += free_bytes;
+        mark += free_granules;
+        limit_granules -= free_granules;
+        if (limit_granules == 0)
+          break;
+      }
+      // Object survived collection; skip over it and continue sweeping.
+      ASSERT((*mark) & live_mask);
+      size_t live_granules = live_object_granules((struct gcobj *)sweep);
+      sweep += live_granules * GRANULE_SIZE;
+      limit_granules -= live_granules;
+      mark += live_granules;
+    }
   }
 }
 
@@ -920,6 +995,11 @@ static int mark_space_init(struct mark_space *space, struct heap *heap) {
   if (!slabs)
     return 0;
 
+  uint8_t dead = METADATA_BYTE_MARK_0;
+  uint8_t survived = METADATA_BYTE_MARK_1;
+  uint8_t marked = METADATA_BYTE_MARK_2;
+  space->marked_mask = marked;
+  space->sweep_live_mask = METADATA_BYTE_YOUNG | survived | marked;
   space->slabs = slabs;
   space->nslabs = nslabs;
   space->low_addr = (uintptr_t) slabs;
