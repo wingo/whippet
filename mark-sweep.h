@@ -646,19 +646,11 @@ static void unlink_medium_object(struct gcobj_free_medium **prev,
   *prev = medium->next;
 }
 
-static size_t live_object_granules(struct gcobj *obj) {
-  size_t bytes;
-  switch (tag_live_alloc_kind (obj->tag)) {
-#define COMPUTE_SIZE(name, Name, NAME) \
-    case ALLOC_KIND_##NAME:            \
-      bytes = name##_size((Name*)obj); \
-      break;
-    FOR_EACH_HEAP_OBJECT_KIND(COMPUTE_SIZE)
-#undef COMPUTE_SIZE
-  default:
-    abort ();
-  }
-  return size_to_granules(bytes);
+static size_t mark_space_live_object_granules(uint8_t *metadata) {
+  size_t n = 0;
+  while ((metadata[n] & METADATA_BYTE_END) == 0)
+    n++;
+  return n + 1;
 }  
 
 static size_t sweep_and_check_live(uint8_t *loc, uint8_t live_mask) {
@@ -752,7 +744,7 @@ static int sweep(struct mutator *mut,
     }
     // Object survived collection; skip over it and continue sweeping.
     ASSERT((*mark) & live_mask);
-    sweep += live_object_granules((struct gcobj *)sweep) * GRANULE_SIZE;
+    sweep += mark_space_live_object_granules(mark) * GRANULE_SIZE;
   }
 
   mut->sweep = sweep;
@@ -772,8 +764,6 @@ static void finish_sweeping(struct mutator *mut) {
       size_t free_granules = next_mark(mark, limit_granules, live_mask);
       if (free_granules) {
         ASSERT(free_granules <= limit_granules);
-        size_t free_bytes = free_granules * GRANULE_SIZE;
-        sweep += free_bytes;
         mark += free_granules;
         limit_granules -= free_granules;
         if (limit_granules == 0)
@@ -781,8 +771,7 @@ static void finish_sweeping(struct mutator *mut) {
       }
       // Object survived collection; skip over it and continue sweeping.
       ASSERT((*mark) & live_mask);
-      size_t live_granules = live_object_granules((struct gcobj *)sweep);
-      sweep += live_granules * GRANULE_SIZE;
+      size_t live_granules = mark_space_live_object_granules(mark);
       limit_granules -= live_granules;
       mark += live_granules;
     }
@@ -839,6 +828,9 @@ static void* allocate_medium(struct mutator *mut, enum alloc_kind kind,
           split_medium_object(mut, medium, granules);
           struct gcobj *obj = (struct gcobj *)medium;
           obj->tag = tag_live(kind);
+          uint8_t *metadata = object_metadata_byte(obj);
+          metadata[0] = METADATA_BYTE_YOUNG;
+          metadata[granules - 1] = METADATA_BYTE_END;
           return medium;
         }
       }
@@ -933,6 +925,13 @@ static inline void* allocate_small(struct mutator *mut, enum alloc_kind kind,
   if (!*loc)
     fill_small(mut, granules);
   struct gcobj_free *ret = *loc;
+  uint8_t *metadata = object_metadata_byte(ret);
+  if (granules == 1) {
+    metadata[0] = METADATA_BYTE_YOUNG | METADATA_BYTE_END;
+  } else {
+    metadata[0] = METADATA_BYTE_YOUNG;
+    metadata[granules - 1] = METADATA_BYTE_END;
+  }
   *loc = ret->next;
   struct gcobj *obj = (struct gcobj *)ret;
   obj->tag = tag_live(kind);
