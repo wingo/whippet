@@ -182,21 +182,9 @@ static inline uintptr_t tag_live(uint8_t alloc_kind) {
   return ((uintptr_t)alloc_kind << gcobj_alloc_kind_shift);
 }
 
-struct gcobj_free {
-  struct gcobj_free *next;
-};
-
-// Objects larger than MEDIUM_OBJECT_GRANULE_THRESHOLD.
-struct gcobj_free_medium {
-  struct gcobj_free_medium *next;
-  size_t granules;
-};
-
 struct gcobj {
   union {
     uintptr_t tag;
-    struct gcobj_free free;
-    struct gcobj_free_medium free_medium;
     uintptr_t words[0];
     void *pointers[0];
   };
@@ -240,10 +228,8 @@ struct mutator_mark_buf {
 };
 
 struct mutator {
-  // Segregated freelists of small objects.
-  struct gcobj_free *small_objects[MEDIUM_OBJECT_GRANULE_THRESHOLD];
-  // Unordered list of medium objects.
-  struct gcobj_free_medium *medium_objects;
+  // Bump-pointer allocation into holes.
+  uintptr_t alloc;
   uintptr_t sweep;
   struct heap *heap;
   struct handle *roots;
@@ -262,12 +248,6 @@ static inline struct large_object_space* heap_large_object_space(struct heap *he
 }
 static inline struct heap* mutator_heap(struct mutator *mutator) {
   return mutator->heap;
-}
-
-static inline struct gcobj_free**
-get_small_object_freelist(struct mutator *mut, size_t granules) {
-  ASSERT(granules > 0 && granules <= MEDIUM_OBJECT_GRANULE_THRESHOLD);
-  return &mut->small_objects[granules - 1];
 }
 
 #define GC_HEADER uintptr_t _gc_header
@@ -325,12 +305,6 @@ static inline void trace_one(struct gcobj *obj, void *mark_data) {
   default:
     abort ();
   }
-}
-
-static void clear_mutator_freelists(struct mutator *mut) {
-  for (int i = 0; i < MEDIUM_OBJECT_GRANULE_THRESHOLD; i++)
-    mut->small_objects[i] = NULL;
-  mut->medium_objects = NULL;
 }
 
 static int heap_has_multiple_mutators(struct heap *heap) {
@@ -530,7 +504,6 @@ static void pause_mutator_for_collection_with_lock(struct mutator *mut) {
   finish_sweeping(mut);
   mark_controlling_mutator_roots(mut);
   pause_mutator_for_collection(heap);
-  clear_mutator_freelists(mut);
 }
 
 static void pause_mutator_for_collection_without_lock(struct mutator *mut) NEVER_INLINE;
@@ -543,7 +516,6 @@ static void pause_mutator_for_collection_without_lock(struct mutator *mut) {
   pause_mutator_for_collection(heap);
   heap_unlock(heap);
   release_stopping_mutator_roots(mut);
-  clear_mutator_freelists(mut);
 }
 
 static inline void maybe_pause_mutator_for_collection(struct mutator *mut) {
@@ -586,71 +558,7 @@ static void collect(struct mutator *mut) {
   large_object_space_finish_gc(lospace);
   heap_reset_stolen_pages(heap, lospace->live_pages_at_last_collection);
   allow_mutators_to_continue(heap);
-  clear_mutator_freelists(mut);
   DEBUG("collect done\n");
-}
-
-static void push_free(struct gcobj_free **loc, struct gcobj_free *obj) {
-  obj->next = *loc;
-  *loc = obj;
-}
-
-static void push_small(struct mutator *mut, void *region,
-                       size_t granules, size_t region_granules) {
-  uintptr_t addr = (uintptr_t) region;
-  struct gcobj_free **loc = get_small_object_freelist(mut, granules);
-  while (granules <= region_granules) {
-    push_free(loc, (struct gcobj_free*) addr);
-    region_granules -= granules;
-    addr += granules * GRANULE_SIZE;
-  }
-  // Fit any remaining granules into smaller freelist.
-  if (region_granules)
-    push_free(get_small_object_freelist(mut, region_granules),
-              (struct gcobj_free*) addr);
-}
-
-static void push_medium(struct mutator *mut, void *region, size_t granules) {
-  struct gcobj_free_medium *medium = region;
-  medium->next = mut->medium_objects;
-  medium->granules = granules;
-  mut->medium_objects = medium;
-}
-
-static void reclaim(struct mutator *mut,
-                    size_t small_object_granules,
-                    void *region,
-                    size_t region_granules) {
-  if (small_object_granules == 0)
-    small_object_granules = region_granules;
-  if (small_object_granules <= MEDIUM_OBJECT_GRANULE_THRESHOLD)
-    push_small(mut, region, small_object_granules, region_granules);
-  else
-    push_medium(mut, region, region_granules);
-}
-
-static void split_medium_object(struct mutator *mut,
-                                struct gcobj_free_medium *medium,
-                                size_t granules) {
-  size_t medium_granules = medium->granules;
-  ASSERT(medium_granules >= granules);
-  ASSERT(granules >= MEDIUM_OBJECT_GRANULE_THRESHOLD);
-  // Invariant: all words in MEDIUM are 0 except the two header words.
-  // MEDIUM is off the freelist.  We return a block of cleared memory, so
-  // clear those fields now.
-  medium->next = NULL;
-  medium->granules = 0;
-
-  if (medium_granules == granules)
-    return;
-  
-  char *tail = ((char*)medium) + granules * GRANULE_SIZE;
-  reclaim(mut, 0, tail, medium_granules - granules);
-}
-
-static void unlink_medium_object(struct gcobj_free_medium **prev,
-                                 struct gcobj_free_medium *medium) {
-  *prev = medium->next;
 }
 
 static size_t mark_space_live_object_granules(uint8_t *metadata) {
@@ -724,87 +632,46 @@ static uintptr_t mark_space_next_block(struct mark_space *space) {
   return block;
 }
 
-// Sweep some heap to reclaim free space.  Return 1 if there is more
-// heap to sweep, or 0 if we reached the end.
-static int sweep(struct mutator *mut,
-                 size_t small_object_granules,
-                 size_t medium_object_granules) {
-  // Sweep until we have reclaimed memory corresponding to twice the
-  // size of the smallest medium object, or we reach the end of the
-  // block.
-  ssize_t to_reclaim = 2 * MEDIUM_OBJECT_GRANULE_THRESHOLD;
+// Sweep some heap to reclaim free space, resetting mut->alloc and
+// mut->sweep.  Return the size of the hole in granules.
+static size_t next_hole(struct mutator *mut, size_t clear_size) {
   uintptr_t sweep = mut->sweep;
   uintptr_t limit = align_up(sweep, BLOCK_SIZE);
   uintptr_t sweep_mask = heap_mark_space(mutator_heap(mut))->sweep_mask;
 
-  if (sweep == limit) {
-    sweep = mark_space_next_block(heap_mark_space(mutator_heap(mut)));
-    if (sweep == 0) {
-      mut->sweep = 0;
-      return 0;
+  while (1) {
+    if (sweep == limit) {
+      sweep = mark_space_next_block(heap_mark_space(mutator_heap(mut)));
+      if (sweep == 0) {
+        mut->alloc = mut->sweep = 0;
+        return 0;
+      }
+      limit = sweep + BLOCK_SIZE;
     }
-    limit = sweep + BLOCK_SIZE;
-  }
 
-  while (to_reclaim > 0 && sweep < limit) {
     ASSERT((sweep & (GRANULE_SIZE - 1)) == 0);
     uint8_t* mark = object_metadata_byte((struct gcobj*)sweep);
     size_t limit_granules = (limit - sweep) >> GRANULE_SIZE_LOG_2;
-    if (limit_granules > to_reclaim) {
-      if (small_object_granules == 0) {
-        if (medium_object_granules < limit_granules)
-          limit_granules = medium_object_granules;
-      } else {
-        limit_granules = to_reclaim;
-      }
-    }
     size_t free_granules = next_mark(mark, limit_granules, sweep_mask);
     if (free_granules) {
       ASSERT(free_granules <= limit_granules);
       size_t free_bytes = free_granules * GRANULE_SIZE;
-      clear_memory(sweep + sizeof(uintptr_t), free_bytes - sizeof(uintptr_t));
-      reclaim(mut, small_object_granules, (void*)sweep, free_granules);
-      sweep += free_bytes;
-      to_reclaim -= free_granules;
-
-      mark += free_granules;
-      if (free_granules == limit_granules)
-        break;
+      if (free_granules >= clear_size)
+        clear_memory(sweep, free_bytes);
+      mut->alloc = sweep;
+      mut->sweep = sweep + free_bytes;
+      return free_granules;
     }
     // Object survived collection; skip over it and continue sweeping.
     ASSERT((*mark) & sweep_mask);
     sweep += mark_space_live_object_granules(mark) * GRANULE_SIZE;
   }
-
-  mut->sweep = sweep;
-  return 1;
 }
 
 // Another thread is triggering GC.  Before we stop, finish clearing the
 // dead mark bytes for the mutator's block, and release the block.
 static void finish_sweeping(struct mutator *mut) {
-  uintptr_t sweep = mut->sweep;
-  uintptr_t limit = align_up(sweep, BLOCK_SIZE);
-  uint8_t sweep_mask = heap_mark_space(mutator_heap(mut))->sweep_mask;
-  if (sweep) {
-    uint8_t* mark = object_metadata_byte((struct gcobj*)sweep);
-    size_t limit_granules = (limit - sweep) >> GRANULE_SIZE_LOG_2;
-    while (limit_granules) {
-      size_t free_granules = next_mark(mark, limit_granules, sweep_mask);
-      if (free_granules) {
-        ASSERT(free_granules <= limit_granules);
-        mark += free_granules;
-        limit_granules -= free_granules;
-        if (limit_granules == 0)
-          break;
-      }
-      // Object survived collection; skip over it and continue sweeping.
-      ASSERT((*mark) & sweep_mask);
-      size_t live_granules = mark_space_live_object_granules(mark);
-      limit_granules -= live_granules;
-      mark += live_granules;
-    }
-  }
+  while (next_hole(mut, -1)) {}
 }
 
 static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
@@ -840,93 +707,16 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
   return ret;
 }
 
-static void* allocate_medium(struct mutator *mut, enum alloc_kind kind,
-                             size_t granules) {
-  maybe_pause_mutator_for_collection(mut);
-
+static void* allocate_small_slow(struct mutator *mut, enum alloc_kind kind,
+                                 size_t granules) NEVER_INLINE;
+static void* allocate_small_slow(struct mutator *mut, enum alloc_kind kind,
+                                 size_t granules) {
   int swept_from_beginning = 0;
   while (1) {
-    struct gcobj_free_medium *already_scanned = NULL;
-    do {
-      struct gcobj_free_medium **prev = &mut->medium_objects;
-      for (struct gcobj_free_medium *medium = mut->medium_objects;
-           medium != already_scanned;
-           prev = &medium->next, medium = medium->next) {
-        if (medium->granules >= granules) {
-          unlink_medium_object(prev, medium);
-          split_medium_object(mut, medium, granules);
-          struct gcobj *obj = (struct gcobj *)medium;
-          obj->tag = tag_live(kind);
-          uint8_t *metadata = object_metadata_byte(obj);
-          metadata[0] = METADATA_BYTE_YOUNG;
-          metadata[granules - 1] = METADATA_BYTE_END;
-          return medium;
-        }
-      }
-      already_scanned = mut->medium_objects;
-    } while (sweep(mut, 0, granules));
-
-    struct heap *heap = mutator_heap(mut);
-    if (swept_from_beginning) {
-      fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
-      abort();
-    } else {
-      heap_lock(heap);
-      if (mutators_are_stopping(heap))
-        pause_mutator_for_collection_with_lock(mut);
-      else
-        collect(mut);
-      heap_unlock(heap);
-      swept_from_beginning = 1;
-    }
-  }
-}
-  
-static int fill_small_from_small(struct mutator *mut, size_t granules) {
-  // Precondition: the freelist for KIND is already empty.
-  ASSERT(!*get_small_object_freelist(mut, granules));
-  // See if there are small objects already on the freelists
-  // that can be split.
-  for (size_t next_size = granules + 1;
-       next_size <= MEDIUM_OBJECT_GRANULE_THRESHOLD;
-       next_size++) {
-    struct gcobj_free **loc = get_small_object_freelist(mut, next_size);
-    if (*loc) {
-      struct gcobj_free *ret = *loc;
-      *loc = ret->next;
-      push_small(mut, ret, granules, next_size);
-      return 1;
-    }
-  }
-  return 0;
-}
-
-static int fill_small_from_medium(struct mutator *mut, size_t granules) {
-  // If there is a medium object, take and split it.
-  struct gcobj_free_medium *medium = mut->medium_objects;
-  if (!medium)
-    return 0;
-
-  unlink_medium_object(&mut->medium_objects, medium);
-  ASSERT(medium->granules >= MEDIUM_OBJECT_GRANULE_THRESHOLD);
-  split_medium_object(mut, medium, MEDIUM_OBJECT_GRANULE_THRESHOLD);
-  push_small(mut, medium, granules, MEDIUM_OBJECT_GRANULE_THRESHOLD);
-  return 1;
-}
-
-static void fill_small(struct mutator *mut, size_t granules) NEVER_INLINE;
-static void fill_small(struct mutator *mut, size_t granules) {
-  maybe_pause_mutator_for_collection(mut);
-
-  int swept_from_beginning = 0;
-  while (1) {
-    if (fill_small_from_small(mut, granules))
+    size_t hole = next_hole(mut, granules);
+    if (hole >= granules)
       break;
-
-    if (fill_small_from_medium(mut, granules))
-      break;
-
-    if (!sweep(mut, granules, 0)) {
+    if (!hole) {
       struct heap *heap = mutator_heap(mut);
       if (swept_from_beginning) {
         fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
@@ -941,30 +731,39 @@ static void fill_small(struct mutator *mut, size_t granules) {
         swept_from_beginning = 1;
       }
     }
-
-    if (*get_small_object_freelist(mut, granules))
-      break;
   }
+  struct gcobj* ret = (struct gcobj*)mut->alloc;
+  mut->alloc += granules * GRANULE_SIZE;
+  return ret;
 }
 
 static inline void* allocate_small(struct mutator *mut, enum alloc_kind kind,
                                    size_t granules) {
   ASSERT(granules > 0); // allocating 0 granules would be silly
-  struct gcobj_free **loc = get_small_object_freelist(mut, granules);
-  if (!*loc)
-    fill_small(mut, granules);
-  struct gcobj_free *ret = *loc;
-  uint8_t *metadata = object_metadata_byte(ret);
+  uintptr_t alloc = mut->alloc;
+  uintptr_t sweep = mut->sweep;
+  uintptr_t new_alloc = alloc + granules * GRANULE_SIZE;
+  struct gcobj *obj;
+  if (new_alloc <= sweep) {
+    mut->alloc = new_alloc;
+    obj = (struct gcobj *)alloc;
+  } else {
+    obj = allocate_small_slow(mut, kind, granules);
+  }
+  obj->tag = tag_live(kind);
+  uint8_t *metadata = object_metadata_byte(obj);
   if (granules == 1) {
     metadata[0] = METADATA_BYTE_YOUNG | METADATA_BYTE_END;
   } else {
     metadata[0] = METADATA_BYTE_YOUNG;
     metadata[granules - 1] = METADATA_BYTE_END;
   }
-  *loc = ret->next;
-  struct gcobj *obj = (struct gcobj *)ret;
-  obj->tag = tag_live(kind);
   return obj;
+}
+
+static inline void* allocate_medium(struct mutator *mut, enum alloc_kind kind,
+                                    size_t granules) {
+  return allocate_small(mut, kind, granules);
 }
 
 static inline void* allocate(struct mutator *mut, enum alloc_kind kind,
