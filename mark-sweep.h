@@ -660,27 +660,27 @@ static size_t mark_space_live_object_granules(uint8_t *metadata) {
   return n + 1;
 }  
 
-// FIXME: use atomics
 static int sweep_byte(uint8_t *loc, uintptr_t sweep_mask) {
-  uint8_t metadata = *loc;
+  uint8_t metadata = atomic_load_explicit(loc, memory_order_relaxed);
   // If the metadata byte is nonzero, that means either a young, dead,
   // survived, or marked object.  If it's live (young, survived, or
   // marked), we found the next mark.  Otherwise it's dead and we clear
-  // the byte.
+  // the byte.  If we see an END, that means an end of a dead object;
+  // clear it.
   if (metadata) {
     if (metadata & sweep_mask)
       return 1;
-    *loc = 0;
+    atomic_store_explicit(loc, 0, memory_order_relaxed);
   }
   return 0;
 }
 
 static int sweep_word(uintptr_t *loc, uintptr_t sweep_mask) {
-  uintptr_t metadata = *loc;
+  uintptr_t metadata = atomic_load_explicit(loc, memory_order_relaxed);
   if (metadata) {
     if (metadata & sweep_mask)
       return 1;
-    *loc = 0;
+    atomic_store_explicit(loc, 0, memory_order_relaxed);
   }
   return 0;
 }
