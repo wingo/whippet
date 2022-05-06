@@ -321,8 +321,8 @@ int main(int argc, char *argv[]) {
   double multiplier = atof(argv[1]);
   size_t nthreads = atol(argv[2]);
 
-  if (!(1.0 < multiplier && multiplier < 100)) {
-    fprintf(stderr, "Failed to parse heap multiplier '%s'\n", argv[2]);
+  if (!(0.1 < multiplier && multiplier < 100)) {
+    fprintf(stderr, "Failed to parse heap multiplier '%s'\n", argv[1]);
     return 1;
   }
   if (nthreads < 1 || nthreads > MAX_THREAD_COUNT) {
