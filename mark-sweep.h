@@ -191,7 +191,7 @@ struct gcobj {
 };
 
 struct mark_space {
-  uintptr_t sweep_mask;
+  uint64_t sweep_mask;
   uint8_t live_mask;
   uint8_t marked_mask;
   uintptr_t low_addr;
@@ -231,6 +231,7 @@ struct mutator {
   // Bump-pointer allocation into holes.
   uintptr_t alloc;
   uintptr_t sweep;
+  uintptr_t block;
   struct heap *heap;
   struct handle *roots;
   struct mutator_mark_buf mark_buf;
@@ -453,10 +454,11 @@ static void wait_for_mutators_to_stop(struct heap *heap) {
 }
 
 static void finish_sweeping(struct mutator *mut);
+static void finish_sweeping_in_block(struct mutator *mut);
 
 static void mark_inactive_mutators(struct heap *heap) {
   for (struct mutator *mut = heap->deactivated_mutators; mut; mut = mut->next) {
-    finish_sweeping(mut);
+    finish_sweeping_in_block(mut);
     mark_controlling_mutator_roots(mut);
   }
 }
@@ -501,7 +503,7 @@ static void pause_mutator_for_collection_with_lock(struct mutator *mut) NEVER_IN
 static void pause_mutator_for_collection_with_lock(struct mutator *mut) {
   struct heap *heap = mutator_heap(mut);
   ASSERT(mutators_are_stopping(heap));
-  finish_sweeping(mut);
+  finish_sweeping_in_block(mut);
   mark_controlling_mutator_roots(mut);
   pause_mutator_for_collection(heap);
 }
@@ -527,8 +529,8 @@ static void reset_sweeper(struct mark_space *space) {
   space->next_block = (uintptr_t) &space->slabs[0].blocks;
 }
 
-static uintptr_t broadcast_byte(uint8_t byte) {
-  uintptr_t result = byte;
+static uint64_t broadcast_byte(uint8_t byte) {
+  uint64_t result = byte;
   return result * 0x0101010101010101ULL;
 }
 
@@ -547,6 +549,7 @@ static void collect(struct mutator *mut) {
   tracer_prepare(heap);
   request_mutators_to_stop(heap);
   mark_controlling_mutator_roots(mut);
+  finish_sweeping(mut);
   wait_for_mutators_to_stop(heap);
   mark_inactive_mutators(heap);
   mark_global_roots(heap);
@@ -593,21 +596,42 @@ static int sweep_word(uintptr_t *loc, uintptr_t sweep_mask) {
   return 0;
 }
 
-static size_t next_mark(uint8_t *mark, size_t limit, uintptr_t sweep_mask) {
+static inline uint64_t load_mark_bytes(uint8_t *mark) {
+  ASSERT(((uintptr_t)mark & 7) == 0);
+  uint8_t * __attribute__((aligned(8))) aligned_mark = mark;
+  uint64_t word;
+  memcpy(&word, aligned_mark, 8);
+#ifdef WORDS_BIGENDIAN
+  word = __builtin_bswap64(word);
+#endif
+  return word;
+}
+
+static inline size_t count_zero_bytes(uint64_t bytes) {
+  return bytes ? (__builtin_ctz(bytes) / 8) : sizeof(bytes);
+}
+
+static size_t next_mark(uint8_t *mark, size_t limit, uint64_t sweep_mask) {
   size_t n = 0;
-  // FIXME: may_alias
-  for (; (((uintptr_t)mark) & (sizeof(uintptr_t)-1)) && n < limit; n++)
-    if (sweep_byte(&mark[n], sweep_mask))
-      return n;
+  // If we have a hole, it is likely to be more that 8 granules long.
+  // Assuming that it's better to make aligned loads, first we align the
+  // sweep pointer, then we load aligned mark words.
+  size_t unaligned = ((uintptr_t) mark) & 7;
+  if (unaligned) {
+    uint64_t bytes = load_mark_bytes(mark - unaligned) >> (unaligned * 8);
+    bytes &= sweep_mask;
+    if (bytes)
+      return count_zero_bytes(bytes);
+    n += 8 - unaligned;
+  }
 
-  uintptr_t *mark_word = (uintptr_t*)&mark[n];
-  for (; n + sizeof(uintptr_t) <= limit; n += sizeof(uintptr_t), mark_word++)
-    if (sweep_word(mark_word, sweep_mask))
-      break;
+  for(; n < limit; n += 8) {
+    uint64_t bytes = load_mark_bytes(mark + n);
+    bytes &= sweep_mask;
+    if (bytes)
+      return n + count_zero_bytes(bytes);
+  }
 
-  for (; n < limit; n++)
-    if (sweep_byte(&mark[n], sweep_mask))
-      return n;
   return limit;
 }
 
@@ -632,46 +656,103 @@ static uintptr_t mark_space_next_block(struct mark_space *space) {
   return block;
 }
 
+static void finish_block(struct mutator *mut) {
+  mut->block = mut->alloc = mut->sweep = 0;
+}
+
+static int next_block(struct mutator *mut) {
+  ASSERT(mut->sweep == 0);
+  uintptr_t block = mark_space_next_block(heap_mark_space(mutator_heap(mut)));
+  if (block == 0)
+    return 0;
+
+  mut->alloc = mut->sweep = mut->block = block;
+  return 1;
+}
+
 // Sweep some heap to reclaim free space, resetting mut->alloc and
 // mut->sweep.  Return the size of the hole in granules.
-static size_t next_hole(struct mutator *mut, size_t clear_size) {
+static size_t next_hole_in_block(struct mutator *mut) {
   uintptr_t sweep = mut->sweep;
-  uintptr_t limit = align_up(sweep, BLOCK_SIZE);
+  if (sweep == 0)
+    return 0;
+  uintptr_t limit = mut->block + BLOCK_SIZE;
   uintptr_t sweep_mask = heap_mark_space(mutator_heap(mut))->sweep_mask;
 
-  while (1) {
-    if (sweep == limit) {
-      sweep = mark_space_next_block(heap_mark_space(mutator_heap(mut)));
-      if (sweep == 0) {
-        mut->alloc = mut->sweep = 0;
-        return 0;
+  while (sweep != limit) {
+    ASSERT((sweep & (GRANULE_SIZE - 1)) == 0);
+    uint8_t* metadata = object_metadata_byte((struct gcobj*)sweep);
+    size_t limit_granules = (limit - sweep) >> GRANULE_SIZE_LOG_2;
+
+    // Except for when we first get a block, mut->sweep is positioned
+    // right after a hole, which can point to either the end of the
+    // block or to a live object.  Assume that a live object is more
+    // common.
+    {
+      size_t live_granules = 0;
+      while (limit_granules && (metadata[0] & sweep_mask)) {
+        // Object survived collection; skip over it and continue sweeping.
+        size_t object_granules = mark_space_live_object_granules(metadata);
+        live_granules += object_granules;
+        limit_granules -= object_granules;
+        metadata += object_granules;
       }
-      limit = sweep + BLOCK_SIZE;
+      if (!limit_granules)
+        break;
+      sweep += live_granules * GRANULE_SIZE;
     }
 
-    ASSERT((sweep & (GRANULE_SIZE - 1)) == 0);
-    uint8_t* mark = object_metadata_byte((struct gcobj*)sweep);
-    size_t limit_granules = (limit - sweep) >> GRANULE_SIZE_LOG_2;
-    size_t free_granules = next_mark(mark, limit_granules, sweep_mask);
-    if (free_granules) {
-      ASSERT(free_granules <= limit_granules);
-      size_t free_bytes = free_granules * GRANULE_SIZE;
-      if (free_granules >= clear_size)
-        clear_memory(sweep, free_bytes);
-      mut->alloc = sweep;
-      mut->sweep = sweep + free_bytes;
-      return free_granules;
-    }
-    // Object survived collection; skip over it and continue sweeping.
-    ASSERT((*mark) & sweep_mask);
-    sweep += mark_space_live_object_granules(mark) * GRANULE_SIZE;
+    size_t free_granules = next_mark(metadata, limit_granules, sweep_mask);
+    ASSERT(free_granules);
+    ASSERT(free_granules <= limit_granules);
+    size_t free_bytes = free_granules * GRANULE_SIZE;
+    mut->alloc = sweep;
+    mut->sweep = sweep + free_bytes;
+    return free_granules;
   }
+
+  finish_block(mut);
+  return 0;
+}
+
+static void finish_hole(struct mutator *mut) {
+  size_t granules = (mut->sweep - mut->alloc) / GRANULE_SIZE;
+  if (granules) {
+    uint8_t *metadata = object_metadata_byte((void*)mut->alloc);
+    memset(metadata, 0, granules);
+    mut->alloc = mut->sweep;
+  }
+  // FIXME: add to fragmentation
+}
+
+static size_t next_hole(struct mutator *mut) {
+  finish_hole(mut);
+  while (1) {
+    size_t granules = next_hole_in_block(mut);
+    if (granules)
+      return granules;
+    if (!next_block(mut))
+      return 0;
+  }
+}
+
+static void finish_sweeping_in_block(struct mutator *mut) {
+  while (next_hole_in_block(mut))
+    finish_hole(mut);
 }
 
 // Another thread is triggering GC.  Before we stop, finish clearing the
 // dead mark bytes for the mutator's block, and release the block.
 static void finish_sweeping(struct mutator *mut) {
-  while (next_hole(mut, -1)) {}
+  while (next_hole(mut))
+    finish_hole(mut);
+}
+
+static void out_of_memory(struct mutator *mut) {
+  struct heap *heap = mutator_heap(mut);
+  fprintf(stderr, "ran out of space, heap size %zu (%zu slabs)\n",
+          heap->size, heap_mark_space(heap)->nslabs);
+  abort();
 }
 
 static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
@@ -686,10 +767,8 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
 
   if (!heap_steal_pages(heap, npages)) {
     collect(mut);
-    if (!heap_steal_pages(heap, npages)) {
-      fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
-      abort();
-    }
+    if (!heap_steal_pages(heap, npages))
+      out_of_memory(mut);
   }
 
   void *ret = large_object_space_alloc(space, npages);
@@ -713,14 +792,15 @@ static void* allocate_small_slow(struct mutator *mut, enum alloc_kind kind,
                                  size_t granules) {
   int swept_from_beginning = 0;
   while (1) {
-    size_t hole = next_hole(mut, granules);
-    if (hole >= granules)
+    size_t hole = next_hole(mut);
+    if (hole >= granules) {
+      clear_memory(mut->alloc, hole * GRANULE_SIZE);
       break;
+    }
     if (!hole) {
       struct heap *heap = mutator_heap(mut);
       if (swept_from_beginning) {
-        fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
-        abort();
+        out_of_memory(mut);
       } else {
         heap_lock(heap);
         if (mutators_are_stopping(heap))
@@ -756,6 +836,8 @@ static inline void* allocate_small(struct mutator *mut, enum alloc_kind kind,
     metadata[0] = METADATA_BYTE_YOUNG | METADATA_BYTE_END;
   } else {
     metadata[0] = METADATA_BYTE_YOUNG;
+    if (granules > 2)
+      memset(metadata + 1, 0, granules - 2);
     metadata[granules - 1] = METADATA_BYTE_END;
   }
   return obj;
@@ -921,5 +1003,6 @@ static inline void print_start_gc_stats(struct heap *heap) {
 
 static inline void print_end_gc_stats(struct heap *heap) {
   printf("Completed %ld collections\n", heap->count);
-  printf("Heap size with overhead is %zd\n", heap->size);
+  printf("Heap size with overhead is %zd (%zu slabs)\n",
+         heap->size, heap_mark_space(heap)->nslabs);
 }
