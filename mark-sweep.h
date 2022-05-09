@@ -207,6 +207,8 @@ struct mark_space {
   uintptr_t next_block;
   struct slab *slabs;
   size_t nslabs;
+  uintptr_t granules_freed_by_last_collection;
+  uintptr_t fragmentation_granules_since_last_collection;
 };
 
 struct heap {
@@ -547,6 +549,11 @@ static void rotate_mark_bytes(struct mark_space *space) {
   space->sweep_mask = broadcast_byte(space->live_mask);
 }
 
+static void reset_statistics(struct mark_space *space) {
+  space->granules_freed_by_last_collection = 0;
+  space->fragmentation_granules_since_last_collection = 0;
+}
+
 static void collect(struct mutator *mut) {
   struct heap *heap = mutator_heap(mut);
   struct mark_space *space = heap_mark_space(heap);
@@ -558,6 +565,11 @@ static void collect(struct mutator *mut) {
   mark_controlling_mutator_roots(mut);
   finish_sweeping(mut);
   wait_for_mutators_to_stop(heap);
+  double yield = space->granules_freed_by_last_collection * GRANULE_SIZE;
+  double fragmentation = space->fragmentation_granules_since_last_collection * GRANULE_SIZE;
+  yield /= SLAB_SIZE * space->nslabs;
+  fragmentation /= SLAB_SIZE * space->nslabs;
+  fprintf(stderr, "last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
   mark_inactive_mutators(heap);
   mark_global_roots(heap);
   tracer_trace(heap);
@@ -565,6 +577,7 @@ static void collect(struct mutator *mut) {
   reset_sweeper(space);
   rotate_mark_bytes(space);
   heap->count++;
+  reset_statistics(space);
   large_object_space_finish_gc(lospace);
   heap_reset_stolen_pages(heap, lospace->live_pages_at_last_collection);
   allow_mutators_to_continue(heap);
@@ -664,6 +677,14 @@ static uintptr_t mark_space_next_block(struct mark_space *space) {
 }
 
 static void finish_block(struct mutator *mut) {
+  ASSERT(mut->block);
+  struct block_summary *block = block_summary_for_addr(mut->block);
+  struct mark_space *space = heap_mark_space(mutator_heap(mut));
+  atomic_fetch_add(&space->granules_freed_by_last_collection,
+                   block->free_granules);
+  atomic_fetch_add(&space->fragmentation_granules_since_last_collection,
+                   block->fragmentation_granules);
+
   mut->block = mut->alloc = mut->sweep = 0;
 }
 
