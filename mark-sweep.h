@@ -110,11 +110,19 @@ STATIC_ASSERT_EQ(sizeof(struct slab_header), HEADER_BYTES_PER_SLAB);
 struct block_summary {
   union {
     struct {
-      uint16_t wasted_granules;
-      uint16_t wasted_spans;
+      // Counters related to previous collection: how many holes there
+      // were, and how much space they had.
+      uint16_t hole_count;
+      uint16_t free_granules;
+      // Counters related to allocation since previous collection:
+      // wasted space due to fragmentation.
+      uint16_t holes_with_fragmentation;
+      uint16_t fragmentation_granules;
+      // Status bytes.
       uint8_t out_for_thread;
       uint8_t has_pin;
       uint8_t paged_out;
+      uint8_t recycled;
     };
     uint8_t padding[SUMMARY_BYTES_PER_BLOCK];
   };
@@ -157,8 +165,7 @@ static uint8_t *object_remset_byte(void *obj) {
   return (uint8_t*) (base + remset_byte);
 }
 
-static struct block_summary* object_block_summary(void *obj) {
-  uintptr_t addr = (uintptr_t) obj;
+static struct block_summary* block_summary_for_addr(uintptr_t addr) {
   uintptr_t base = addr & ~(SLAB_SIZE - 1);
   uintptr_t block = (addr & (SLAB_SIZE - 1)) / BLOCK_SIZE;
   return (struct block_summary*) (base + block * sizeof(struct block_summary));
@@ -661,12 +668,18 @@ static void finish_block(struct mutator *mut) {
 }
 
 static int next_block(struct mutator *mut) {
-  ASSERT(mut->sweep == 0);
+  ASSERT(mut->block == 0);
   uintptr_t block = mark_space_next_block(heap_mark_space(mutator_heap(mut)));
   if (block == 0)
     return 0;
 
-  mut->alloc = mut->sweep = mut->block = block;
+  struct block_summary *summary = block_summary_for_addr(block);
+  summary->hole_count = 0;
+  summary->free_granules = 0;
+  summary->holes_with_fragmentation = 0;
+  summary->fragmentation_granules = 0;
+
+  mut->block = block;
   return 1;
 }
 
@@ -705,6 +718,11 @@ static size_t next_hole_in_block(struct mutator *mut) {
     size_t free_granules = next_mark(metadata, limit_granules, sweep_mask);
     ASSERT(free_granules);
     ASSERT(free_granules <= limit_granules);
+
+    struct block_summary *summary = block_summary_for_addr(sweep);
+    summary->hole_count++;
+    summary->free_granules += free_granules;
+
     size_t free_bytes = free_granules * GRANULE_SIZE;
     mut->alloc = sweep;
     mut->sweep = sweep + free_bytes;
@@ -718,6 +736,9 @@ static size_t next_hole_in_block(struct mutator *mut) {
 static void finish_hole(struct mutator *mut) {
   size_t granules = (mut->sweep - mut->alloc) / GRANULE_SIZE;
   if (granules) {
+    struct block_summary *summary = block_summary_for_addr(mut->block);
+    summary->holes_with_fragmentation++;
+    summary->fragmentation_granules += granules;
     uint8_t *metadata = object_metadata_byte((void*)mut->alloc);
     memset(metadata, 0, granules);
     mut->alloc = mut->sweep;
@@ -733,6 +754,16 @@ static size_t next_hole(struct mutator *mut) {
       return granules;
     if (!next_block(mut))
       return 0;
+    struct block_summary *summary = block_summary_for_addr(mut->block);
+    if (!summary->recycled) {
+      summary->hole_count++;
+      summary->free_granules = GRANULES_PER_BLOCK;
+      mut->alloc = mut->block;
+      mut->sweep = mut->block + BLOCK_SIZE;
+      summary->recycled = 1;
+      return GRANULES_PER_BLOCK;
+    }
+    mut->alloc = mut->sweep = mut->block;
   }
 }
 
