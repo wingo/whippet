@@ -122,7 +122,8 @@ struct block_summary {
       uint8_t out_for_thread;
       uint8_t has_pin;
       uint8_t paged_out;
-      uint8_t recycled;
+      uint8_t needs_sweep;
+      uint8_t unavailable;
     };
     uint8_t padding[SUMMARY_BYTES_PER_BLOCK];
   };
@@ -773,15 +774,18 @@ static size_t next_hole(struct mutator *mut) {
     size_t granules = next_hole_in_block(mut);
     if (granules)
       return granules;
-    if (!next_block(mut))
-      return 0;
-    struct block_summary *summary = block_summary_for_addr(mut->block);
-    if (!summary->recycled) {
+    struct block_summary *summary;
+    do {
+      if (!next_block(mut))
+        return 0;
+      summary = block_summary_for_addr(mut->block);
+    } while (summary->unavailable);
+    if (!summary->needs_sweep) {
       summary->hole_count++;
       summary->free_granules = GRANULES_PER_BLOCK;
       mut->alloc = mut->block;
       mut->sweep = mut->block + BLOCK_SIZE;
-      summary->recycled = 1;
+      summary->needs_sweep = 1;
       return GRANULES_PER_BLOCK;
     }
     mut->alloc = mut->sweep = mut->block;
@@ -967,6 +971,14 @@ static int mark_space_init(struct mark_space *space, struct heap *heap) {
   space->low_addr = (uintptr_t) slabs;
   space->extent = size;
   reset_sweeper(space);
+  for (size_t block = BLOCKS_PER_SLAB - 1;
+       block >= META_BLOCKS_PER_SLAB;
+       block--) {
+    if (size < heap->size)
+      break;
+    space->slabs[nslabs-1].summaries[block].unavailable = 1;
+    size -= BLOCK_SIZE;
+  }
   return 1;
 }
 
