@@ -39,13 +39,16 @@ in the mark byte table.
 You might think this is a bad tradeoff, and perhaps it is: I don't know
 yet.  If your granule size is two pointers, then one mark byte per
 granule is 6.25% overhead on 64-bit, or 12.5% on 32-bit.  Especially on
-32-bit, it's a lot!  On the other hand, you don't need GC bits in the
-object itself, and you get a number of other benefits from the mark byte
-table -- you can also stuff other per-object data there, such as pinning
-bits, nursery and remset bits, multiple mark colors for concurrent
-marking, and you can also use the mark byte (which is now a metadata
-byte) to record the object end, so that finding holes in a block can
-just read the mark table and can avoid looking at object memory.
+32-bit, it's a lot!  On the other hand, instead of the worst case of one
+survivor object wasting a line (or two, in the case of conservative line
+marking), granule-size-is-line-size instead wastes nothing.  Also, you
+don't need GC bits in the object itself, and you get a number of other
+benefits from the mark byte table -- you can also stuff other per-object
+data there, such as pinning bits, nursery and remset bits, multiple mark
+colors for concurrent marking, and you can also use the mark byte (which
+is now a metadata byte) to record the object end, so that finding holes
+in a block can just read the mark table and can avoid looking at object
+memory.
 
 Other ideas in whippet:
 
