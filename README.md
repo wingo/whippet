@@ -6,26 +6,26 @@ Scheme](https://gnu.org/s/guile).
 
 ## Design
 
-Whippet is a mark-region collector, like
+Whippet is mainly a mark-region collector, like
 [Immix](http://users.cecs.anu.edu.au/~steveb/pubs/papers/immix-pldi-2008.pdf).
 See also the lovely detailed [Rust
 implementation](http://users.cecs.anu.edu.au/~steveb/pubs/papers/rust-ismm-2016.pdf).
 
-To a first approximation, Whippet is a whole-heap Immix collector.  See
-the Immix paper for full details, but basically Immix divides the heap
-into 32kB blocks, and then divides those blocks into 128B lines.  An
-Immix allocation never spans blocks; allocations larger than 8kB go into
-a separate large object space.  Mutators request blocks from the global
-store and allocate into those blocks using bump-pointer allocation.
-When all blocks are consumed, Immix stops the world and traces the
-object graph, marking objects but also the lines that objects are on.
-After marking, blocks contain some lines with live objects and others
-that are completely free.  Spans of free lines are called holes.  When a
-mutator gets a recycled block from the global block store, it allocates
-into those holes.  Also, sometimes Immix can choose to evacuate rather
-than mark.  Bump-pointer-into-holes allocation is quite compatible with
-conservative roots, so it's an interesting option for Guile, which has a
-lot of legacy C API users.
+To a first approximation, Whippet is a whole-heap Immix collector with a
+large object space on the side.  See the Immix paper for full details,
+but basically Immix divides the heap into 32kB blocks, and then divides
+those blocks into 128B lines.  An Immix allocation never spans blocks;
+allocations larger than 8kB go into a separate large object space.
+Mutators request blocks from the global store and allocate into those
+blocks using bump-pointer allocation.  When all blocks are consumed,
+Immix stops the world and traces the object graph, marking objects but
+also the lines that objects are on.  After marking, blocks contain some
+lines with live objects and others that are completely free.  Spans of
+free lines are called holes.  When a mutator gets a recycled block from
+the global block store, it allocates into those holes.  Also, sometimes
+Immix can choose to evacuate rather than mark.  Bump-pointer-into-holes
+allocation is quite compatible with conservative roots, so it's an
+interesting option for Guile, which has a lot of legacy C API users.
 
 The essential difference of Whippet from Immix stems from a simple
 observation: Immix needs a side table of line mark bytes and also a mark
@@ -50,7 +50,7 @@ is now a metadata byte) to record the object end, so that finding holes
 in a block can just read the mark table and can avoid looking at object
 memory.
 
-Other ideas in whippet:
+Other ideas in Whippet:
 
  * Minimize stop-the-world phase via parallel marking and punting all
    sweeping to mutators
@@ -77,85 +77,88 @@ Other ideas in whippet:
 
 ## What's there
 
-There are currently three collectors:
+This repository is a workspace for Whippet implementation.  As such, it
+has files implementing Whippet itself.  It also has some benchmarks to
+use in optimizing Whippet:
+
+ - [`mt-gcbench.c`](./mt-gcbench.c): The multi-threaded [GCBench
+   benchmark](https://hboehm.info/gc/gc_bench.html).  An old but
+   standard benchmark that allocates different sizes of binary trees.
+   As parameters it takes a heap multiplier and a number of mutator
+   threads.  We analytically compute the peak amount of live data and
+   then size the GC heap as a multiplier of that size.  It has a peak
+   heap consumption of 10 MB or so per mutator thread: not very large.
+   At a 2x heap multiplier, it causes about 30 collections for the
+   whippet collector, and runs somewhere around 200-400 milliseconds in
+   single-threaded mode, on the machines I have in 2022.  For low thread
+   counts, the GCBench benchmark is small; but then again many Guile
+   processes also are quite short-lived, so perhaps it is useful to
+   ensure that small heaps remain lightweight.
+
+ - [`quads.c`](./quads.c): A synthetic benchmark that allocates quad
+   trees.  The mutator begins by allocating one long-lived tree of depth
+   N, and then allocates 13% of the heap in depth-3 trees, 20 times,
+   simulating a fixed working set and otherwise an allocation-heavy
+   workload.  By observing the times to allocate 13% of the heap in
+   garbage we can infer mutator overheads, and also note the variance
+   for the cycles in which GC hits.
+
+The repository has two other collector implementations, to appropriately
+situate Whippet's performance in context:
 
  - `bdw.h`: The external BDW-GC conservative parallel stop-the-world
    mark-sweep segregated-fits collector with lazy sweeping.
  - `semi.h`: Semispace copying collector.
- - `mark-sweep.h`: The whippet collector.  Two different marking algorithms:
-   single-threaded and parallel.
+ - `mark-sweep.h`: The whippet collector.  Two different marking
+   implementations: single-threaded and parallel.
 
-The two latter collectors reserve one word per object on the header,
-which might make them collect more frequently than `bdw` because the
-`Node` data type takes 32 bytes instead of 24 bytes.
+## Guile
 
-These collectors are sketches and exercises for improving Guile's
-garbage collector.  Guile currently uses BDW-GC.  In Guile if we have an
-object reference we generally have to be able to know what kind of
-object it is, because there are few global invariants enforced by
-typing.  Therefore it is reasonable to consider allowing the GC and the
-application to share the first word of an object, for example to maybe
-store a mark bit (though an on-the-side mark byte seems to allow much
-more efficient sweeping, for mark-sweep), to allow the application to
-know what kind an object is, to allow the GC to find references within
-the object, to allow the GC to compute the object's size, and so on.
+If the Whippet collector works out, it could replace Guile's garbage
+collector.  Guile currently uses BDW-GC.  Guile has a widely used C API
+and implements part of its run-time in C.  For this reason it may be
+infeasible to require precise enumeration of GC roots -- we may need to
+allow GC roots to be conservatively identified from data sections and
+from stacks.  Such conservative roots would be pinned, but other objects
+can be moved by the collector if it chooses to do so.  We assume that
+object references within a heap object can be precisely identified.
+(However, Guile currently uses BDW-GC in its default configuration,
+which scans for references conservatively even on the heap.)
 
-There's just the (modified) GCBench, which is an old but standard
-benchmark that allocates different sizes of binary trees.  As parameters
-it takes a heap multiplier and a number of mutator threads.  We
-analytically compute the peak amount of live data and then size the GC
-heap as a multiplier of that size.  It has a peak heap consumption of 10
-MB or so per mutator thread: not very large.  At a 2x heap multiplier,
-it causes about 30 collections for the whippet collector, and runs
-somewhere around 200-400 milliseconds in single-threaded mode, on the
-machines I have in 2022.
+The existing C API allows direct access to mutable object fields,
+without the mediation of read or write barriers.  Therefore it may be
+impossible to switch to collector strategies that need barriers, such as
+generational or concurrent collectors.  However, we shouldn't write off
+this possibility entirely; an ideal replacement for Guile's GC will
+offer the possibility of migration to other GC designs without imposing
+new requirements on C API users in the initial phase.
 
-The GCBench benchmark is small but then again many Guile processes also
-are quite short-lived, so perhaps it is useful to ensure that small
-heaps remain lightweight.
-
-Guile has a widely used C API and implements part of its run-time in C.
-For this reason it may be infeasible to require precise enumeration of
-GC roots -- we may need to allow GC roots to be conservatively
-identified from data sections and from stacks.  Such conservative roots
-would be pinned, but other objects can be moved by the collector if it
-chooses to do so.  We assume that object references within a heap object
-can be precisely identified.  (The current BDW-GC scans for references
-conservatively even on the heap.)
-
-A generationa
-A likely good solution for Guile would be an [Immix
-collector](https://www.cs.utexas.edu/users/speedway/DaCapo/papers/immix-pldi-2008.pdf)
-with conservative roots, and a parallel stop-the-world mark/evacuate
-phase.  We would probably follow the [Rust
-implementation](http://users.cecs.anu.edu.au/~steveb/pubs/papers/rust-ismm-2016.pdf),
-more or less, with support for per-line pinning.  In an ideal world we
-would work out some kind of generational solution as well, either via a
-semispace nursery or via sticky mark bits, but this requires Guile to
-use a write barrier -- something that's possible to do within Guile
-itself but it's unclear if we can extend this obligation to users of
-Guile's C API.
-
-In any case, these experiments also have the goal of identifying a
-smallish GC abstraction in Guile, so that we might consider evolving GC
-implementation in the future without too much pain.  If we switch away
-from BDW-GC, we should be able to evaluate that it's a win for a large
-majority of use cases.
+In this regard, the Whippet experiment also has the goal of identifying
+a smallish GC abstraction in Guile, so that we might consider evolving
+GC implementation in the future without too much pain.  If we switch
+away from BDW-GC, we should be able to evaluate that it's a win for a
+large majority of use cases.
 
 ## To do
 
- - [X] Implement a parallel marker for the mark-sweep collector.
- - [X] Adapt all GC implementations to allow multiple mutator threads.
-   Update gcbench.c.
- - [ ] Implement precise non-moving Immix whole-heap collector.
- - [ ] Add evacuation to Immix whole-heap collector.
- - [ ] Add parallelism to Immix stop-the-world phase.
- - [ ] Implement conservative root-finding for the mark-sweep collector.
- - [ ] Implement conservative root-finding and pinning for Immix.
- - [ ] Implement generational GC with semispace nursery and mark-sweep
-   old generation.
- - [ ] Implement generational GC with semispace nursery and Immix
-   old generation.
+### Missing features before Guile can use Whippet
+
+ - [ ] Pinning
+ - [ ] Conservative stacks
+ - [ ] Conservative data segments
+ - [ ] Heap growth/shrinking
+ - [ ] Debugging/tracing
+ - [ ] Finalizers
+ - [ ] Weak references / weak maps
+
+### Features that would improve Whippet performance
+
+ - [ ] Immix-style opportunistic evacuation
+ - [ ] Overflow allocation
+ - [ ] Lazy identification of empty blocks
+ - [ ] Generational GC via sticky mark bits
+ - [ ] Generational GC with semi-space nursery
+ - [ ] Concurrent marking with SATB barrier
 
 ## About the name
 
