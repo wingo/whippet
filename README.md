@@ -109,7 +109,7 @@ situate Whippet's performance in context:
  - `bdw.h`: The external BDW-GC conservative parallel stop-the-world
    mark-sweep segregated-fits collector with lazy sweeping.
  - `semi.h`: Semispace copying collector.
- - `mark-sweep.h`: The whippet collector.  Two different marking
+ - `whippet.h`: The whippet collector.  Two different marking
    implementations: single-threaded and parallel.
 
 ## Guile

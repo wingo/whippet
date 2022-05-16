@@ -1,5 +1,5 @@
 TESTS=quads mt-gcbench # MT_GCBench MT_GCBench2
-COLLECTORS=bdw semi mark-sweep parallel-mark-sweep
+COLLECTORS=bdw semi whippet parallel-whippet
 
 CC=gcc
 CFLAGS=-Wall -O2 -g -fno-strict-aliasing -Wno-unused -DNDEBUG
@@ -17,11 +17,11 @@ bdw-%: bdw.h conservative-roots.h %-types.h %.c
 semi-%: semi.h precise-roots.h large-object-space.h %-types.h heap-objects.h %.c
 	$(COMPILE) -DGC_SEMI -o $@ $*.c
 
-mark-sweep-%: mark-sweep.h precise-roots.h large-object-space.h serial-tracer.h assert.h debug.h %-types.h heap-objects.h %.c
-	$(COMPILE) -DGC_MARK_SWEEP -o $@ $*.c
+whippet-%: whippet.h precise-roots.h large-object-space.h serial-tracer.h assert.h debug.h %-types.h heap-objects.h %.c
+	$(COMPILE) -DGC_WHIPPET -o $@ $*.c
 
-parallel-mark-sweep-%: mark-sweep.h precise-roots.h large-object-space.h parallel-tracer.h assert.h debug.h %-types.h heap-objects.h %.c
-	$(COMPILE) -DGC_PARALLEL_MARK_SWEEP -o $@ $*.c
+parallel-whippet-%: whippet.h precise-roots.h large-object-space.h parallel-tracer.h assert.h debug.h %-types.h heap-objects.h %.c
+	$(COMPILE) -DGC_PARALLEL_WHIPPET -o $@ $*.c
 
 check: $(addprefix test-$(TARGET),$(TARGETS))
 

@@ -11,7 +11,7 @@
 #include "inline.h"
 #include "large-object-space.h"
 #include "precise-roots.h"
-#ifdef GC_PARALLEL_MARK
+#ifdef GC_PARALLEL_TRACE
 #include "parallel-tracer.h"
 #else
 #include "serial-tracer.h"
