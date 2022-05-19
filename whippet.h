@@ -107,9 +107,34 @@ struct slab_header {
 };
 STATIC_ASSERT_EQ(sizeof(struct slab_header), HEADER_BYTES_PER_SLAB);
 
+// Sometimes we want to put a block on a singly-linked list.  For that
+// there's a pointer reserved in the block summary.  But because the
+// pointer is aligned (32kB on 32-bit, 64kB on 64-bit), we can portably
+// hide up to 15 flags in the low bits.  These flags can be accessed
+// non-atomically by the mutator when it owns a block; otherwise they
+// need to be accessed atomically.
+enum block_summary_flag {
+  BLOCK_OUT_FOR_THREAD = 0x1,
+  BLOCK_HAS_PIN = 0x2,
+  BLOCK_PAGED_OUT = 0x4,
+  BLOCK_NEEDS_SWEEP = 0x8,
+  BLOCK_UNAVAILABLE = 0x10,
+  BLOCK_FLAG_UNUSED_5 = 0x20,
+  BLOCK_FLAG_UNUSED_6 = 0x40,
+  BLOCK_FLAG_UNUSED_7 = 0x80,
+  BLOCK_FLAG_UNUSED_8 = 0x100,
+  BLOCK_FLAG_UNUSED_9 = 0x200,
+  BLOCK_FLAG_UNUSED_10 = 0x400,
+  BLOCK_FLAG_UNUSED_11 = 0x800,
+  BLOCK_FLAG_UNUSED_12 = 0x1000,
+  BLOCK_FLAG_UNUSED_13 = 0x2000,
+  BLOCK_FLAG_UNUSED_14 = 0x4000,
+};
+
 struct block_summary {
   union {
     struct {
+      //struct block *next;
       // Counters related to previous collection: how many holes there
       // were, and how much space they had.
       uint16_t hole_count;
@@ -118,12 +143,12 @@ struct block_summary {
       // wasted space due to fragmentation.
       uint16_t holes_with_fragmentation;
       uint16_t fragmentation_granules;
-      // Status bytes.
-      uint8_t out_for_thread;
-      uint8_t has_pin;
-      uint8_t paged_out;
-      uint8_t needs_sweep;
-      uint8_t unavailable;
+      // After a block is swept, if it's empty it goes on the empties
+      // list.  Otherwise if it's not immediately used by a mutator (as
+      // is usually the case), it goes on the swept list.  Both of these
+      // lists use this field.  But as the next element in the field is
+      // block-aligned, we stash flags in the low bits.
+      uintptr_t next_and_flags;
     };
     uint8_t padding[SUMMARY_BYTES_PER_BLOCK];
   };
@@ -170,6 +195,22 @@ static struct block_summary* block_summary_for_addr(uintptr_t addr) {
   uintptr_t base = addr & ~(SLAB_SIZE - 1);
   uintptr_t block = (addr & (SLAB_SIZE - 1)) / BLOCK_SIZE;
   return (struct block_summary*) (base + block * sizeof(struct block_summary));
+}
+
+static uintptr_t block_summary_has_flag(struct block_summary *summary,
+                                        enum block_summary_flag flag) {
+  return summary->next_and_flags & flag;
+}
+static void block_summary_set_flag(struct block_summary *summary,
+                                   enum block_summary_flag flag) {
+  summary->next_and_flags |= flag;
+}
+static void block_summary_clear_flag(struct block_summary *summary,
+                                     enum block_summary_flag flag) {
+  summary->next_and_flags &= ~(uintptr_t)flag;
+}
+static struct block* block_summary_next(struct block_summary *summary) {
+  return (struct block*) (summary->next_and_flags & ~(BLOCK_SIZE - 1));
 }
 
 static uintptr_t align_up(uintptr_t addr, size_t align) {
@@ -779,13 +820,13 @@ static size_t next_hole(struct mutator *mut) {
       if (!next_block(mut))
         return 0;
       summary = block_summary_for_addr(mut->block);
-    } while (summary->unavailable);
-    if (!summary->needs_sweep) {
+    } while (block_summary_has_flag(summary, BLOCK_UNAVAILABLE));
+    if (!block_summary_has_flag(summary, BLOCK_NEEDS_SWEEP)) {
       summary->hole_count++;
       summary->free_granules = GRANULES_PER_BLOCK;
       mut->alloc = mut->block;
       mut->sweep = mut->block + BLOCK_SIZE;
-      summary->needs_sweep = 1;
+      block_summary_set_flag(summary, BLOCK_NEEDS_SWEEP);
       return GRANULES_PER_BLOCK;
     }
     mut->alloc = mut->sweep = mut->block;
@@ -976,7 +1017,8 @@ static int mark_space_init(struct mark_space *space, struct heap *heap) {
        block--) {
     if (size < heap->size)
       break;
-    space->slabs[nslabs-1].summaries[block].unavailable = 1;
+    block_summary_set_flag(&space->slabs[nslabs-1].summaries[block],
+                           BLOCK_UNAVAILABLE);
     size -= BLOCK_SIZE;
   }
   return 1;
