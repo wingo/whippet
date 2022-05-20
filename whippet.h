@@ -209,8 +209,36 @@ static void block_summary_clear_flag(struct block_summary *summary,
                                      enum block_summary_flag flag) {
   summary->next_and_flags &= ~(uintptr_t)flag;
 }
-static struct block* block_summary_next(struct block_summary *summary) {
-  return (struct block*) (summary->next_and_flags & ~(BLOCK_SIZE - 1));
+static uintptr_t block_summary_next(struct block_summary *summary) {
+  return summary->next_and_flags & ~(BLOCK_SIZE - 1);
+}
+static void block_summary_set_next(struct block_summary *summary,
+                                   uintptr_t next) {
+  ASSERT((next & ~(BLOCK_SIZE - 1)) == 0);
+  summary->next_and_flags =
+    (summary->next_and_flags & (BLOCK_SIZE - 1)) | next;
+}
+
+static void push_block(uintptr_t *loc, uintptr_t block) {
+  struct block_summary *summary = block_summary_for_addr(block);
+  uintptr_t next = atomic_load_explicit(loc, memory_order_acquire);
+  do {
+    block_summary_set_next(summary, next);
+  } while (!atomic_compare_exchange_weak(loc, &next, block));
+}
+
+static uintptr_t pop_block(uintptr_t *loc) {
+  uintptr_t head = atomic_load_explicit(loc, memory_order_acquire);
+  struct block_summary *summary;
+  uintptr_t next;
+  do {
+    if (!head)
+      return 0;
+    summary = block_summary_for_addr(head);
+    next = block_summary_next(summary);
+  } while (!atomic_compare_exchange_weak(loc, &head, next));
+  block_summary_set_next(summary, 0);
+  return head;
 }
 
 static uintptr_t align_up(uintptr_t addr, size_t align) {
@@ -246,11 +274,12 @@ struct mark_space {
   uintptr_t low_addr;
   size_t extent;
   size_t heap_size;
-  uintptr_t next_block;
+  uintptr_t next_block;   // atomically
+  uintptr_t empty_blocks; // atomically
   struct slab *slabs;
   size_t nslabs;
-  uintptr_t granules_freed_by_last_collection;
-  uintptr_t fragmentation_granules_since_last_collection;
+  uintptr_t granules_freed_by_last_collection; // atomically
+  uintptr_t fragmentation_granules_since_last_collection; // atomically
 };
 
 struct heap {
@@ -703,7 +732,7 @@ static uintptr_t mark_space_next_block(struct mark_space *space) {
   uintptr_t next_block;
   do {
     if (block == 0)
-      return 0;
+      return pop_block(&space->empty_blocks);
 
     next_block = block + BLOCK_SIZE;
     if (next_block % SLAB_SIZE == 0) {
@@ -809,12 +838,30 @@ static void finish_hole(struct mutator *mut) {
   // FIXME: add to fragmentation
 }
 
+static void return_empty_block(struct mutator *mut) {
+  ASSERT(mut->block);
+  struct mark_space *space = heap_mark_space(mutator_heap(mut));
+  uintptr_t block = mut->block;
+  struct block_summary *summary = block_summary_for_addr(block);
+  block_summary_clear_flag(summary, BLOCK_NEEDS_SWEEP);
+  push_block(&space->empty_blocks, block);
+  mut->alloc = mut->sweep = mut->block = 0;
+}
+
 static size_t next_hole(struct mutator *mut) {
   finish_hole(mut);
+  // As we sweep if we find that a block is empty, we return it to the
+  // empties list.  Empties are precious.  But if we return 10 blocks in
+  // a row, and still find an 11th empty, go ahead and use it.
+  size_t empties_countdown = 10;
   while (1) {
     size_t granules = next_hole_in_block(mut);
-    if (granules)
-      return granules;
+    if (granules) {
+      if (granules == GRANULES_PER_BLOCK && empties_countdown--)
+        return_empty_block(mut);
+      else
+        return granules;
+    }
     struct block_summary *summary;
     do {
       if (!next_block(mut))
@@ -822,11 +869,11 @@ static size_t next_hole(struct mutator *mut) {
       summary = block_summary_for_addr(mut->block);
     } while (block_summary_has_flag(summary, BLOCK_UNAVAILABLE));
     if (!block_summary_has_flag(summary, BLOCK_NEEDS_SWEEP)) {
+      block_summary_set_flag(summary, BLOCK_NEEDS_SWEEP);
       summary->hole_count++;
       summary->free_granules = GRANULES_PER_BLOCK;
       mut->alloc = mut->block;
       mut->sweep = mut->block + BLOCK_SIZE;
-      block_summary_set_flag(summary, BLOCK_NEEDS_SWEEP);
       return GRANULES_PER_BLOCK;
     }
     mut->alloc = mut->sweep = mut->block;
