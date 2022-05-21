@@ -214,20 +214,21 @@ static uintptr_t block_summary_next(struct block_summary *summary) {
 }
 static void block_summary_set_next(struct block_summary *summary,
                                    uintptr_t next) {
-  ASSERT((next & ~(BLOCK_SIZE - 1)) == 0);
+  ASSERT((next & (BLOCK_SIZE - 1)) == 0);
   summary->next_and_flags =
     (summary->next_and_flags & (BLOCK_SIZE - 1)) | next;
 }
 
-static void push_block(uintptr_t *loc, uintptr_t block) {
+static void push_block(uintptr_t *loc, size_t *count, uintptr_t block) {
   struct block_summary *summary = block_summary_for_addr(block);
   uintptr_t next = atomic_load_explicit(loc, memory_order_acquire);
   do {
     block_summary_set_next(summary, next);
   } while (!atomic_compare_exchange_weak(loc, &next, block));
+  atomic_fetch_add_explicit(count, 1, memory_order_acq_rel);
 }
 
-static uintptr_t pop_block(uintptr_t *loc) {
+static uintptr_t pop_block(uintptr_t *loc, size_t *count) {
   uintptr_t head = atomic_load_explicit(loc, memory_order_acquire);
   struct block_summary *summary;
   uintptr_t next;
@@ -238,6 +239,7 @@ static uintptr_t pop_block(uintptr_t *loc) {
     next = block_summary_next(summary);
   } while (!atomic_compare_exchange_weak(loc, &head, next));
   block_summary_set_next(summary, 0);
+  atomic_fetch_sub_explicit(count, 1, memory_order_acq_rel);
   return head;
 }
 
@@ -276,6 +278,10 @@ struct mark_space {
   size_t heap_size;
   uintptr_t next_block;   // atomically
   uintptr_t empty_blocks; // atomically
+  size_t empty_blocks_count; // atomically
+  uintptr_t unavailable_blocks; // atomically
+  size_t unavailable_blocks_count; // atomically
+  ssize_t pending_unavailable_bytes; // atomically
   struct slab *slabs;
   size_t nslabs;
   uintptr_t granules_freed_by_last_collection; // atomically
@@ -285,6 +291,7 @@ struct mark_space {
 struct heap {
   struct mark_space mark_space;
   struct large_object_space large_object_space;
+  size_t large_object_pages;
   pthread_mutex_t lock;
   pthread_cond_t collector_cond;
   pthread_cond_t mutator_cond;
@@ -443,13 +450,90 @@ static void allow_mutators_to_continue(struct heap *heap) {
   pthread_cond_broadcast(&heap->mutator_cond);
 }
 
-static int heap_steal_pages(struct heap *heap, size_t npages) {
-  // FIXME: When we have a block-structured mark space, actually return
-  // pages to the OS, and limit to the current heap size.
-  return 1;
+static void push_unavailable_block(struct mark_space *space, uintptr_t block) {
+  struct block_summary *summary = block_summary_for_addr(block);
+  ASSERT(!block_summary_has_flag(summary, BLOCK_NEEDS_SWEEP));
+  ASSERT(!block_summary_has_flag(summary, BLOCK_UNAVAILABLE));
+  block_summary_set_flag(summary, BLOCK_UNAVAILABLE);
+  madvise((void*)block, BLOCK_SIZE, MADV_DONTNEED);
+  push_block(&space->unavailable_blocks, &space->unavailable_blocks_count,
+             block);
 }
-static void heap_reset_stolen_pages(struct heap *heap, size_t npages) {
-  // FIXME: Possibly reclaim blocks from the reclaimed set.
+
+static uintptr_t pop_unavailable_block(struct mark_space *space) {
+  uintptr_t block = pop_block(&space->unavailable_blocks,
+                              &space->unavailable_blocks_count);
+  if (!block)
+    return 0;
+  struct block_summary *summary = block_summary_for_addr(block);
+  ASSERT(block_summary_has_flag(summary, BLOCK_UNAVAILABLE));
+  block_summary_clear_flag(summary, BLOCK_UNAVAILABLE);
+  return block;
+}
+
+static uintptr_t pop_empty_block(struct mark_space *space) {
+  return pop_block(&space->empty_blocks, &space->empty_blocks_count);
+}
+
+static void push_empty_block(struct mark_space *space, uintptr_t block) {
+  ASSERT(!block_summary_has_flag(block_summary_for_addr(block),
+                                 BLOCK_NEEDS_SWEEP));
+  push_block(&space->empty_blocks, &space->empty_blocks_count, block);
+}
+
+static ssize_t mark_space_request_release_memory(struct mark_space *space,
+                                                 size_t bytes) {
+  return atomic_fetch_add(&space->pending_unavailable_bytes, bytes) + bytes;
+}
+
+static void mark_space_reacquire_memory(struct mark_space *space,
+                                        size_t bytes) {
+  ssize_t pending =
+    atomic_fetch_sub(&space->pending_unavailable_bytes, bytes) - bytes;
+  while (pending + BLOCK_SIZE <= 0) {
+    uintptr_t block = pop_unavailable_block(space);
+    ASSERT(block);
+    push_empty_block(space, block);
+    pending += BLOCK_SIZE;
+  }
+}
+
+static size_t next_hole(struct mutator *mut);
+
+static int sweep_until_memory_released(struct mutator *mut) {
+  struct mark_space *space = heap_mark_space(mutator_heap(mut));
+  ssize_t pending = atomic_load_explicit(&space->pending_unavailable_bytes,
+                                         memory_order_acquire);
+  // First try to unmap previously-identified empty blocks.  If pending
+  // > 0 and other mutators happen to identify empty blocks, they will
+  // be unmapped directly and moved to the unavailable list.
+  while (pending > 0) {
+    uintptr_t block = pop_empty_block(space);
+    if (!block)
+      break;
+    push_unavailable_block(space, block);
+    pending = atomic_fetch_sub(&space->pending_unavailable_bytes, BLOCK_SIZE);
+    pending -= BLOCK_SIZE;
+  }
+  // Otherwise, sweep, transitioning any empty blocks to unavailable and
+  // throwing away any non-empty block.  A bit wasteful but hastening
+  // the next collection is a reasonable thing to do here.
+  while (pending > 0) {
+    if (!next_hole(mut))
+      return 0;
+    pending = atomic_load_explicit(&space->pending_unavailable_bytes,
+                                   memory_order_acquire);
+  }
+  return pending <= 0;
+}
+
+static void heap_reset_large_object_pages(struct heap *heap, size_t npages) {
+  size_t previous = heap->large_object_pages;
+  heap->large_object_pages = npages;
+  ASSERT(npages <= previous);
+  size_t bytes = (previous - npages) <<
+    heap_large_object_space(heap)->page_size_log2;
+  mark_space_reacquire_memory(heap_mark_space(heap), bytes);
 }
 
 static void mutator_mark_buf_grow(struct mutator_mark_buf *buf) {
@@ -650,7 +734,7 @@ static void collect(struct mutator *mut) {
   heap->count++;
   reset_statistics(space);
   large_object_space_finish_gc(lospace);
-  heap_reset_stolen_pages(heap, lospace->live_pages_at_last_collection);
+  heap_reset_large_object_pages(heap, lospace->live_pages_at_last_collection);
   allow_mutators_to_continue(heap);
   DEBUG("collect done\n");
 }
@@ -726,13 +810,13 @@ static size_t next_mark(uint8_t *mark, size_t limit, uint64_t sweep_mask) {
   return limit;
 }
 
-static uintptr_t mark_space_next_block(struct mark_space *space) {
+static uintptr_t mark_space_next_block_to_sweep(struct mark_space *space) {
   uintptr_t block = atomic_load_explicit(&space->next_block,
                                          memory_order_acquire);
   uintptr_t next_block;
   do {
     if (block == 0)
-      return pop_block(&space->empty_blocks);
+      return 0;
 
     next_block = block + BLOCK_SIZE;
     if (next_block % SLAB_SIZE == 0) {
@@ -757,22 +841,6 @@ static void finish_block(struct mutator *mut) {
                    block->fragmentation_granules);
 
   mut->block = mut->alloc = mut->sweep = 0;
-}
-
-static int next_block(struct mutator *mut) {
-  ASSERT(mut->block == 0);
-  uintptr_t block = mark_space_next_block(heap_mark_space(mutator_heap(mut)));
-  if (block == 0)
-    return 0;
-
-  struct block_summary *summary = block_summary_for_addr(block);
-  summary->hole_count = 0;
-  summary->free_granules = 0;
-  summary->holes_with_fragmentation = 0;
-  summary->fragmentation_granules = 0;
-
-  mut->block = block;
-  return 1;
 }
 
 // Sweep some heap to reclaim free space, resetting mut->alloc and
@@ -838,14 +906,19 @@ static void finish_hole(struct mutator *mut) {
   // FIXME: add to fragmentation
 }
 
-static void return_empty_block(struct mutator *mut) {
+static int maybe_release_swept_empty_block(struct mutator *mut) {
   ASSERT(mut->block);
   struct mark_space *space = heap_mark_space(mutator_heap(mut));
   uintptr_t block = mut->block;
-  struct block_summary *summary = block_summary_for_addr(block);
-  block_summary_clear_flag(summary, BLOCK_NEEDS_SWEEP);
-  push_block(&space->empty_blocks, block);
+  if (atomic_load_explicit(&space->pending_unavailable_bytes,
+                           memory_order_acquire) <= 0)
+    return 0;
+
+  block_summary_clear_flag(block_summary_for_addr(block), BLOCK_NEEDS_SWEEP);
+  push_unavailable_block(space, block);
+  atomic_fetch_sub(&space->pending_unavailable_bytes, BLOCK_SIZE);
   mut->alloc = mut->sweep = mut->block = 0;
+  return 1;
 }
 
 static size_t next_hole(struct mutator *mut) {
@@ -854,29 +927,79 @@ static size_t next_hole(struct mutator *mut) {
   // empties list.  Empties are precious.  But if we return 10 blocks in
   // a row, and still find an 11th empty, go ahead and use it.
   size_t empties_countdown = 10;
+  struct mark_space *space = heap_mark_space(mutator_heap(mut));
   while (1) {
+    // Sweep current block for a hole.
     size_t granules = next_hole_in_block(mut);
     if (granules) {
-      if (granules == GRANULES_PER_BLOCK && empties_countdown--)
-        return_empty_block(mut);
-      else
+      // If the hole spans only part of a block, give it to the mutator.
+      if (granules <= GRANULES_PER_BLOCK)
         return granules;
+      // Sweeping found a completely empty block.  If we have pending
+      // pages to release to the OS, we should unmap this block.
+      if (maybe_release_swept_empty_block(mut))
+        continue;
+      // Otherwise if we've already returned lots of empty blocks to the
+      // freelist, give this block to the mutator.
+      if (!empties_countdown)
+        return granules;
+      // Otherwise we push to the empty blocks list.
+      struct block_summary *summary = block_summary_for_addr(mut->block);
+      block_summary_clear_flag(summary, BLOCK_NEEDS_SWEEP);
+      push_empty_block(space, mut->block);
+      mut->alloc = mut->sweep = mut->block = 0;
+      empties_countdown--;
     }
-    struct block_summary *summary;
-    do {
-      if (!next_block(mut))
-        return 0;
-      summary = block_summary_for_addr(mut->block);
-    } while (block_summary_has_flag(summary, BLOCK_UNAVAILABLE));
-    if (!block_summary_has_flag(summary, BLOCK_NEEDS_SWEEP)) {
-      block_summary_set_flag(summary, BLOCK_NEEDS_SWEEP);
-      summary->hole_count++;
-      summary->free_granules = GRANULES_PER_BLOCK;
-      mut->alloc = mut->block;
-      mut->sweep = mut->block + BLOCK_SIZE;
-      return GRANULES_PER_BLOCK;
+    ASSERT(mut->block == 0);
+    while (1) {
+      uintptr_t block = mark_space_next_block_to_sweep(space);
+      if (block) {
+        // Sweeping found a block.  We might take it for allocation, or
+        // we might send it back.
+        struct block_summary *summary = block_summary_for_addr(block);
+        // If it's marked unavailable, it's already on a list of
+        // unavailable blocks, so skip and get the next block.
+        if (block_summary_has_flag(summary, BLOCK_UNAVAILABLE))
+          continue;
+        if (block_summary_has_flag(summary, BLOCK_NEEDS_SWEEP)) {
+          // This block was marked in the last GC and needs sweeping.
+          // As we sweep we'll want to record how many bytes were live
+          // at the last collection.  As we allocate we'll record how
+          // many granules were wasted because of fragmentation.
+          summary->hole_count = 0;
+          summary->free_granules = 0;
+          summary->holes_with_fragmentation = 0;
+          summary->fragmentation_granules = 0;
+          // Prepare to sweep the block for holes.
+          mut->alloc = mut->sweep = mut->block = block;
+          break;
+        } else {
+          // Otherwise this block is completely empty and is on the
+          // empties list.  We take from the empties list only after all
+          // the NEEDS_SWEEP blocks are processed.
+          continue;
+        }
+      } else {
+        // We are done sweeping for blocks.  Now take from the empties
+        // list.
+        block = pop_empty_block(space);
+        // No empty block?  Return 0 to cause collection.
+        if (!block)
+          return 0;
+        
+        // Otherwise return the block to the mutator.
+        struct block_summary *summary = block_summary_for_addr(block);
+        block_summary_set_flag(summary, BLOCK_NEEDS_SWEEP);
+        summary->hole_count = 1;
+        summary->free_granules = GRANULES_PER_BLOCK;
+        summary->holes_with_fragmentation = 0;
+        summary->fragmentation_granules = 0;
+        mut->block = block;
+        mut->alloc = block;
+        mut->sweep = block + BLOCK_SIZE;
+        return GRANULES_PER_BLOCK;
+      }
     }
-    mut->alloc = mut->sweep = mut->block;
   }
 }
 
@@ -907,19 +1030,23 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
   size_t size = granules * GRANULE_SIZE;
   size_t npages = large_object_space_npages(space, size);
 
-  heap_lock(heap);
-
-  if (!heap_steal_pages(heap, npages)) {
-    collect(mut);
-    if (!heap_steal_pages(heap, npages))
+  mark_space_request_release_memory(heap_mark_space(heap),
+                                    npages << space->page_size_log2);
+  if (!sweep_until_memory_released(mut)) {
+    heap_lock(heap);
+    if (mutators_are_stopping(heap))
+      pause_mutator_for_collection_with_lock(mut);
+    else
+      collect(mut);
+    heap_unlock(heap);
+    if (!sweep_until_memory_released(mut))
       out_of_memory(mut);
   }
+  atomic_fetch_add(&heap->large_object_pages, npages);
 
   void *ret = large_object_space_alloc(space, npages);
   if (!ret)
     ret = large_object_space_obtain_and_alloc(space, npages);
-
-  heap_unlock(heap);
 
   if (!ret) {
     perror("weird: we have the space but mmap didn't work");
@@ -1058,15 +1185,17 @@ static int mark_space_init(struct mark_space *space, struct heap *heap) {
   space->nslabs = nslabs;
   space->low_addr = (uintptr_t) slabs;
   space->extent = size;
-  reset_sweeper(space);
-  for (size_t block = BLOCKS_PER_SLAB - 1;
-       block >= META_BLOCKS_PER_SLAB;
-       block--) {
-    if (size < heap->size)
-      break;
-    block_summary_set_flag(&space->slabs[nslabs-1].summaries[block],
-                           BLOCK_UNAVAILABLE);
-    size -= BLOCK_SIZE;
+  space->next_block = 0;
+  for (size_t slab = 0; slab < nslabs; slab++) {
+    for (size_t block = 0; block < NONMETA_BLOCKS_PER_SLAB; block++) {
+      uintptr_t addr = (uintptr_t)slabs[slab].blocks[block].data;
+      if (size > heap->size) {
+        push_unavailable_block(space, addr);
+        size -= BLOCK_SIZE;
+      } else {
+        push_empty_block(space, addr);
+      }
+    }
   }
   return 1;
 }
