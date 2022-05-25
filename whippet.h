@@ -494,7 +494,8 @@ static void mark_space_reacquire_memory(struct mark_space *space,
     uintptr_t block = pop_unavailable_block(space);
     ASSERT(block);
     push_empty_block(space, block);
-    pending += BLOCK_SIZE;
+    pending = atomic_fetch_add(&space->pending_unavailable_bytes, BLOCK_SIZE)
+      + BLOCK_SIZE;
   }
 }
 
