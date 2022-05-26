@@ -987,7 +987,7 @@ static size_t next_hole(struct mutator *mut) {
         // No empty block?  Return 0 to cause collection.
         if (!block)
           return 0;
-        
+
         // Otherwise return the block to the mutator.
         struct block_summary *summary = block_summary_for_addr(block);
         block_summary_set_flag(summary, BLOCK_NEEDS_SWEEP);
