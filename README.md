@@ -155,7 +155,6 @@ large majority of use cases.
 
  - [ ] Immix-style opportunistic evacuation
  - [ ] Overflow allocation
- - [ ] Lazy identification of empty blocks
  - [ ] Generational GC via sticky mark bits
  - [ ] Generational GC with semi-space nursery
  - [ ] Concurrent marking with SATB barrier

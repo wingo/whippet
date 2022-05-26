@@ -934,7 +934,7 @@ static size_t next_hole(struct mutator *mut) {
     size_t granules = next_hole_in_block(mut);
     if (granules) {
       // If the hole spans only part of a block, give it to the mutator.
-      if (granules <= GRANULES_PER_BLOCK)
+      if (granules < GRANULES_PER_BLOCK)
         return granules;
       // Sweeping found a completely empty block.  If we have pending
       // pages to release to the OS, we should unmap this block.
