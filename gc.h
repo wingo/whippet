@@ -1,6 +1,8 @@
 #ifndef GC_H_
 #define GC_H_
 
+#include "gc-types.h"
+
 #if defined(GC_BDW)
 #include "bdw.h"
 #elif defined(GC_SEMI)

@@ -57,7 +57,7 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
 static void collect(struct mutator *mut) NEVER_INLINE;
 static void collect_for_alloc(struct mutator *mut, size_t bytes) NEVER_INLINE;
 
-static void visit(void **loc, void *visit_data);
+static void visit(struct gc_edge edge, void *visit_data);
 
 static int semi_space_steal_pages(struct semi_space *space, size_t npages) {
   size_t stolen_pages = space->stolen_pages + npages;
@@ -143,13 +143,13 @@ static void* forward(struct semi_space *space, void *obj) {
 }  
 
 static void visit_semi_space(struct heap *heap, struct semi_space *space,
-                             void **loc, void *obj) {
-  *loc = forward(space, obj);
+                             struct gc_edge edge, void *obj) {
+  update_edge(edge, forward(space, obj));
 }
 
 static void visit_large_object_space(struct heap *heap,
                                      struct large_object_space *space,
-                                     void **loc, void *obj) {
+                                     void *obj) {
   if (large_object_space_copy(space, (uintptr_t)obj))
     scan(heap, (uintptr_t)obj);
 }
@@ -158,15 +158,15 @@ static int semi_space_contains(struct semi_space *space, void *obj) {
   return (((uintptr_t)obj) - space->base) < space->size;
 }
 
-static void visit(void **loc, void *visit_data) {
+static void visit(struct gc_edge edge, void *visit_data) {
   struct heap *heap = visit_data;
-  void *obj = *loc;
+  void *obj = dereference_edge(edge);
   if (obj == NULL)
     return;
-  if (semi_space_contains(heap_semi_space(heap), obj))
-    visit_semi_space(heap, heap_semi_space(heap), loc, obj);
+  else if (semi_space_contains(heap_semi_space(heap), obj))
+    visit_semi_space(heap, heap_semi_space(heap), edge, obj);
   else if (large_object_space_contains(heap_large_object_space(heap), obj))
-    visit_large_object_space(heap, heap_large_object_space(heap), loc, obj);
+    visit_large_object_space(heap, heap_large_object_space(heap), obj);
   else
     abort();
 }
@@ -180,7 +180,7 @@ static void collect(struct mutator *mut) {
   flip(semi);
   uintptr_t grey = semi->hp;
   for (struct handle *h = mut->roots; h; h = h->next)
-    visit(&h->v, heap);
+    visit(gc_edge(&h->v), heap);
   // fprintf(stderr, "pushed %zd bytes in roots\n", space->hp - grey);
   while(grey < semi->hp)
     grey = scan(heap, grey);

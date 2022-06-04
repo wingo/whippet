@@ -452,10 +452,10 @@ static void tracer_release(struct heap *heap) {
 }
 
 struct gcobj;
-static inline void tracer_visit(void **loc, void *trace_data) ALWAYS_INLINE;
+static inline void tracer_visit(struct gc_edge edge, void *trace_data) ALWAYS_INLINE;
 static inline void trace_one(struct gcobj *obj, void *trace_data) ALWAYS_INLINE;
-static inline int trace_object(struct heap *heap,
-                               struct gcobj *obj) ALWAYS_INLINE;
+static inline int trace_edge(struct heap *heap,
+                             struct gc_edge edge) ALWAYS_INLINE;
 
 static inline void
 tracer_share(struct local_tracer *trace) {
@@ -465,13 +465,12 @@ tracer_share(struct local_tracer *trace) {
 }
 
 static inline void
-tracer_visit(void **loc, void *trace_data) {
+tracer_visit(struct gc_edge edge, void *trace_data) {
   struct local_tracer *trace = trace_data;
-  struct gcobj *obj = *loc;
-  if (obj && trace_object(trace->heap, obj)) {
+  if (trace_edge(trace->heap, edge)) {
     if (local_trace_queue_full(&trace->local))
       tracer_share(trace);
-    local_trace_queue_push(&trace->local, obj);
+    local_trace_queue_push(&trace->local, dereference_edge(edge));
   }
 }
 

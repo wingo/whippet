@@ -15,10 +15,10 @@ static inline size_t quad_size(Quad *obj) {
 }
 static inline void
 visit_quad_fields(Quad *quad,
-                  void (*visit)(void **loc, void *visit_data),
+                  void (*visit)(struct gc_edge edge, void *visit_data),
                   void *visit_data) {
   for (size_t i = 0; i < 4; i++)
-    visit((void**)&quad->kids[i], visit_data);
+    visit(object_field(&quad->kids[i]), visit_data);
 }
 typedef HANDLE_TO(Quad) QuadHandle;
 

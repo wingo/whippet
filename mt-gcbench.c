@@ -77,14 +77,14 @@ static inline size_t double_array_size(DoubleArray *array) {
 }
 static inline void
 visit_node_fields(Node *node,
-                  void (*visit)(void **loc, void *visit_data),
+                  void (*visit)(struct gc_edge edge, void *visit_data),
                   void *visit_data) {
-  visit((void**)&node->left, visit_data);
-  visit((void**)&node->right, visit_data);
+  visit(object_field(&node->left), visit_data);
+  visit(object_field(&node->right), visit_data);
 }
 static inline void
 visit_double_array_fields(DoubleArray *obj,
-                          void (*visit)(void **loc, void *visit_data),
+                          void (*visit)(struct gc_edge edge, void *visit_data),
                           void *visit_data) {
 }
 

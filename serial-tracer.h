@@ -6,6 +6,7 @@
 
 #include "assert.h"
 #include "debug.h"
+#include "gc-types.h"
 
 struct gcobj;
 
@@ -137,10 +138,10 @@ static void tracer_release(struct heap *heap) {
 }
 
 struct gcobj;
-static inline void tracer_visit(void **loc, void *trace_data) ALWAYS_INLINE;
+static inline void tracer_visit(struct gc_edge edge, void *trace_data) ALWAYS_INLINE;
 static inline void trace_one(struct gcobj *obj, void *trace_data) ALWAYS_INLINE;
-static inline int trace_object(struct heap *heap,
-                               struct gcobj *obj) ALWAYS_INLINE;
+static inline int trace_edge(struct heap *heap,
+                             struct gc_edge edge) ALWAYS_INLINE;
 
 static inline void
 tracer_enqueue_root(struct tracer *tracer, struct gcobj *obj) {
@@ -152,11 +153,10 @@ tracer_enqueue_roots(struct tracer *tracer, struct gcobj **objs,
   trace_queue_push_many(&tracer->queue, objs, count);
 }
 static inline void
-tracer_visit(void **loc, void *trace_data) {
+tracer_visit(struct gc_edge edge, void *trace_data) {
   struct heap *heap = trace_data;
-  struct gcobj *obj = *loc;
-  if (obj && trace_object(heap, obj))
-    tracer_enqueue_root(heap_tracer(heap), obj);
+  if (trace_edge(heap, edge))
+    tracer_enqueue_root(heap_tracer(heap), dereference_edge(edge));
 }
 static inline void
 tracer_trace(struct heap *heap) {

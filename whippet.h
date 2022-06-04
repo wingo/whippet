@@ -350,8 +350,9 @@ static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
   return object_metadata_byte(obj);
 }
 
-static inline int mark_space_trace_object(struct mark_space *space,
-                                          struct gcobj *obj) {
+static inline int mark_space_mark_object(struct mark_space *space,
+                                         struct gc_edge edge) {
+  struct gcobj *obj = dereference_edge(edge);
   uint8_t *loc = object_metadata_byte(obj);
   uint8_t byte = *loc;
   if (byte & space->marked_mask)
@@ -368,16 +369,20 @@ static inline int mark_space_contains(struct mark_space *space,
   return addr - space->low_addr < space->extent;
 }
 
-static inline int large_object_space_trace_object(struct large_object_space *space,
-                                                  struct gcobj *obj) {
+static inline int large_object_space_mark_object(struct large_object_space *space,
+                                                 struct gcobj *obj) {
   return large_object_space_copy(space, (uintptr_t)obj);
 }
 
-static inline int trace_object(struct heap *heap, struct gcobj *obj) {
-  if (LIKELY(mark_space_contains(heap_mark_space(heap), obj)))
-    return mark_space_trace_object(heap_mark_space(heap), obj);
+static inline int trace_edge(struct heap *heap, struct gc_edge edge) {
+  struct gcobj *obj = dereference_edge(edge);
+  if (!obj)
+    return 0;
+  else if (LIKELY(mark_space_contains(heap_mark_space(heap), obj)))
+    return mark_space_mark_object(heap_mark_space(heap), edge);
   else if (large_object_space_contains(heap_large_object_space(heap), obj))
-    return large_object_space_trace_object(heap_large_object_space(heap), obj);
+    return large_object_space_mark_object(heap_large_object_space(heap),
+                                          obj);
   else
     abort();
 }
@@ -584,9 +589,9 @@ static void mark_stopping_mutator_roots(struct mutator *mut) {
   struct heap *heap = mutator_heap(mut);
   struct mutator_mark_buf *local_roots = &mut->mark_buf;
   for (struct handle *h = mut->roots; h; h = h->next) {
-    struct gcobj *root = h->v;
-    if (root && trace_object(heap, root))
-      mutator_mark_buf_push(local_roots, root);
+    struct gc_edge root = gc_edge(&h->v);
+    if (trace_edge(heap, root))
+      mutator_mark_buf_push(local_roots, dereference_edge(root));
   }
 
   // Post to global linked-list of thread roots.
@@ -602,9 +607,9 @@ static void mark_stopping_mutator_roots(struct mutator *mut) {
 static void mark_controlling_mutator_roots(struct mutator *mut) {
   struct heap *heap = mutator_heap(mut);
   for (struct handle *h = mut->roots; h; h = h->next) {
-    struct gcobj *root = h->v;
-    if (root && trace_object(heap, root))
-      tracer_enqueue_root(&heap->tracer, root);
+    struct gc_edge root = gc_edge(&h->v);
+    if (trace_edge(heap, root))
+      tracer_enqueue_root(&heap->tracer, dereference_edge(root));
   }
 }
 
@@ -630,9 +635,9 @@ static void mark_inactive_mutators(struct heap *heap) {
 
 static void mark_global_roots(struct heap *heap) {
   for (struct handle *h = heap->global_roots; h; h = h->next) {
-    struct gcobj *obj = h->v;
-    if (obj && trace_object(heap, obj))
-      tracer_enqueue_root(&heap->tracer, obj);
+    struct gc_edge edge = gc_edge(&h->v);
+    if (trace_edge(heap, edge))
+      tracer_enqueue_root(&heap->tracer, dereference_edge(edge));
   }
 
   struct mutator_mark_buf *roots = atomic_load(&heap->mutator_roots);
