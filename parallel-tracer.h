@@ -9,6 +9,7 @@
 #include "assert.h"
 #include "debug.h"
 #include "inline.h"
+#include "spin.h"
 
 // The Chase-Lev work-stealing deque, as initially described in "Dynamic
 // Circular Work-Stealing Deque" (Chase and Lev, SPAA'05)
@@ -530,8 +531,7 @@ trace_worker_check_termination(struct trace_worker *worker,
     return 1;
   }
 
-  size_t spin_count = 0;
-  while (1) {
+  for (size_t spin_count = 0;; spin_count++) {
     if (trace_worker_can_steal_from_any(worker, tracer)) {
       atomic_fetch_add_explicit(&tracer->active_tracers, 1,
                                 memory_order_relaxed);
@@ -544,15 +544,7 @@ trace_worker_check_termination(struct trace_worker *worker,
     }
     // spin
     DEBUG("tracer #%zu: spinning #%zu\n", worker->id, spin_count);
-    if (spin_count < 10)
-      __builtin_ia32_pause();
-    else if (spin_count < 20)
-      sched_yield();
-    else if (spin_count < 40)
-      usleep(0);
-    else
-      usleep(1);
-    spin_count++;
+    yield_for_spin(spin_count);
   }
 }
 
