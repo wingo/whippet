@@ -251,14 +251,20 @@ static inline size_t size_to_granules(size_t size) {
   return (size + GRANULE_SIZE - 1) >> GRANULE_SIZE_LOG_2;
 }
 
-// Alloc kind is in bits 0-7, for live objects.
-static const uintptr_t gcobj_alloc_kind_mask = 0xff;
-static const uintptr_t gcobj_alloc_kind_shift = 0;
+// Alloc kind is in bits 1-7, for live objects.
+static const uintptr_t gcobj_alloc_kind_mask = 0x7f;
+static const uintptr_t gcobj_alloc_kind_shift = 1;
+static const uintptr_t gcobj_forwarded_mask = 0x1;
+static const uintptr_t gcobj_not_forwarded_bit = 0x1;
 static inline uint8_t tag_live_alloc_kind(uintptr_t tag) {
   return (tag >> gcobj_alloc_kind_shift) & gcobj_alloc_kind_mask;
 }
 static inline uintptr_t tag_live(uint8_t alloc_kind) {
-  return ((uintptr_t)alloc_kind << gcobj_alloc_kind_shift);
+  return ((uintptr_t)alloc_kind << gcobj_alloc_kind_shift)
+    | gcobj_not_forwarded_bit;
+}
+static inline uintptr_t tag_forwarded(struct gcobj *new_addr) {
+  return (uintptr_t)new_addr;
 }
 
 struct gcobj {
