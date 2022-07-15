@@ -288,6 +288,11 @@ struct mark_space {
   uintptr_t fragmentation_granules_since_last_collection; // atomically
 };
 
+enum gc_kind {
+  GC_KIND_MARK_IN_PLACE,
+  GC_KIND_COMPACT
+};
+
 struct heap {
   struct mark_space mark_space;
   struct large_object_space large_object_space;
@@ -297,6 +302,7 @@ struct heap {
   pthread_cond_t mutator_cond;
   size_t size;
   int collecting;
+  enum gc_kind gc_kind;
   int multithreaded;
   size_t active_mutator_count;
   size_t mutator_count;
@@ -605,7 +611,7 @@ static void enqueue_mutator_for_tracing(struct mutator *mut) {
 }
 
 static int heap_should_mark_while_stopping(struct heap *heap) {
-  return 1;
+  return atomic_load(&heap->gc_kind) == GC_KIND_MARK_IN_PLACE;
 }
 
 static int mutator_should_mark_while_stopping(struct mutator *mut) {
@@ -805,6 +811,42 @@ static double heap_fragmentation(struct heap *heap) {
 
 static void determine_collection_kind(struct heap *heap,
                                       enum gc_reason reason) {
+  switch (reason) {
+    case GC_REASON_LARGE_ALLOCATION:
+      // We are collecting because a large allocation could not find
+      // enough free blocks, and we decided not to expand the heap.
+      // Let's evacuate to maximize the free block yield.
+      heap->gc_kind = GC_KIND_COMPACT;
+      break;
+    case GC_REASON_SMALL_ALLOCATION: {
+      // We are making a small allocation and ran out of blocks.
+      // Evacuate if the heap is "too fragmented", where fragmentation
+      // is measured as a percentage of granules that couldn't be used
+      // for allocations in the last cycle.
+      double fragmentation = heap_fragmentation(heap);
+      if (atomic_load(&heap->gc_kind) == GC_KIND_COMPACT) {
+        // For some reason, we already decided to compact in the past.
+        // Keep going until we measure that wasted space due to
+        // fragmentation is below a low-water-mark.
+        if (fragmentation < heap->fragmentation_low_threshold) {
+          DEBUG("returning to in-place collection, fragmentation %.2f%% < %.2f%%\n",
+                fragmentation * 100.,
+                heap->fragmentation_low_threshold * 100.);
+          atomic_store(&heap->gc_kind, GC_KIND_MARK_IN_PLACE);
+        }
+      } else {
+        // Otherwise switch to evacuation mode if the heap is too
+        // fragmented.
+        if (fragmentation > heap->fragmentation_high_threshold) {
+          DEBUG("triggering compaction due to fragmentation %.2f%% > %.2f%%\n",
+                fragmentation * 100.,
+                heap->fragmentation_high_threshold * 100.);
+          atomic_store(&heap->gc_kind, GC_KIND_COMPACT);
+        }
+      }
+      break;
+    }
+  }
 }
 
 static void collect(struct mutator *mut, enum gc_reason reason) {
