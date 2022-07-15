@@ -301,14 +301,13 @@ struct heap {
   size_t active_mutator_count;
   size_t mutator_count;
   struct handle *global_roots;
-  struct mutator_mark_buf *mutator_roots;
+  struct mutator *mutator_trace_list;
   long count;
   struct mutator *deactivated_mutators;
   struct tracer tracer;
 };
 
 struct mutator_mark_buf {
-  struct mutator_mark_buf *next;
   size_t size;
   size_t capacity;
   struct gcobj **objects;
@@ -322,6 +321,10 @@ struct mutator {
   struct heap *heap;
   struct handle *roots;
   struct mutator_mark_buf mark_buf;
+  // Three uses for this in-object linked-list pointer:
+  //  - inactive (blocked in syscall) mutators
+  //  - grey objects when stopping active mutators for mark-in-place
+  //  - untraced mutators when stopping active mutators for evacuation
   struct mutator *next;
 };
 
@@ -344,7 +347,12 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
 
-static void collect(struct mutator *mut) NEVER_INLINE;
+enum gc_reason {
+  GC_REASON_SMALL_ALLOCATION,
+  GC_REASON_LARGE_ALLOCATION
+};
+
+static void collect(struct mutator *mut, enum gc_reason reason) NEVER_INLINE;
 
 static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
   return object_metadata_byte(obj);
@@ -583,9 +591,35 @@ static void mutator_mark_buf_destroy(struct mutator_mark_buf *buf) {
     munmap(buf->objects, bytes);
 }
 
+static void enqueue_mutator_for_tracing(struct mutator *mut) {
+  struct heap *heap = mutator_heap(mut);
+  ASSERT(mut->next == NULL);
+  struct mutator *next =
+    atomic_load_explicit(&heap->mutator_trace_list, memory_order_acquire);
+  do {
+    mut->next = next;
+  } while (!atomic_compare_exchange_weak(&heap->mutator_trace_list,
+                                         &next, mut));
+}
+
+static int heap_should_mark_while_stopping(struct heap *heap) {
+  return 1;
+}
+
+static int mutator_should_mark_while_stopping(struct mutator *mut) {
+  // If we are marking in place, we allow mutators to mark their own
+  // stacks before pausing.  This is a limited form of concurrent
+  // marking, as other mutators might be running, not having received
+  // the signal to stop yet.  We can't do this for a compacting
+  // collection, however, as that would become concurrent evacuation,
+  // which is a different kettle of fish.
+  return heap_should_mark_while_stopping(mutator_heap(mut));
+}
+
 // Mark the roots of a mutator that is stopping for GC.  We can't
 // enqueue them directly, so we send them to the controller in a buffer.
 static void mark_stopping_mutator_roots(struct mutator *mut) {
+  ASSERT(mutator_should_mark_while_stopping(mut));
   struct heap *heap = mutator_heap(mut);
   struct mutator_mark_buf *local_roots = &mut->mark_buf;
   for (struct handle *h = mut->roots; h; h = h->next) {
@@ -593,24 +627,27 @@ static void mark_stopping_mutator_roots(struct mutator *mut) {
     if (trace_edge(heap, root))
       mutator_mark_buf_push(local_roots, dereference_edge(root));
   }
-
-  // Post to global linked-list of thread roots.
-  struct mutator_mark_buf *next =
-    atomic_load_explicit(&heap->mutator_roots, memory_order_acquire);
-  do {
-    local_roots->next = next;
-  } while (!atomic_compare_exchange_weak(&heap->mutator_roots,
-                                         &next, local_roots));
 }
 
-// Mark the roots of the mutator that causes GC.
-static void mark_controlling_mutator_roots(struct mutator *mut) {
+// Precondition: the caller holds the heap lock.
+static void mark_mutator_roots_with_lock(struct mutator *mut) {
   struct heap *heap = mutator_heap(mut);
   for (struct handle *h = mut->roots; h; h = h->next) {
     struct gc_edge root = gc_edge(&h->v);
     if (trace_edge(heap, root))
       tracer_enqueue_root(&heap->tracer, dereference_edge(root));
   }
+}
+
+static void trace_mutator_roots_with_lock(struct mutator *mut) {
+  mark_mutator_roots_with_lock(mut);
+}
+
+static void trace_mutator_roots_with_lock_before_stop(struct mutator *mut) {
+  if (mutator_should_mark_while_stopping(mut))
+    mark_mutator_roots_with_lock(mut);
+  else
+    enqueue_mutator_for_tracing(mut);
 }
 
 static void release_stopping_mutator_roots(struct mutator *mut) {
@@ -626,24 +663,33 @@ static void wait_for_mutators_to_stop(struct heap *heap) {
 static void finish_sweeping(struct mutator *mut);
 static void finish_sweeping_in_block(struct mutator *mut);
 
-static void mark_inactive_mutators(struct heap *heap) {
+static void trace_mutator_roots_after_stop(struct heap *heap) {
+  struct mutator *mut = atomic_load(&heap->mutator_trace_list);
+  int active_mutators_already_marked = heap_should_mark_while_stopping(heap);
+  while (mut) {
+    if (active_mutators_already_marked)
+      tracer_enqueue_roots(&heap->tracer,
+                           mut->mark_buf.objects, mut->mark_buf.size);
+    else
+      trace_mutator_roots_with_lock(mut);
+    struct mutator *next = mut->next;
+    mut->next = NULL;
+    mut = next;
+  }
+  atomic_store(&heap->mutator_trace_list, NULL);
+
   for (struct mutator *mut = heap->deactivated_mutators; mut; mut = mut->next) {
     finish_sweeping_in_block(mut);
-    mark_controlling_mutator_roots(mut);
+    trace_mutator_roots_with_lock(mut);
   }
 }
 
-static void mark_global_roots(struct heap *heap) {
+static void trace_global_roots(struct heap *heap) {
   for (struct handle *h = heap->global_roots; h; h = h->next) {
     struct gc_edge edge = gc_edge(&h->v);
     if (trace_edge(heap, edge))
       tracer_enqueue_root(&heap->tracer, dereference_edge(edge));
   }
-
-  struct mutator_mark_buf *roots = atomic_load(&heap->mutator_roots);
-  for (; roots; roots = roots->next)
-    tracer_enqueue_roots(&heap->tracer, roots->objects, roots->size);
-  atomic_store(&heap->mutator_roots, NULL);
 }
 
 static void pause_mutator_for_collection(struct heap *heap) NEVER_INLINE;
@@ -674,7 +720,11 @@ static void pause_mutator_for_collection_with_lock(struct mutator *mut) {
   struct heap *heap = mutator_heap(mut);
   ASSERT(mutators_are_stopping(heap));
   finish_sweeping_in_block(mut);
-  mark_controlling_mutator_roots(mut);
+  if (mutator_should_mark_while_stopping(mut))
+    // No need to collect results in mark buf; we can enqueue roots directly.
+    mark_mutator_roots_with_lock(mut);
+  else
+    enqueue_mutator_for_tracing(mut);
   pause_mutator_for_collection(heap);
 }
 
@@ -683,7 +733,9 @@ static void pause_mutator_for_collection_without_lock(struct mutator *mut) {
   struct heap *heap = mutator_heap(mut);
   ASSERT(mutators_are_stopping(heap));
   finish_sweeping(mut);
-  mark_stopping_mutator_roots(mut);
+  if (mutator_should_mark_while_stopping(mut))
+    mark_stopping_mutator_roots(mut);
+  enqueue_mutator_for_tracing(mut);
   heap_lock(heap);
   pause_mutator_for_collection(heap);
   heap_unlock(heap);
@@ -715,15 +767,28 @@ static void reset_statistics(struct mark_space *space) {
   space->fragmentation_granules_since_last_collection = 0;
 }
 
-static void collect(struct mutator *mut) {
+static int maybe_grow_heap(struct heap *heap, enum gc_reason reason) {
+  return 0;
+}
+
+static void determine_collection_kind(struct heap *heap,
+                                      enum gc_reason reason) {
+}
+
+static void collect(struct mutator *mut, enum gc_reason reason) {
   struct heap *heap = mutator_heap(mut);
   struct mark_space *space = heap_mark_space(heap);
   struct large_object_space *lospace = heap_large_object_space(heap);
+  if (maybe_grow_heap(heap, reason)) {
+    DEBUG("grew heap instead of collecting #%ld:\n", heap->count);
+    return;
+  }
   DEBUG("start collect #%ld:\n", heap->count);
+  determine_collection_kind(heap, reason);
   large_object_space_start_gc(lospace);
   tracer_prepare(heap);
   request_mutators_to_stop(heap);
-  mark_controlling_mutator_roots(mut);
+  trace_mutator_roots_with_lock_before_stop(mut);
   finish_sweeping(mut);
   wait_for_mutators_to_stop(heap);
   double yield = space->granules_freed_by_last_collection * GRANULE_SIZE;
@@ -731,8 +796,8 @@ static void collect(struct mutator *mut) {
   yield /= SLAB_SIZE * space->nslabs;
   fragmentation /= SLAB_SIZE * space->nslabs;
   fprintf(stderr, "last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
-  mark_inactive_mutators(heap);
-  mark_global_roots(heap);
+  trace_mutator_roots_after_stop(heap);
+  trace_global_roots(heap);
   tracer_trace(heap);
   tracer_release(heap);
   reset_sweeper(space);
@@ -1043,7 +1108,7 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
     if (mutators_are_stopping(heap))
       pause_mutator_for_collection_with_lock(mut);
     else
-      collect(mut);
+      collect(mut, GC_REASON_LARGE_ALLOCATION);
     heap_unlock(heap);
     if (!sweep_until_memory_released(mut))
       out_of_memory(mut);
@@ -1059,7 +1124,7 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
     abort();
   }
 
-  *(uintptr_t*)ret = kind;
+  *(uintptr_t*)ret = tag_live(kind);
   return ret;
 }
 
@@ -1083,7 +1148,7 @@ static void* allocate_small_slow(struct mutator *mut, enum alloc_kind kind,
         if (mutators_are_stopping(heap))
           pause_mutator_for_collection_with_lock(mut);
         else
-          collect(mut);
+          collect(mut, GC_REASON_SMALL_ALLOCATION);
         heap_unlock(heap);
         swept_from_beginning = 1;
       }
