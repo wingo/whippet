@@ -16,6 +16,7 @@
 #else
 #include "serial-tracer.h"
 #endif
+#include "spin.h"
 
 #define GRANULE_SIZE 16
 #define GRANULE_SIZE_LOG_2 4
@@ -379,6 +380,13 @@ static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
   return object_metadata_byte(obj);
 }
 
+static size_t mark_space_live_object_granules(uint8_t *metadata) {
+  size_t n = 0;
+  while ((metadata[n] & METADATA_BYTE_END) == 0)
+    n++;
+  return n + 1;
+}
+
 static inline int mark_space_mark_object(struct mark_space *space,
                                          struct gc_edge edge) {
   struct gcobj *obj = dereference_edge(edge);
@@ -389,6 +397,94 @@ static inline int mark_space_mark_object(struct mark_space *space,
   uint8_t mask = METADATA_BYTE_YOUNG | METADATA_BYTE_MARK_0
     | METADATA_BYTE_MARK_1 | METADATA_BYTE_MARK_2;
   *loc = (byte & ~mask) | space->marked_mask;
+  return 1;
+}
+
+static struct gcobj *evacuation_allocate(struct mark_space *space,
+                                         size_t granules) {
+  return NULL;
+}
+
+static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
+                                                     struct gc_edge edge) {
+  struct gcobj *obj = dereference_edge(edge);
+  uint8_t *metadata = object_metadata_byte(obj);
+  uint8_t byte = *metadata;
+  if (byte & space->marked_mask)
+    return 0;
+  if (space->evacuating &&
+      block_summary_has_flag(block_summary_for_addr((uintptr_t)obj),
+                             BLOCK_EVACUATE) &&
+      ((byte & METADATA_BYTE_PINNED) == 0)) {
+    // This is an evacuating collection, and we are attempting to
+    // evacuate this block, and this particular object isn't pinned.
+    // First, see if someone evacuated this object already.
+    uintptr_t header_word = atomic_load_explicit(&obj->tag,
+                                                 memory_order_relaxed);
+    uintptr_t busy_header_word = 0;
+    if (header_word != busy_header_word &&
+        (header_word & gcobj_not_forwarded_bit) == 0) {
+      // The object has been evacuated already.  Update the edge;
+      // whoever forwarded the object will make sure it's eventually
+      // traced.
+      struct gcobj *forwarded = (struct gcobj*) header_word;
+      update_edge(edge, forwarded);
+      return 0;
+    }
+    // Otherwise try to claim it for evacuation.
+    if (header_word != busy_header_word &&
+        atomic_compare_exchange_strong(&obj->tag, &header_word,
+                                       busy_header_word)) {
+      // We claimed the object successfully; evacuating is up to us.
+      size_t object_granules = mark_space_live_object_granules(metadata);
+      struct gcobj *new_obj = evacuation_allocate(space, object_granules);
+      if (new_obj) {
+        // We were able to reserve space in which to evacuate this object.
+        // Commit the evacuation by overwriting the tag.
+        uintptr_t new_header_word = tag_forwarded(new_obj);
+        atomic_store_explicit(&obj->tag, new_header_word,
+                              memory_order_release);
+        // Now copy the object contents, update extent metadata, and
+        // indicate to the caller that the object's fields need to be
+        // traced.
+        new_obj->tag = header_word;
+        memcpy(&new_obj->words[1], &obj->words[1],
+               object_granules * GRANULE_SIZE - sizeof(header_word));
+        uint8_t *new_metadata = object_metadata_byte(new_obj);
+        memcpy(new_metadata + 1, metadata + 1, object_granules - 1);
+        update_edge(edge, new_obj);
+        obj = new_obj;
+        metadata = new_metadata;
+        // Fall through to set mark bits.
+      } else {
+        // Well shucks; allocation failed, marking the end of
+        // opportunistic evacuation.  No future evacuation of this
+        // object will succeed.  Restore the original header word and
+        // mark instead.
+        atomic_store_explicit(&obj->tag, header_word,
+                              memory_order_release);
+      }
+    } else {
+      // Someone else claimed this object first.  Spin until new address
+      // known, or evacuation aborts.
+      for (size_t spin_count = 0;; spin_count++) {
+        header_word = atomic_load_explicit(&obj->tag, memory_order_acquire);
+        if (header_word)
+          break;
+        yield_for_spin(spin_count);
+      }
+      if ((header_word & gcobj_not_forwarded_bit) == 0) {
+        struct gcobj *forwarded = (struct gcobj*) header_word;
+        update_edge(edge, forwarded);
+      }
+      // Either way, the other party is responsible for adding the
+      // object to the mark queue.
+      return 0;
+    }
+  }
+  uint8_t mask = METADATA_BYTE_YOUNG | METADATA_BYTE_MARK_0
+    | METADATA_BYTE_MARK_1 | METADATA_BYTE_MARK_2;
+  *metadata = (byte & ~mask) | space->marked_mask;
   return 1;
 }
 
@@ -407,8 +503,11 @@ static inline int trace_edge(struct heap *heap, struct gc_edge edge) {
   struct gcobj *obj = dereference_edge(edge);
   if (!obj)
     return 0;
-  else if (LIKELY(mark_space_contains(heap_mark_space(heap), obj)))
+  else if (LIKELY(mark_space_contains(heap_mark_space(heap), obj))) {
+    if (heap_mark_space(heap)->evacuating)
+      return mark_space_evacuate_or_mark_object(heap_mark_space(heap), edge);
     return mark_space_mark_object(heap_mark_space(heap), edge);
+  }
   else if (large_object_space_contains(heap_large_object_space(heap), obj))
     return large_object_space_mark_object(heap_large_object_space(heap),
                                           obj);
@@ -978,13 +1077,6 @@ static void collect(struct mutator *mut, enum gc_reason reason) {
   allow_mutators_to_continue(heap);
   DEBUG("collect done\n");
 }
-
-static size_t mark_space_live_object_granules(uint8_t *metadata) {
-  size_t n = 0;
-  while ((metadata[n] & METADATA_BYTE_END) == 0)
-    n++;
-  return n + 1;
-}  
 
 static int sweep_byte(uint8_t *loc, uintptr_t sweep_mask) {
   uint8_t metadata = atomic_load_explicit(loc, memory_order_relaxed);
