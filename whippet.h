@@ -119,7 +119,7 @@ enum block_summary_flag {
   BLOCK_PAGED_OUT = 0x4,
   BLOCK_NEEDS_SWEEP = 0x8,
   BLOCK_UNAVAILABLE = 0x10,
-  BLOCK_FLAG_UNUSED_5 = 0x20,
+  BLOCK_EVACUATE = 0x20,
   BLOCK_FLAG_UNUSED_6 = 0x40,
   BLOCK_FLAG_UNUSED_7 = 0x80,
   BLOCK_FLAG_UNUSED_8 = 0x100,
@@ -291,6 +291,7 @@ struct mark_space {
   uintptr_t next_block;   // atomically
   struct block_list empty;
   struct block_list unavailable;
+  struct block_list evacuation_targets;
   ssize_t pending_unavailable_bytes; // atomically
   struct slab *slabs;
   size_t nslabs;
@@ -857,6 +858,69 @@ static void determine_collection_kind(struct heap *heap,
   }
 }
 
+static void compute_evacuation_candidates(struct heap *heap) {
+  if (heap->gc_kind == GC_KIND_MARK_IN_PLACE)
+    return;
+
+  struct mark_space *space = heap_mark_space(heap);
+  size_t target_blocks = space->evacuation_targets.count;
+  size_t target_granules = target_blocks * GRANULES_PER_BLOCK;
+  // Compute histogram where domain is the number of granules in a block
+  // that survived the last collection, aggregated into 33 buckets, and
+  // range is number of blocks in that bucket.  (Bucket 0 is for blocks
+  // that were found to be completely empty; such blocks may be on the
+  // evacuation target list.)
+  const size_t bucket_count = 33;
+  size_t histogram[33] = {0,};
+  size_t bucket_size = GRANULES_PER_BLOCK / 32;
+  for (size_t slab = 0; slab < space->nslabs; slab++) {
+    for (size_t block = 0; block < NONMETA_BLOCKS_PER_SLAB; block++) {
+      struct block_summary *summary = &space->slabs[slab].summaries[block];
+      if (block_summary_has_flag(summary, BLOCK_UNAVAILABLE))
+        continue;
+      size_t survivor_granules = GRANULES_PER_BLOCK - summary->free_granules;
+      size_t bucket = (survivor_granules + bucket_size - 1) / bucket_size;
+      histogram[bucket]++;
+    }
+  }
+
+  // Evacuation targets must be in bucket 0.  These blocks will later be
+  // marked also as evacuation candidates, but that's not a problem,
+  // because they contain no source objects.
+  ASSERT(histogram[0] >= target_blocks);
+
+  // Now select a number of blocks that is likely to fill the space in
+  // the target blocks.  Prefer candidate blocks with fewer survivors
+  // from the last GC, to increase expected free block yield.
+  for (size_t bucket = 0; bucket < bucket_count; bucket++) {
+    size_t bucket_granules = bucket * bucket_size * histogram[bucket];
+    if (bucket_granules <= target_granules) {
+      target_granules -= bucket_granules;
+    } else {
+      histogram[bucket] = target_granules / (bucket_size * bucket);
+      target_granules = 0;
+    }
+  }
+
+  // Having selected the number of blocks, now we set the evacuation
+  // candidate flag on all blocks.
+  for (size_t slab = 0; slab < space->nslabs; slab++) {
+    for (size_t block = 0; block < NONMETA_BLOCKS_PER_SLAB; block++) {
+      struct block_summary *summary = &space->slabs[slab].summaries[block];
+      if (block_summary_has_flag(summary, BLOCK_UNAVAILABLE))
+        continue;
+      size_t survivor_granules = GRANULES_PER_BLOCK - summary->free_granules;
+      size_t bucket = (survivor_granules + bucket_size - 1) / bucket_size;
+      if (histogram[bucket]) {
+        block_summary_set_flag(summary, BLOCK_EVACUATE);
+        histogram[bucket]--;
+      } else {
+        block_summary_clear_flag(summary, BLOCK_EVACUATE);
+      }
+    }
+  }
+}
+
 static void mark_space_finish_gc(struct mark_space *space) {
   reset_sweeper(space);
   rotate_mark_bytes(space);
@@ -882,6 +946,7 @@ static void collect(struct mutator *mut, enum gc_reason reason) {
   double yield = heap_last_gc_yield(heap);
   double fragmentation = heap_fragmentation(heap);
   fprintf(stderr, "last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
+  compute_evacuation_candidates(heap);
   trace_mutator_roots_after_stop(heap);
   trace_global_roots(heap);
   tracer_trace(heap);
