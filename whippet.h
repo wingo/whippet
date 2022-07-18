@@ -219,17 +219,23 @@ static void block_summary_set_next(struct block_summary *summary,
     (summary->next_and_flags & (BLOCK_SIZE - 1)) | next;
 }
 
-static void push_block(uintptr_t *loc, size_t *count, uintptr_t block) {
+// Lock-free block list.
+struct block_list {
+  size_t count;
+  uintptr_t blocks;
+};
+
+static void push_block(struct block_list *list, uintptr_t block) {
+  atomic_fetch_add_explicit(&list->count, 1, memory_order_acq_rel);
   struct block_summary *summary = block_summary_for_addr(block);
-  uintptr_t next = atomic_load_explicit(loc, memory_order_acquire);
+  uintptr_t next = atomic_load_explicit(&list->blocks, memory_order_acquire);
   do {
     block_summary_set_next(summary, next);
-  } while (!atomic_compare_exchange_weak(loc, &next, block));
-  atomic_fetch_add_explicit(count, 1, memory_order_acq_rel);
+  } while (!atomic_compare_exchange_weak(&list->blocks, &next, block));
 }
 
-static uintptr_t pop_block(uintptr_t *loc, size_t *count) {
-  uintptr_t head = atomic_load_explicit(loc, memory_order_acquire);
+static uintptr_t pop_block(struct block_list *list) {
+  uintptr_t head = atomic_load_explicit(&list->blocks, memory_order_acquire);
   struct block_summary *summary;
   uintptr_t next;
   do {
@@ -237,9 +243,9 @@ static uintptr_t pop_block(uintptr_t *loc, size_t *count) {
       return 0;
     summary = block_summary_for_addr(head);
     next = block_summary_next(summary);
-  } while (!atomic_compare_exchange_weak(loc, &head, next));
+  } while (!atomic_compare_exchange_weak(&list->blocks, &head, next));
   block_summary_set_next(summary, 0);
-  atomic_fetch_sub_explicit(count, 1, memory_order_acq_rel);
+  atomic_fetch_sub_explicit(&list->count, 1, memory_order_acq_rel);
   return head;
 }
 
@@ -283,10 +289,8 @@ struct mark_space {
   size_t extent;
   size_t heap_size;
   uintptr_t next_block;   // atomically
-  uintptr_t empty_blocks; // atomically
-  size_t empty_blocks_count; // atomically
-  uintptr_t unavailable_blocks; // atomically
-  size_t unavailable_blocks_count; // atomically
+  struct block_list empty;
+  struct block_list unavailable;
   ssize_t pending_unavailable_bytes; // atomically
   struct slab *slabs;
   size_t nslabs;
@@ -483,13 +487,11 @@ static void push_unavailable_block(struct mark_space *space, uintptr_t block) {
   ASSERT(!block_summary_has_flag(summary, BLOCK_UNAVAILABLE));
   block_summary_set_flag(summary, BLOCK_UNAVAILABLE);
   madvise((void*)block, BLOCK_SIZE, MADV_DONTNEED);
-  push_block(&space->unavailable_blocks, &space->unavailable_blocks_count,
-             block);
+  push_block(&space->unavailable, block);
 }
 
 static uintptr_t pop_unavailable_block(struct mark_space *space) {
-  uintptr_t block = pop_block(&space->unavailable_blocks,
-                              &space->unavailable_blocks_count);
+  uintptr_t block = pop_block(&space->unavailable);
   if (!block)
     return 0;
   struct block_summary *summary = block_summary_for_addr(block);
@@ -499,13 +501,13 @@ static uintptr_t pop_unavailable_block(struct mark_space *space) {
 }
 
 static uintptr_t pop_empty_block(struct mark_space *space) {
-  return pop_block(&space->empty_blocks, &space->empty_blocks_count);
+  return pop_block(&space->empty);
 }
 
 static void push_empty_block(struct mark_space *space, uintptr_t block) {
   ASSERT(!block_summary_has_flag(block_summary_for_addr(block),
                                  BLOCK_NEEDS_SWEEP));
-  push_block(&space->empty_blocks, &space->empty_blocks_count, block);
+  push_block(&space->empty, block);
 }
 
 static ssize_t mark_space_request_release_memory(struct mark_space *space,
@@ -800,7 +802,7 @@ static double heap_last_gc_yield(struct heap *heap) {
 static double heap_fragmentation(struct heap *heap) {
   struct mark_space *mark_space = heap_mark_space(heap);
   size_t mark_space_blocks = mark_space->nslabs * NONMETA_BLOCKS_PER_SLAB;
-  mark_space_blocks -= atomic_load(&mark_space->unavailable_blocks_count);
+  mark_space_blocks -= atomic_load(&mark_space->unavailable.count);
   size_t mark_space_granules = mark_space_blocks * GRANULES_PER_BLOCK;
   size_t fragmentation_granules =
     mark_space->fragmentation_granules_since_last_collection;
