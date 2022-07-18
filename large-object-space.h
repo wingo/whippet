@@ -29,6 +29,7 @@ struct large_object_space {
   size_t total_pages;
   size_t free_pages;
   size_t live_pages_at_last_collection;
+  size_t pages_freed_by_last_collection;
 
   struct address_set from_space;
   struct address_set to_space;
@@ -125,7 +126,9 @@ static void large_object_space_finish_gc(struct large_object_space *space) {
   address_set_for_each(&space->from_space, large_object_space_reclaim_one,
                        space);
   address_set_clear(&space->from_space);
-  space->free_pages = space->total_pages - space->live_pages_at_last_collection;
+  size_t free_pages = space->total_pages - space->live_pages_at_last_collection;
+  space->pages_freed_by_last_collection = free_pages - space->free_pages;
+  space->free_pages = free_pages;
   pthread_mutex_unlock(&space->lock);
 }
 

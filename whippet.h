@@ -773,6 +773,18 @@ static int maybe_grow_heap(struct heap *heap, enum gc_reason reason) {
   return 0;
 }
 
+static double heap_last_gc_yield(struct heap *heap) {
+  struct mark_space *mark_space = heap_mark_space(heap);
+  size_t mark_space_yield = mark_space->granules_freed_by_last_collection;
+  mark_space_yield <<= GRANULE_SIZE_LOG_2;
+  struct large_object_space *lospace = heap_large_object_space(heap);
+  size_t lospace_yield = lospace->pages_freed_by_last_collection;
+  lospace_yield <<= lospace->page_size_log2;
+
+  double yield = mark_space_yield + lospace_yield;
+  return yield / heap->size;
+}
+
 static double heap_fragmentation(struct heap *heap) {
   struct mark_space *mark_space = heap_mark_space(heap);
   size_t mark_space_blocks = mark_space->nslabs * NONMETA_BLOCKS_PER_SLAB;
@@ -811,9 +823,8 @@ static void collect(struct mutator *mut, enum gc_reason reason) {
   trace_mutator_roots_with_lock_before_stop(mut);
   finish_sweeping(mut);
   wait_for_mutators_to_stop(heap);
-  double yield = space->granules_freed_by_last_collection * GRANULE_SIZE;
+  double yield = heap_last_gc_yield(heap);
   double fragmentation = heap_fragmentation(heap);
-  yield /= SLAB_SIZE * space->nslabs;
   fprintf(stderr, "last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
   trace_mutator_roots_after_stop(heap);
   trace_global_roots(heap);
