@@ -283,6 +283,11 @@ struct gcobj {
   };
 };
 
+struct evacuation_allocator {
+  size_t allocated; // atomically
+  uintptr_t block_cursor; // atomically
+};
+
 struct mark_space {
   uint64_t sweep_mask;
   uint8_t live_mask;
@@ -295,7 +300,9 @@ struct mark_space {
   struct block_list empty;
   struct block_list unavailable;
   struct block_list evacuation_targets;
+  double evacuation_reserve;
   ssize_t pending_unavailable_bytes; // atomically
+  struct evacuation_allocator evacuation_allocator;
   struct slab *slabs;
   size_t nslabs;
   uintptr_t granules_freed_by_last_collection; // atomically
@@ -400,9 +407,97 @@ static inline int mark_space_mark_object(struct mark_space *space,
   return 1;
 }
 
+static uintptr_t make_evacuation_allocator_cursor(uintptr_t block,
+                                                  size_t allocated) {
+  ASSERT(allocated < (BLOCK_SIZE - 1) * (uint64_t) BLOCK_SIZE);
+  return (block & ~(BLOCK_SIZE - 1)) | (allocated / BLOCK_SIZE);
+}
+
+static void prepare_evacuation_allocator(struct evacuation_allocator *alloc,
+                                         struct block_list *targets) {
+  uintptr_t first_block = targets->blocks;
+  atomic_store_explicit(&alloc->allocated, 0, memory_order_release);
+  atomic_store_explicit(&alloc->block_cursor,
+                        make_evacuation_allocator_cursor(first_block, 0),
+                        memory_order_release);
+}
+
+static void finish_evacuation_allocator(struct evacuation_allocator *alloc,
+                                        struct block_list *targets,
+                                        struct block_list *empties) {
+  // Blocks that we used for evacuation get returned to the mutator as
+  // sweepable blocks.  Blocks that we didn't get to use go to the
+  // empties.
+  while (alloc->allocated) {
+    uintptr_t block = pop_block(targets);
+    if (!block)
+      break;
+    block_summary_set_flag(block_summary_for_addr(block),
+                           BLOCK_NEEDS_SWEEP);
+    if (alloc->allocated <= BLOCK_SIZE)
+      break;
+    alloc->allocated -= BLOCK_SIZE;
+  }
+  while (1) {
+    uintptr_t block = pop_block(targets);
+    if (!block)
+      break;
+    push_block(empties, block);
+  }
+}
+
 static struct gcobj *evacuation_allocate(struct mark_space *space,
                                          size_t granules) {
-  return NULL;
+  // All collector threads compete to allocate from what is logically a
+  // single bump-pointer arena, which is actually composed of a linked
+  // list of blocks.
+  struct evacuation_allocator *alloc = &space->evacuation_allocator;
+  uintptr_t cursor = atomic_load_explicit(&alloc->block_cursor,
+                                          memory_order_acquire);
+  if (cursor == -1)
+    // No more space.
+    return NULL;
+  size_t bytes = granules * GRANULE_SIZE;
+  size_t prev = alloc->allocated;
+  size_t block_mask = (BLOCK_SIZE - 1);
+  size_t next;
+  do {
+    next = prev + bytes;
+    if ((prev ^ next) & ~block_mask)
+      // Allocation straddles a block boundary; advance so it starts a
+      // fresh block.
+      next = (next & ~block_mask) + bytes;
+  } while (!atomic_compare_exchange_weak(&alloc->allocated, &prev, next));
+  // OK, we've claimed our memory, starting at next - bytes.  Now find
+  // the node in the linked list of evacuation targets that corresponds
+  // to this allocation pointer.
+  uintptr_t block = cursor & ~block_mask;
+  // This is the SEQ'th block to be allocated into.
+  uintptr_t seq = cursor & block_mask;
+  // Therefore this block handles allocations starting at SEQ*BLOCK_SIZE
+  // and continuing for BLOCK_SIZE bytes.
+  uintptr_t base = seq * BLOCK_SIZE;
+
+  while ((base ^ next) & ~block_mask) {
+    ASSERT(base < next);
+    // Cursor lags; advance it.
+    block = block_summary_next(block_summary_for_addr(block));
+    if (!block) {
+      // Ran out of blocks!
+      atomic_store_explicit(&alloc->block_cursor, -1, memory_order_release);
+      return NULL;
+    }
+    base += BLOCK_SIZE;
+    // This store can race with other allocators, but that's OK as long
+    // as it never advances the cursor beyond the allocation pointer,
+    // which it won't because we updated the allocation pointer already.
+    atomic_store_explicit(&alloc->block_cursor,
+                          make_evacuation_allocator_cursor(block, base),
+                          memory_order_release);
+  }
+
+  uintptr_t addr = block + (next & block_mask) - bytes;
+  return (struct gcobj*) addr;
 }
 
 static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
@@ -612,6 +707,24 @@ static void push_empty_block(struct mark_space *space, uintptr_t block) {
   push_block(&space->empty, block);
 }
 
+static int maybe_push_evacuation_target(struct mark_space *space,
+                                        uintptr_t block) {
+  size_t targets = atomic_load_explicit(&space->evacuation_targets.count,
+                                        memory_order_acquire);
+  size_t total = space->nslabs * NONMETA_BLOCKS_PER_SLAB;
+  size_t unavailable = atomic_load_explicit(&space->unavailable.count,
+                                            memory_order_acquire);
+  if (targets >= (total - unavailable) * space->evacuation_reserve)
+    return 0;
+
+  // We reached the end of the allocation cycle and just obtained a
+  // known-empty block from the empties list.  If the last cycle was an
+  // evacuating collection, put this block back on the list of
+  // evacuation target blocks.
+  push_block(&space->evacuation_targets, block);
+  return 1;
+}
+
 static ssize_t mark_space_request_release_memory(struct mark_space *space,
                                                  size_t bytes) {
   return atomic_fetch_add(&space->pending_unavailable_bytes, bytes) + bytes;
@@ -643,6 +756,13 @@ static int sweep_until_memory_released(struct mutator *mut) {
     uintptr_t block = pop_empty_block(space);
     if (!block)
       break;
+    // Note that we may have competing uses; if we're evacuating,
+    // perhaps we should push this block to the evacuation target list.
+    // That would enable us to reach a fragmentation low water-mark in
+    // fewer cycles.  But maybe evacuation started in order to obtain
+    // free blocks for large objects; in that case we should just reap
+    // the fruits of our labor.  Probably this second use-case is more
+    // important.
     push_unavailable_block(space, block);
     pending = atomic_fetch_sub(&space->pending_unavailable_bytes, BLOCK_SIZE);
     pending -= BLOCK_SIZE;
@@ -959,15 +1079,34 @@ static void determine_collection_kind(struct heap *heap,
   }
 }
 
+static void release_evacuation_target_blocks(struct mark_space *space) {
+  // Move any collected evacuation target blocks back to empties.
+  finish_evacuation_allocator(&space->evacuation_allocator,
+                              &space->evacuation_targets, &space->empty);
+}
+
 static void prepare_for_evacuation(struct heap *heap) {
   struct mark_space *space = heap_mark_space(heap);
 
   if (heap->gc_kind == GC_KIND_MARK_IN_PLACE) {
     space->evacuating = 0;
+    space->evacuation_reserve = 0.02;
     return;
   }
 
+  // Put the mutator into evacuation mode, collecting up to 50% of free space as
+  // evacuation blocks.
+  space->evacuation_reserve = 0.5;
+
   size_t target_blocks = space->evacuation_targets.count;
+  DEBUG("evacuation target block count: %zu\n", target_blocks);
+
+  if (target_blocks == 0) {
+    DEBUG("no evacuation target blocks, disabling evacuation for this round\n");
+    space->evacuating = 0;
+    return;
+  }
+
   size_t target_granules = target_blocks * GRANULES_PER_BLOCK;
   // Compute histogram where domain is the number of granules in a block
   // that survived the last collection, aggregated into 33 buckets, and
@@ -1025,6 +1164,8 @@ static void prepare_for_evacuation(struct heap *heap) {
   }
 
   // We are ready to evacuate!
+  prepare_evacuation_allocator(&space->evacuation_allocator,
+                               &space->evacuation_targets);
   space->evacuating = 1;
 }
 
@@ -1044,6 +1185,7 @@ static void mark_space_finish_gc(struct mark_space *space) {
   reset_sweeper(space);
   rotate_mark_bytes(space);
   reset_statistics(space);
+  release_evacuation_target_blocks(space);
 }
 
 static void collect(struct mutator *mut, enum gc_reason reason) {
@@ -1319,6 +1461,10 @@ static size_t next_hole(struct mutator *mut) {
         if (!block)
           return 0;
 
+        // Maybe we should use this empty as a target for evacuation.
+        if (maybe_push_evacuation_target(space, block))
+          continue;
+
         // Otherwise return the block to the mutator.
         struct block_summary *summary = block_summary_for_addr(block);
         block_summary_set_flag(summary, BLOCK_NEEDS_SWEEP);
@@ -1535,6 +1681,7 @@ static int mark_space_init(struct mark_space *space, struct heap *heap) {
   space->low_addr = (uintptr_t) slabs;
   space->extent = size;
   space->next_block = 0;
+  space->evacuation_reserve = 0.02;
   for (size_t slab = 0; slab < nslabs; slab++) {
     for (size_t block = 0; block < NONMETA_BLOCKS_PER_SLAB; block++) {
       uintptr_t addr = (uintptr_t)slabs[slab].blocks[block].data;
