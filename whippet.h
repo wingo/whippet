@@ -34,13 +34,14 @@ STATIC_ASSERT_EQ(LARGE_OBJECT_THRESHOLD,
 // mark bits but also for other per-object metadata.  Already we were
 // using a byte instead of a bit to facilitate parallel marking.
 // (Parallel markers are allowed to race.)  Turns out we can put a
-// pinned bit there too, for objects that can't be moved.  Actually
-// there are two pinned bits: one that's managed by the collector, which
-// pins referents of conservative roots, and one for pins managed
-// externally (maybe because the mutator requested a pin.)  Then there's
-// a "remembered" bit, indicating that the object should be scanned for
-// references to the nursery.  If the remembered bit is set, the
-// corresponding remset byte should also be set in the slab (see below).
+// pinned bit there too, for objects that can't be moved (perhaps
+// because they have been passed to unmanaged C code).  (Objects can
+// also be temporarily pinned if they are referenced by a conservative
+// root, but that doesn't need a separate bit; we can just use the mark
+// bit.)  Then there's a "remembered" bit, indicating that the object
+// should be scanned for references to the nursery.  If the remembered
+// bit is set, the corresponding remset byte should also be set in the
+// slab (see below).
 //
 // Getting back to mark bits -- because we want to allow for
 // conservative roots, we need to know whether an address indicates an
@@ -68,8 +69,8 @@ enum metadata_byte {
   METADATA_BYTE_MARK_2 = 8,
   METADATA_BYTE_END = 16,
   METADATA_BYTE_PINNED = 32,
-  METADATA_BYTE_PERMAPINNED = 64,
-  METADATA_BYTE_REMEMBERED = 128
+  METADATA_BYTE_REMEMBERED = 64,
+  METADATA_BYTE_UNUSED = 128
 };
 
 static uint8_t rotate_dead_survivor_marked(uint8_t mask) {
@@ -285,6 +286,7 @@ struct mark_space {
   uint64_t sweep_mask;
   uint8_t live_mask;
   uint8_t marked_mask;
+  uint8_t evacuating;
   uintptr_t low_addr;
   size_t extent;
   size_t heap_size;
@@ -858,11 +860,14 @@ static void determine_collection_kind(struct heap *heap,
   }
 }
 
-static void compute_evacuation_candidates(struct heap *heap) {
-  if (heap->gc_kind == GC_KIND_MARK_IN_PLACE)
-    return;
-
+static void prepare_for_evacuation(struct heap *heap) {
   struct mark_space *space = heap_mark_space(heap);
+
+  if (heap->gc_kind == GC_KIND_MARK_IN_PLACE) {
+    space->evacuating = 0;
+    return;
+  }
+
   size_t target_blocks = space->evacuation_targets.count;
   size_t target_granules = target_blocks * GRANULES_PER_BLOCK;
   // Compute histogram where domain is the number of granules in a block
@@ -919,9 +924,24 @@ static void compute_evacuation_candidates(struct heap *heap) {
       }
     }
   }
+
+  // We are ready to evacuate!
+  space->evacuating = 1;
+}
+
+static void trace_conservative_roots_after_stop(struct heap *heap) {
+  // FIXME: Visit conservative roots, if the collector is configured in
+  // that way.  Mark them in place, preventing any subsequent
+  // evacuation.
+}
+
+static void trace_precise_roots_after_stop(struct heap *heap) {
+  trace_mutator_roots_after_stop(heap);
+  trace_global_roots(heap);
 }
 
 static void mark_space_finish_gc(struct mark_space *space) {
+  space->evacuating = 0;
   reset_sweeper(space);
   rotate_mark_bytes(space);
   reset_statistics(space);
@@ -946,9 +966,9 @@ static void collect(struct mutator *mut, enum gc_reason reason) {
   double yield = heap_last_gc_yield(heap);
   double fragmentation = heap_fragmentation(heap);
   fprintf(stderr, "last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
-  compute_evacuation_candidates(heap);
-  trace_mutator_roots_after_stop(heap);
-  trace_global_roots(heap);
+  trace_conservative_roots_after_stop(heap);
+  prepare_for_evacuation(heap);
+  trace_precise_roots_after_stop(heap);
   tracer_trace(heap);
   tracer_release(heap);
   mark_space_finish_gc(space);
