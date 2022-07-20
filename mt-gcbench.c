@@ -69,11 +69,20 @@ struct DoubleArray {
   double values[0];
 };
 
+struct Hole {
+  GC_HEADER;
+  size_t length;
+  uintptr_t values[0];
+};
+
 static inline size_t node_size(Node *obj) {
   return sizeof(Node);
 }
 static inline size_t double_array_size(DoubleArray *array) {
   return sizeof(*array) + array->length * sizeof(double);
+}
+static inline size_t hole_size(Hole *hole) {
+  return sizeof(*hole) + hole->length * sizeof(uintptr_t);
 }
 static inline void
 visit_node_fields(Node *node,
@@ -86,6 +95,11 @@ static inline void
 visit_double_array_fields(DoubleArray *obj,
                           void (*visit)(struct gc_edge edge, void *visit_data),
                           void *visit_data) {
+}
+static inline void
+visit_hole_fields(Hole *obj,
+                  void (*visit)(struct gc_edge edge, void *visit_data),
+                  void *visit_data) {
 }
 
 typedef HANDLE_TO(Node) NodeHandle;
@@ -106,8 +120,14 @@ static DoubleArray* allocate_double_array(struct mutator *mut,
   return ret;
 }
 
-static unsigned long current_time(void)
-{
+static Hole* allocate_hole(struct mutator *mut, size_t size) {
+  Hole *ret = allocate(mut, ALLOC_KIND_HOLE,
+                       sizeof(Hole) + sizeof (uintptr_t) * size);
+  ret->length = size;
+  return ret;
+}
+
+static unsigned long current_time(void) {
   struct timeval t = { 0 };
   gettimeofday(&t, NULL);
   return t.tv_sec * 1000 * 1000 + t.tv_usec;
@@ -127,15 +147,58 @@ static int compute_num_iters(int i) {
   return 2 * tree_size(max_tree_depth + 2) / tree_size(i);
 }
 
+// A power-law distribution.  Each integer was selected by starting at 0, taking
+// a random number in [0,1), and then accepting the integer if the random number
+// was less than 0.15, or trying again with the next integer otherwise.  Useful
+// for modelling allocation sizes or number of garbage objects to allocate
+// between live allocations.
+static const uint8_t power_law_distribution[256] = {
+  1, 15, 3, 12, 2, 8, 4, 0, 18, 7, 9, 8, 15, 2, 36, 5,
+  1, 9, 6, 11, 9, 19, 2, 0, 0, 3, 9, 6, 3, 2, 1, 1,
+  6, 1, 8, 4, 2, 0, 5, 3, 7, 0, 0, 3, 0, 4, 1, 7,
+  1, 8, 2, 2, 2, 14, 0, 7, 8, 0, 2, 1, 4, 12, 7, 5,
+  0, 3, 4, 13, 10, 2, 3, 7, 0, 8, 0, 23, 0, 16, 1, 1,
+  6, 28, 1, 18, 0, 3, 6, 5, 8, 6, 14, 5, 2, 5, 0, 11,
+  0, 18, 4, 16, 1, 4, 3, 13, 3, 23, 7, 4, 10, 5, 3, 13,
+  0, 14, 5, 5, 2, 5, 0, 16, 2, 0, 1, 1, 0, 0, 4, 2,
+  7, 7, 0, 5, 7, 2, 1, 24, 27, 3, 7, 1, 0, 8, 1, 4,
+  0, 3, 0, 7, 7, 3, 9, 2, 9, 2, 5, 10, 1, 1, 12, 6,
+  2, 9, 5, 0, 4, 6, 0, 7, 2, 1, 5, 4, 1, 0, 1, 15,
+  4, 0, 15, 4, 0, 0, 32, 18, 2, 2, 1, 7, 8, 3, 11, 1,
+  2, 7, 11, 1, 9, 1, 2, 6, 11, 17, 1, 2, 5, 1, 14, 3,
+  6, 1, 1, 15, 3, 1, 0, 6, 10, 8, 1, 3, 2, 7, 0, 1,
+  0, 11, 3, 3, 5, 8, 2, 0, 0, 7, 12, 2, 5, 20, 3, 7,
+  4, 4, 5, 22, 1, 5, 2, 7, 15, 2, 4, 6, 11, 8, 12, 1
+};
+
+static size_t power_law(size_t *counter) {
+  return power_law_distribution[(*counter)++ & 0xff];
+}
+
+struct thread {
+  struct mutator *mut;
+  size_t counter;
+};
+
+static void allocate_garbage(struct thread *t) {
+  size_t hole = power_law(&t->counter);
+  if (hole) {
+    allocate_hole(t->mut, hole);
+  }
+}
+
 // Build tree top down, assigning to older objects.
-static void populate(struct mutator *mut, int depth, Node *node) {
+static void populate(struct thread *t, int depth, Node *node) {
+  struct mutator *mut = t->mut;
   if (depth <= 0)
     return;
 
   NodeHandle self = { node };
   PUSH_HANDLE(mut, self);
+  allocate_garbage(t);
   NodeHandle l = { allocate_node(mut) };
   PUSH_HANDLE(mut, l);
+  allocate_garbage(t);
   NodeHandle r = { allocate_node(mut) };
   PUSH_HANDLE(mut, r);
 
@@ -144,8 +207,8 @@ static void populate(struct mutator *mut, int depth, Node *node) {
   // i is 0 because the memory is zeroed.
   HANDLE_REF(self)->j = depth;
 
-  populate(mut, depth-1, HANDLE_REF(self)->left);
-  populate(mut, depth-1, HANDLE_REF(self)->right);
+  populate(t, depth-1, HANDLE_REF(self)->left);
+  populate(t, depth-1, HANDLE_REF(self)->right);
 
   POP_HANDLE(mut);
   POP_HANDLE(mut);
@@ -153,15 +216,17 @@ static void populate(struct mutator *mut, int depth, Node *node) {
 }
 
 // Build tree bottom-up
-static Node* make_tree(struct mutator *mut, int depth) {
+static Node* make_tree(struct thread *t, int depth) {
+  struct mutator *mut = t->mut;
   if (depth <= 0)
     return allocate_node(mut);
 
-  NodeHandle left = { make_tree(mut, depth-1) };
+  NodeHandle left = { make_tree(t, depth-1) };
   PUSH_HANDLE(mut, left);
-  NodeHandle right = { make_tree(mut, depth-1) };
+  NodeHandle right = { make_tree(t, depth-1) };
   PUSH_HANDLE(mut, right);
 
+  allocate_garbage(t);
   Node *result = allocate_node(mut);
   init_field((void**)&result->left, HANDLE_REF(left));
   init_field((void**)&result->right, HANDLE_REF(right));
@@ -190,7 +255,8 @@ static void validate_tree(Node *tree, int depth) {
 #endif
 }
 
-static void time_construction(struct mutator *mut, int depth) {
+static void time_construction(struct thread *t, int depth) {
+  struct mutator *mut = t->mut;
   int num_iters = compute_num_iters(depth);
   NodeHandle temp_tree = { NULL };
   PUSH_HANDLE(mut, temp_tree);
@@ -201,7 +267,7 @@ static void time_construction(struct mutator *mut, int depth) {
     unsigned long start = current_time();
     for (int i = 0; i < num_iters; ++i) {
       HANDLE_SET(temp_tree, allocate_node(mut));
-      populate(mut, depth, HANDLE_REF(temp_tree));
+      populate(t, depth, HANDLE_REF(temp_tree));
       validate_tree(HANDLE_REF(temp_tree), depth);
       HANDLE_SET(temp_tree, NULL);
     }
@@ -212,7 +278,7 @@ static void time_construction(struct mutator *mut, int depth) {
   {
     long start = current_time();
     for (int i = 0; i < num_iters; ++i) {
-      HANDLE_SET(temp_tree, make_tree(mut, depth));
+      HANDLE_SET(temp_tree, make_tree(t, depth));
       validate_tree(HANDLE_REF(temp_tree), depth);
       HANDLE_SET(temp_tree, NULL);
     }
@@ -256,6 +322,7 @@ static void* run_one_test(struct mutator *mut) {
   NodeHandle long_lived_tree = { NULL };
   NodeHandle temp_tree = { NULL };
   DoubleArrayHandle array = { NULL };
+  struct thread t = { mut, 0 };
 
   PUSH_HANDLE(mut, long_lived_tree);
   PUSH_HANDLE(mut, temp_tree);
@@ -265,7 +332,7 @@ static void* run_one_test(struct mutator *mut) {
   printf(" Creating a long-lived binary tree of depth %d\n",
          long_lived_tree_depth);
   HANDLE_SET(long_lived_tree, allocate_node(mut));
-  populate(mut, long_lived_tree_depth, HANDLE_REF(long_lived_tree));
+  populate(&t, long_lived_tree_depth, HANDLE_REF(long_lived_tree));
 
   // Create long-lived array, filling half of it
   printf(" Creating a long-lived array of %d doubles\n", array_size);
@@ -275,7 +342,7 @@ static void* run_one_test(struct mutator *mut) {
   }
 
   for (int d = min_tree_depth; d <= max_tree_depth; d += 2) {
-    time_construction(mut, d);
+    time_construction(&t, d);
   }
 
   validate_tree(HANDLE_REF(long_lived_tree), long_lived_tree_depth);
