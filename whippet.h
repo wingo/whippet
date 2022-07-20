@@ -849,6 +849,12 @@ static void determine_collection_kind(struct heap *heap,
   }
 }
 
+static void mark_space_finish_gc(struct mark_space *space) {
+  reset_sweeper(space);
+  rotate_mark_bytes(space);
+  reset_statistics(space);
+}
+
 static void collect(struct mutator *mut, enum gc_reason reason) {
   struct heap *heap = mutator_heap(mut);
   struct mark_space *space = heap_mark_space(heap);
@@ -872,11 +878,9 @@ static void collect(struct mutator *mut, enum gc_reason reason) {
   trace_global_roots(heap);
   tracer_trace(heap);
   tracer_release(heap);
-  reset_sweeper(space);
-  rotate_mark_bytes(space);
-  heap->count++;
-  reset_statistics(space);
+  mark_space_finish_gc(space);
   large_object_space_finish_gc(lospace);
+  heap->count++;
   heap_reset_large_object_pages(heap, lospace->live_pages_at_last_collection);
   allow_mutators_to_continue(heap);
   DEBUG("collect done\n");
