@@ -153,7 +153,7 @@ large majority of use cases.
 
 ### Features that would improve Whippet performance
 
- - [ ] Immix-style opportunistic evacuation
+ - [X] Immix-style opportunistic evacuation
  - [ ] Overflow allocation
  - [ ] Generational GC via sticky mark bits
  - [ ] Generational GC with semi-space nursery
