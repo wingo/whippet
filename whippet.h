@@ -305,6 +305,8 @@ struct heap {
   long count;
   struct mutator *deactivated_mutators;
   struct tracer tracer;
+  double fragmentation_low_threshold;
+  double fragmentation_high_threshold;
 };
 
 struct mutator_mark_buf {
@@ -771,6 +773,24 @@ static int maybe_grow_heap(struct heap *heap, enum gc_reason reason) {
   return 0;
 }
 
+static double heap_fragmentation(struct heap *heap) {
+  struct mark_space *mark_space = heap_mark_space(heap);
+  size_t mark_space_blocks = mark_space->nslabs * NONMETA_BLOCKS_PER_SLAB;
+  mark_space_blocks -= atomic_load(&mark_space->unavailable_blocks_count);
+  size_t mark_space_granules = mark_space_blocks * GRANULES_PER_BLOCK;
+  size_t fragmentation_granules =
+    mark_space->fragmentation_granules_since_last_collection;
+
+  struct large_object_space *lospace = heap_large_object_space(heap);
+  size_t lospace_pages = lospace->total_pages - lospace->free_pages;
+  size_t lospace_granules =
+    lospace_pages << (lospace->page_size_log2 - GRANULE_SIZE_LOG_2);
+
+  size_t heap_granules = mark_space_granules + lospace_granules;
+
+  return ((double)fragmentation_granules) / heap_granules;
+}
+
 static void determine_collection_kind(struct heap *heap,
                                       enum gc_reason reason) {
 }
@@ -792,9 +812,8 @@ static void collect(struct mutator *mut, enum gc_reason reason) {
   finish_sweeping(mut);
   wait_for_mutators_to_stop(heap);
   double yield = space->granules_freed_by_last_collection * GRANULE_SIZE;
-  double fragmentation = space->fragmentation_granules_since_last_collection * GRANULE_SIZE;
+  double fragmentation = heap_fragmentation(heap);
   yield /= SLAB_SIZE * space->nslabs;
-  fragmentation /= SLAB_SIZE * space->nslabs;
   fprintf(stderr, "last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
   trace_mutator_roots_after_stop(heap);
   trace_global_roots(heap);
@@ -1239,6 +1258,23 @@ static struct slab* allocate_slabs(size_t nslabs) {
   return (struct slab*) aligned_base;
 }
 
+static int heap_init(struct heap *heap, size_t size) {
+  // *heap is already initialized to 0.
+
+  pthread_mutex_init(&heap->lock, NULL);
+  pthread_cond_init(&heap->mutator_cond, NULL);
+  pthread_cond_init(&heap->collector_cond, NULL);
+  heap->size = size;
+
+  if (!tracer_init(heap))
+    abort();
+
+  heap->fragmentation_low_threshold = 0.05;
+  heap->fragmentation_high_threshold = 0.10;
+
+  return 1;
+}
+
 static int mark_space_init(struct mark_space *space, struct heap *heap) {
   size_t size = align_up(heap->size, SLAB_SIZE);
   size_t nslabs = size / SLAB_SIZE;
@@ -1276,12 +1312,7 @@ static int initialize_gc(size_t size, struct heap **heap,
   *heap = calloc(1, sizeof(struct heap));
   if (!*heap) abort();
 
-  pthread_mutex_init(&(*heap)->lock, NULL);
-  pthread_cond_init(&(*heap)->mutator_cond, NULL);
-  pthread_cond_init(&(*heap)->collector_cond, NULL);
-  (*heap)->size = size;
-
-  if (!tracer_init(*heap))
+  if (!heap_init(*heap, size))
     abort();
 
   struct mark_space *space = heap_mark_space(*heap);
