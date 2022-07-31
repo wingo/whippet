@@ -103,14 +103,11 @@ static inline void collect(struct mutator *mut) {
   GC_gcollect();
 }
 
-static inline void init_field(void **addr, void *val) {
+static inline void init_field(void *obj, void **addr, void *val) {
   *addr = val;
 }
-static inline void set_field(void **addr, void *val) {
+static inline void set_field(void *obj, void **addr, void *val) {
   *addr = val;
-}
-static inline void* get_field(void **addr) {
-  return *addr;
 }
 
 static inline struct mutator *add_mutator(struct heap *heap) {

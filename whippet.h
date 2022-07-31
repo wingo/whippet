@@ -1652,14 +1652,11 @@ static inline void* allocate_pointerless(struct mutator *mut,
   return allocate(mut, kind, size);
 }
 
-static inline void init_field(void **addr, void *val) {
+static inline void init_field(void *obj, void **addr, void *val) {
   *addr = val;
 }
-static inline void set_field(void **addr, void *val) {
+static inline void set_field(void *obj, void **addr, void *val) {
   *addr = val;
-}
-static inline void* get_field(void **addr) {
-  return *addr;
 }
 
 static struct slab* allocate_slabs(size_t nslabs) {
