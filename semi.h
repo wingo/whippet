@@ -176,7 +176,7 @@ static void collect(struct mutator *mut) {
   struct semi_space *semi = heap_semi_space(heap);
   struct large_object_space *large = heap_large_object_space(heap);
   // fprintf(stderr, "start collect #%ld:\n", space->count);
-  large_object_space_start_gc(large);
+  large_object_space_start_gc(large, 0);
   flip(semi);
   uintptr_t grey = semi->hp;
   for (struct handle *h = mut->roots; h; h = h->next)
@@ -184,7 +184,7 @@ static void collect(struct mutator *mut) {
   // fprintf(stderr, "pushed %zd bytes in roots\n", space->hp - grey);
   while(grey < semi->hp)
     grey = scan(heap, grey);
-  large_object_space_finish_gc(large);
+  large_object_space_finish_gc(large, 0);
   semi_space_set_stolen_pages(semi, large->live_pages_at_last_collection);
   // fprintf(stderr, "%zd bytes copied\n", (space->size>>1)-(space->limit-space->hp));
 }

@@ -56,7 +56,11 @@ static size_t large_object_space_npages(struct large_object_space *space,
   return (bytes + space->page_size - 1) >> space->page_size_log2;
 }
 
-static void large_object_space_start_gc(struct large_object_space *space) {
+static void large_object_space_start_gc(struct large_object_space *space,
+                                        int is_minor_gc) {
+  if (is_minor_gc)
+    return;
+
   // Flip.  Note that when we flip, fromspace is empty, but it might have
   // allocated storage, so we do need to do a proper swap.
   struct address_set tmp;
@@ -121,14 +125,22 @@ static void large_object_space_reclaim_one(uintptr_t addr, void *data) {
   }
 }
 
-static void large_object_space_finish_gc(struct large_object_space *space) {
+static void large_object_space_finish_gc(struct large_object_space *space,
+                                         int is_minor_gc) {
   pthread_mutex_lock(&space->lock);
-  address_set_for_each(&space->from_space, large_object_space_reclaim_one,
-                       space);
-  address_set_clear(&space->from_space);
-  size_t free_pages = space->total_pages - space->live_pages_at_last_collection;
-  space->pages_freed_by_last_collection = free_pages - space->free_pages;
-  space->free_pages = free_pages;
+  if (is_minor_gc) {
+    space->live_pages_at_last_collection =
+      space->total_pages - space->free_pages;
+    space->pages_freed_by_last_collection = 0;
+  } else {
+    address_set_for_each(&space->from_space, large_object_space_reclaim_one,
+                         space);
+    address_set_clear(&space->from_space);
+    size_t free_pages =
+      space->total_pages - space->live_pages_at_last_collection;
+    space->pages_freed_by_last_collection = free_pages - space->free_pages;
+    space->free_pages = free_pages;
+  }
   pthread_mutex_unlock(&space->lock);
 }
 

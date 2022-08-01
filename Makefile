@@ -1,5 +1,5 @@
 TESTS=quads mt-gcbench # MT_GCBench MT_GCBench2
-COLLECTORS=bdw semi whippet parallel-whippet
+COLLECTORS=bdw semi whippet parallel-whippet generational-whippet parallel-generational-whippet
 
 CC=gcc
 CFLAGS=-Wall -O2 -g -fno-strict-aliasing -Wno-unused -DNDEBUG
@@ -22,6 +22,12 @@ whippet-%: whippet.h precise-roots.h large-object-space.h serial-tracer.h assert
 
 parallel-whippet-%: whippet.h precise-roots.h large-object-space.h parallel-tracer.h assert.h debug.h %-types.h heap-objects.h %.c
 	$(COMPILE) -DGC_PARALLEL_WHIPPET -o $@ $*.c
+
+generational-whippet-%: whippet.h precise-roots.h large-object-space.h serial-tracer.h assert.h debug.h %-types.h heap-objects.h %.c
+	$(COMPILE) -DGC_GENERATIONAL_WHIPPET -o $@ $*.c
+
+parallel-generational-whippet-%: whippet.h precise-roots.h large-object-space.h parallel-tracer.h assert.h debug.h %-types.h heap-objects.h %.c
+	$(COMPILE) -DGC_PARALLEL_GENERATIONAL_WHIPPET -o $@ $*.c
 
 check: $(addprefix test-$(TARGET),$(TARGETS))
 

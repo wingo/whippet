@@ -1,3 +1,11 @@
+#ifndef GC_PARALLEL_TRACE
+#error define GC_PARALLEL_TRACE to 1 or 0
+#endif
+
+#ifndef GC_GENERATIONAL
+#error define GC_GENERATIONAL to 1 or 0
+#endif
+
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -11,7 +19,7 @@
 #include "inline.h"
 #include "large-object-space.h"
 #include "precise-roots.h"
-#ifdef GC_PARALLEL_TRACE
+#if GC_PARALLEL_TRACE
 #include "parallel-tracer.h"
 #else
 #include "serial-tracer.h"
@@ -39,10 +47,7 @@ STATIC_ASSERT_EQ(LARGE_OBJECT_THRESHOLD,
 // because they have been passed to unmanaged C code).  (Objects can
 // also be temporarily pinned if they are referenced by a conservative
 // root, but that doesn't need a separate bit; we can just use the mark
-// bit.)  Then there's a "remembered" bit, indicating that the object
-// should be scanned for references to the nursery.  If the remembered
-// bit is set, the corresponding remset byte should also be set in the
-// slab (see below).
+// bit.)
 //
 // Getting back to mark bits -- because we want to allow for
 // conservative roots, we need to know whether an address indicates an
@@ -70,8 +75,8 @@ enum metadata_byte {
   METADATA_BYTE_MARK_2 = 8,
   METADATA_BYTE_END = 16,
   METADATA_BYTE_PINNED = 32,
-  METADATA_BYTE_REMEMBERED = 64,
-  METADATA_BYTE_UNUSED = 128
+  METADATA_BYTE_UNUSED_1 = 64,
+  METADATA_BYTE_UNUSED_2 = 128
 };
 
 static uint8_t rotate_dead_survivor_marked(uint8_t mask) {
@@ -164,7 +169,7 @@ struct block {
 struct slab {
   struct slab_header header;
   struct block_summary summaries[NONMETA_BLOCKS_PER_SLAB];
-  uint8_t remsets[REMSET_BYTES_PER_SLAB];
+  uint8_t remembered_set[REMSET_BYTES_PER_SLAB];
   uint8_t metadata[METADATA_BYTES_PER_SLAB];
   struct block blocks[NONMETA_BLOCKS_PER_SLAB];
 };
@@ -176,6 +181,8 @@ static struct slab *object_slab(void *obj) {
   return (struct slab*) base;
 }
 
+static int heap_object_is_large(struct gcobj *obj);
+
 static uint8_t *object_metadata_byte(void *obj) {
   uintptr_t addr = (uintptr_t) obj;
   uintptr_t base = addr & ~(SLAB_SIZE - 1);
@@ -186,6 +193,7 @@ static uint8_t *object_metadata_byte(void *obj) {
 #define GRANULES_PER_BLOCK (BLOCK_SIZE / GRANULE_SIZE)
 #define GRANULES_PER_REMSET_BYTE (GRANULES_PER_BLOCK / REMSET_BYTES_PER_BLOCK)
 static uint8_t *object_remset_byte(void *obj) {
+  ASSERT(!heap_object_is_large(obj));
   uintptr_t addr = (uintptr_t) obj;
   uintptr_t base = addr & ~(SLAB_SIZE - 1);
   uintptr_t granule = (addr & (SLAB_SIZE - 1)) >> GRANULE_SIZE_LOG_2;
@@ -311,8 +319,12 @@ struct mark_space {
 };
 
 enum gc_kind {
-  GC_KIND_MARK_IN_PLACE,
-  GC_KIND_COMPACT
+  GC_KIND_FLAG_MINOR = GC_GENERATIONAL, // 0 or 1
+  GC_KIND_FLAG_EVACUATING = 0x2,
+  GC_KIND_MINOR_IN_PLACE = GC_KIND_FLAG_MINOR,
+  GC_KIND_MINOR_EVACUATING = GC_KIND_FLAG_MINOR | GC_KIND_FLAG_EVACUATING,
+  GC_KIND_MAJOR_IN_PLACE = 0,
+  GC_KIND_MAJOR_EVACUATING = GC_KIND_FLAG_EVACUATING,
 };
 
 struct heap {
@@ -326,15 +338,19 @@ struct heap {
   int collecting;
   enum gc_kind gc_kind;
   int multithreaded;
+  int allow_pinning;
   size_t active_mutator_count;
   size_t mutator_count;
   struct handle *global_roots;
   struct mutator *mutator_trace_list;
   long count;
+  long minor_count;
   struct mutator *deactivated_mutators;
   struct tracer tracer;
   double fragmentation_low_threshold;
   double fragmentation_high_threshold;
+  double minor_gc_yield_threshold;
+  double major_gc_yield_threshold;
 };
 
 struct mutator_mark_buf {
@@ -383,6 +399,18 @@ enum gc_reason {
 };
 
 static void collect(struct mutator *mut, enum gc_reason reason) NEVER_INLINE;
+
+static int heap_object_is_large(struct gcobj *obj) {
+  switch (tag_live_alloc_kind(obj->tag)) {
+#define IS_LARGE(name, Name, NAME) \
+    case ALLOC_KIND_##NAME: \
+      return name##_size((Name*)obj) > LARGE_OBJECT_THRESHOLD;
+      break;
+    FOR_EACH_HEAP_OBJECT_KIND(IS_LARGE)
+#undef IS_LARGE
+  }
+  abort();
+}
 
 static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
   return object_metadata_byte(obj);
@@ -882,16 +910,30 @@ static void enqueue_mutator_for_tracing(struct mutator *mut) {
 }
 
 static int heap_should_mark_while_stopping(struct heap *heap) {
-  return atomic_load(&heap->gc_kind) == GC_KIND_MARK_IN_PLACE;
-}
-
-static int mutator_should_mark_while_stopping(struct mutator *mut) {
+  if (heap->allow_pinning) {
+    // The metadata byte is mostly used for marking and object extent.
+    // For marking, we allow updates to race, because the state
+    // transition space is limited.  However during ragged stop there is
+    // the possibility of races between the marker and updates from the
+    // mutator to the pinned bit in the metadata byte.
+    //
+    // Losing the pinned bit would be bad.  Perhaps this means we should
+    // store the pinned bit elsewhere.  Or, perhaps for this reason (and
+    // in all cases?)  markers should use proper synchronization to
+    // update metadata mark bits instead of racing.  But for now it is
+    // sufficient to simply avoid ragged stops if we allow pins.
+    return 0;
+  }
   // If we are marking in place, we allow mutators to mark their own
   // stacks before pausing.  This is a limited form of concurrent
   // marking, as other mutators might be running, not having received
   // the signal to stop yet.  We can't do this for a compacting
   // collection, however, as that would become concurrent evacuation,
   // which is a different kettle of fish.
+  return (atomic_load(&heap->gc_kind) & GC_KIND_FLAG_EVACUATING) == 0;
+}
+
+static int mutator_should_mark_while_stopping(struct mutator *mut) {
   return heap_should_mark_while_stopping(mutator_heap(mut));
 }
 
@@ -968,6 +1010,63 @@ static void trace_global_roots(struct heap *heap) {
     struct gc_edge edge = gc_edge(&h->v);
     if (trace_edge(heap, edge))
       tracer_enqueue_root(&heap->tracer, dereference_edge(edge));
+  }
+}
+
+static inline int
+heap_object_is_young(struct heap *heap, struct gcobj *obj) {
+  if (UNLIKELY(!mark_space_contains(heap_mark_space(heap), obj))) {
+    // No lospace nursery, for the moment.
+    return 0;
+  }
+  ASSERT(!heap_object_is_large(obj));
+  return (*object_metadata_byte(obj)) & METADATA_BYTE_YOUNG;
+}
+
+static void mark_space_trace_generational_roots(struct mark_space *space,
+                                                struct heap *heap) {
+  uint8_t live_tenured_mask = space->live_mask;
+  for (size_t s = 0; s < space->nslabs; s++) {
+    struct slab *slab = &space->slabs[s];
+    uint8_t *remset = slab->remembered_set;
+    // TODO: Load 8 bytes at a time instead.
+    for (size_t card = 0; card < REMSET_BYTES_PER_SLAB; card++) {
+      if (remset[card]) {
+        remset[card] = 0;
+        size_t base = card * GRANULES_PER_REMSET_BYTE;
+        size_t limit = base + GRANULES_PER_REMSET_BYTE;
+        // We could accelerate this but GRANULES_PER_REMSET_BYTE is 16
+        // on 64-bit hosts, so maybe it's not so important.
+        for (size_t granule = base; granule < limit; granule++) {
+          if (slab->metadata[granule] & live_tenured_mask) {
+            struct block *block0 = &slab->blocks[0];
+            uintptr_t addr = ((uintptr_t)block0->data) + granule * GRANULE_SIZE;
+            struct gcobj *obj = (struct gcobj*)addr;
+            ASSERT(object_metadata_byte(obj) == &slab->metadata[granule]);
+            tracer_enqueue_root(&heap->tracer, obj);
+          }
+        }
+        // Note that it's quite possible (and even likely) that this
+        // remset byte doesn't cause any roots, if all stores were to
+        // nursery objects.
+      }
+    }
+  }
+}
+
+static void mark_space_clear_generational_roots(struct mark_space *space) {
+  if (!GC_GENERATIONAL) return;
+  for (size_t slab = 0; slab < space->nslabs; slab++) {
+    memset(space->slabs[slab].remembered_set, 0, REMSET_BYTES_PER_SLAB);
+  }
+}
+
+static void trace_generational_roots(struct heap *heap) {
+  // TODO: Add lospace nursery.
+  if (atomic_load(&heap->gc_kind) & GC_KIND_FLAG_MINOR) {
+    mark_space_trace_generational_roots(heap_mark_space(heap), heap);
+  } else {
+    mark_space_clear_generational_roots(heap_mark_space(heap));
   }
 }
 
@@ -1080,14 +1179,17 @@ static double heap_fragmentation(struct heap *heap) {
   return ((double)fragmentation_granules) / heap_granules;
 }
 
-static void determine_collection_kind(struct heap *heap,
-                                      enum gc_reason reason) {
+static enum gc_kind determine_collection_kind(struct heap *heap,
+                                              enum gc_reason reason) {
+  enum gc_kind previous_gc_kind = atomic_load(&heap->gc_kind);
+  enum gc_kind gc_kind;
   switch (reason) {
     case GC_REASON_LARGE_ALLOCATION:
       // We are collecting because a large allocation could not find
       // enough free blocks, and we decided not to expand the heap.
-      // Let's evacuate to maximize the free block yield.
-      heap->gc_kind = GC_KIND_COMPACT;
+      // Let's do an evacuating major collection to maximize the free
+      // block yield.
+      gc_kind = GC_KIND_MAJOR_EVACUATING;
       break;
     case GC_REASON_SMALL_ALLOCATION: {
       // We are making a small allocation and ran out of blocks.
@@ -1095,29 +1197,57 @@ static void determine_collection_kind(struct heap *heap,
       // is measured as a percentage of granules that couldn't be used
       // for allocations in the last cycle.
       double fragmentation = heap_fragmentation(heap);
-      if (atomic_load(&heap->gc_kind) == GC_KIND_COMPACT) {
-        // For some reason, we already decided to compact in the past.
-        // Keep going until we measure that wasted space due to
-        // fragmentation is below a low-water-mark.
-        if (fragmentation < heap->fragmentation_low_threshold) {
-          DEBUG("returning to in-place collection, fragmentation %.2f%% < %.2f%%\n",
-                fragmentation * 100.,
-                heap->fragmentation_low_threshold * 100.);
-          atomic_store(&heap->gc_kind, GC_KIND_MARK_IN_PLACE);
-        }
+      if (previous_gc_kind == GC_KIND_MAJOR_EVACUATING
+          && fragmentation >= heap->fragmentation_low_threshold) {
+        DEBUG("continuing evacuation due to fragmentation %.2f%% > %.2f%%\n",
+              fragmentation * 100.,
+              heap->fragmentation_low_threshold * 100.);
+        // For some reason, we already decided to compact in the past,
+        // and fragmentation hasn't yet fallen below a low-water-mark.
+        // Keep going.
+        gc_kind = GC_KIND_MAJOR_EVACUATING;
+      } else if (fragmentation > heap->fragmentation_high_threshold) {
+        // Switch to evacuation mode if the heap is too fragmented.
+        DEBUG("triggering compaction due to fragmentation %.2f%% > %.2f%%\n",
+              fragmentation * 100.,
+              heap->fragmentation_high_threshold * 100.);
+        gc_kind = GC_KIND_MAJOR_EVACUATING;
+      } else if (previous_gc_kind == GC_KIND_MAJOR_EVACUATING) {
+        // We were evacuating, but we're good now.  Go back to minor
+        // collections.
+        DEBUG("returning to in-place collection, fragmentation %.2f%% < %.2f%%\n",
+              fragmentation * 100.,
+              heap->fragmentation_low_threshold * 100.);
+        gc_kind = GC_KIND_MINOR_IN_PLACE;
+      } else if (previous_gc_kind != GC_KIND_MINOR_IN_PLACE) {
+        DEBUG("returning to minor collection after major collection\n");
+        // Go back to minor collections.
+        gc_kind = GC_KIND_MINOR_IN_PLACE;
+      } else if (heap_last_gc_yield(heap) < heap->major_gc_yield_threshold) {
+        DEBUG("collection yield too low, triggering major collection\n");
+        // Nursery is getting tight; trigger a major GC.
+        gc_kind = GC_KIND_MAJOR_IN_PLACE;
       } else {
-        // Otherwise switch to evacuation mode if the heap is too
-        // fragmented.
-        if (fragmentation > heap->fragmentation_high_threshold) {
-          DEBUG("triggering compaction due to fragmentation %.2f%% > %.2f%%\n",
-                fragmentation * 100.,
-                heap->fragmentation_high_threshold * 100.);
-          atomic_store(&heap->gc_kind, GC_KIND_COMPACT);
-        }
+        DEBUG("keeping on with minor GC\n");
+        // Nursery has adequate space; keep trucking with minor GCs.
+        ASSERT(previous_gc_kind == GC_KIND_MINOR_IN_PLACE);
+        gc_kind = GC_KIND_MINOR_IN_PLACE;
       }
       break;
     }
   }
+  // If this is the first in a series of minor collections, reset the
+  // threshold at which we should do a major GC.
+  if ((gc_kind & GC_KIND_FLAG_MINOR) &&
+      (previous_gc_kind & GC_KIND_FLAG_MINOR) != GC_KIND_FLAG_MINOR) {
+    double yield = heap_last_gc_yield(heap);
+    double threshold = yield * heap->minor_gc_yield_threshold;
+    heap->major_gc_yield_threshold = threshold;
+    DEBUG("first minor collection at yield %.2f%%, threshold %.2f%%\n",
+          yield * 100., threshold * 100.);
+  }
+  atomic_store(&heap->gc_kind, gc_kind);
+  return gc_kind;
 }
 
 static void release_evacuation_target_blocks(struct mark_space *space) {
@@ -1129,7 +1259,7 @@ static void release_evacuation_target_blocks(struct mark_space *space) {
 static void prepare_for_evacuation(struct heap *heap) {
   struct mark_space *space = heap_mark_space(heap);
 
-  if (heap->gc_kind == GC_KIND_MARK_IN_PLACE) {
+  if ((heap->gc_kind & GC_KIND_FLAG_EVACUATING) == 0) {
     space->evacuating = 0;
     space->evacuation_reserve = 0.02;
     return;
@@ -1219,12 +1349,15 @@ static void trace_conservative_roots_after_stop(struct heap *heap) {
 static void trace_precise_roots_after_stop(struct heap *heap) {
   trace_mutator_roots_after_stop(heap);
   trace_global_roots(heap);
+  trace_generational_roots(heap);
 }
 
-static void mark_space_finish_gc(struct mark_space *space) {
+static void mark_space_finish_gc(struct mark_space *space,
+                                 enum gc_kind gc_kind) {
   space->evacuating = 0;
   reset_sweeper(space);
-  rotate_mark_bytes(space);
+  if ((gc_kind & GC_KIND_FLAG_MINOR) == 0)
+    rotate_mark_bytes(space);
   reset_statistics(space);
   release_evacuation_target_blocks(space);
 }
@@ -1238,8 +1371,8 @@ static void collect(struct mutator *mut, enum gc_reason reason) {
     return;
   }
   DEBUG("start collect #%ld:\n", heap->count);
-  determine_collection_kind(heap, reason);
-  large_object_space_start_gc(lospace);
+  enum gc_kind gc_kind = determine_collection_kind(heap, reason);
+  large_object_space_start_gc(lospace, gc_kind & GC_KIND_FLAG_MINOR);
   tracer_prepare(heap);
   request_mutators_to_stop(heap);
   trace_mutator_roots_with_lock_before_stop(mut);
@@ -1253,9 +1386,11 @@ static void collect(struct mutator *mut, enum gc_reason reason) {
   trace_precise_roots_after_stop(heap);
   tracer_trace(heap);
   tracer_release(heap);
-  mark_space_finish_gc(space);
-  large_object_space_finish_gc(lospace);
+  mark_space_finish_gc(space, gc_kind);
+  large_object_space_finish_gc(lospace, gc_kind & GC_KIND_FLAG_MINOR);
   heap->count++;
+  if (gc_kind & GC_KIND_FLAG_MINOR)
+    heap->minor_count++;
   heap_reset_large_object_pages(heap, lospace->live_pages_at_last_collection);
   allow_mutators_to_continue(heap);
   DEBUG("collect done\n");
@@ -1652,10 +1787,23 @@ static inline void* allocate_pointerless(struct mutator *mut,
   return allocate(mut, kind, size);
 }
 
+static inline void mark_space_write_barrier(void *obj) {
+  // Unconditionally mark the card the object is in.  Precondition: obj
+  // is in the mark space (is not a large object).
+  atomic_store_explicit(object_remset_byte(obj), 1, memory_order_relaxed);
+}
+
+// init_field is an optimization for the case in which there is no
+// intervening allocation or safepoint between allocating an object and
+// setting the value of a field in the object.  For the purposes of
+// generational collection, we can omit the barrier in that case,
+// because we know the source object is in the nursery.  It is always
+// correct to replace it with set_field.
 static inline void init_field(void *obj, void **addr, void *val) {
   *addr = val;
 }
 static inline void set_field(void *obj, void **addr, void *val) {
+  if (GC_GENERATIONAL) mark_space_write_barrier(obj);
   *addr = val;
 }
 
@@ -1696,6 +1844,8 @@ static int heap_init(struct heap *heap, size_t size) {
 
   heap->fragmentation_low_threshold = 0.05;
   heap->fragmentation_high_threshold = 0.10;
+  heap->minor_gc_yield_threshold = 0.30;
+  heap->major_gc_yield_threshold = heap->minor_gc_yield_threshold;
 
   return 1;
 }
