@@ -285,6 +285,7 @@ struct gcobj {
 
 struct evacuation_allocator {
   size_t allocated; // atomically
+  size_t limit;
   uintptr_t block_cursor; // atomically
 };
 
@@ -417,9 +418,35 @@ static void prepare_evacuation_allocator(struct evacuation_allocator *alloc,
                                          struct block_list *targets) {
   uintptr_t first_block = targets->blocks;
   atomic_store_explicit(&alloc->allocated, 0, memory_order_release);
+  alloc->limit =
+    atomic_load_explicit(&targets->count, memory_order_acquire) * BLOCK_SIZE;
   atomic_store_explicit(&alloc->block_cursor,
                         make_evacuation_allocator_cursor(first_block, 0),
                         memory_order_release);
+}
+
+static void clear_remaining_metadata_bytes_in_block(uintptr_t block,
+                                                    uintptr_t allocated) {
+  ASSERT((allocated & (GRANULE_SIZE - 1)) == 0);
+  uintptr_t base = block + allocated;
+  uintptr_t limit = block + BLOCK_SIZE;
+  uintptr_t granules = (limit - base) >> GRANULE_SIZE_LOG_2;
+  ASSERT(granules <= GRANULES_PER_BLOCK);
+  memset(object_metadata_byte((void*)base), 0, granules);
+}
+
+static void finish_evacuation_allocator_block(uintptr_t block,
+                                              uintptr_t allocated) {
+  ASSERT(allocated <= BLOCK_SIZE);
+  struct block_summary *summary = block_summary_for_addr(block);
+  block_summary_set_flag(summary, BLOCK_NEEDS_SWEEP);
+  size_t fragmentation = (BLOCK_SIZE - allocated) >> GRANULE_SIZE_LOG_2;
+  summary->hole_count = 1;
+  summary->free_granules = GRANULES_PER_BLOCK;
+  summary->holes_with_fragmentation = fragmentation ? 1 : 0;
+  summary->fragmentation_granules = fragmentation;
+  if (fragmentation)
+    clear_remaining_metadata_bytes_in_block(block, allocated);
 }
 
 static void finish_evacuation_allocator(struct evacuation_allocator *alloc,
@@ -428,15 +455,21 @@ static void finish_evacuation_allocator(struct evacuation_allocator *alloc,
   // Blocks that we used for evacuation get returned to the mutator as
   // sweepable blocks.  Blocks that we didn't get to use go to the
   // empties.
-  while (alloc->allocated) {
+  size_t allocated = atomic_load_explicit(&alloc->allocated,
+                                          memory_order_acquire);
+  atomic_store_explicit(&alloc->allocated, 0, memory_order_release);
+  if (allocated > alloc->limit)
+    allocated = alloc->limit;
+  while (allocated >= BLOCK_SIZE) {
     uintptr_t block = pop_block(targets);
-    if (!block)
-      break;
-    block_summary_set_flag(block_summary_for_addr(block),
-                           BLOCK_NEEDS_SWEEP);
-    if (alloc->allocated <= BLOCK_SIZE)
-      break;
-    alloc->allocated -= BLOCK_SIZE;
+    ASSERT(block);
+    allocated -= BLOCK_SIZE;
+  }
+  if (allocated) {
+    // Finish off the last partially-filled block.
+    uintptr_t block = pop_block(targets);
+    ASSERT(block);
+    finish_evacuation_allocator_block(block, allocated);
   }
   while (1) {
     uintptr_t block = pop_block(targets);
@@ -454,14 +487,14 @@ static struct gcobj *evacuation_allocate(struct mark_space *space,
   struct evacuation_allocator *alloc = &space->evacuation_allocator;
   uintptr_t cursor = atomic_load_explicit(&alloc->block_cursor,
                                           memory_order_acquire);
-  if (cursor == -1)
-    // No more space.
-    return NULL;
   size_t bytes = granules * GRANULE_SIZE;
-  size_t prev = alloc->allocated;
+  size_t prev = atomic_load_explicit(&alloc->allocated, memory_order_acquire);
   size_t block_mask = (BLOCK_SIZE - 1);
   size_t next;
   do {
+    if (prev >= alloc->limit)
+      // No more space.
+      return NULL;
     next = prev + bytes;
     if ((prev ^ next) & ~block_mask)
       // Allocation straddles a block boundary; advance so it starts a
@@ -480,14 +513,22 @@ static struct gcobj *evacuation_allocate(struct mark_space *space,
 
   while ((base ^ next) & ~block_mask) {
     ASSERT(base < next);
+    if (base + BLOCK_SIZE > prev) {
+      // The allocation straddles a block boundary, and the cursor has
+      // caught up so that we identify the block for the previous
+      // allocation pointer.  Finish the previous block, probably
+      // leaving a small hole at the end.
+      finish_evacuation_allocator_block(block, prev - base);
+    }
     // Cursor lags; advance it.
     block = block_summary_next(block_summary_for_addr(block));
-    if (!block) {
+    base += BLOCK_SIZE;
+    if (base >= alloc->limit) {
       // Ran out of blocks!
-      atomic_store_explicit(&alloc->block_cursor, -1, memory_order_release);
+      ASSERT(!block);
       return NULL;
     }
-    base += BLOCK_SIZE;
+    ASSERT(block);
     // This store can race with other allocators, but that's OK as long
     // as it never advances the cursor beyond the allocation pointer,
     // which it won't because we updated the allocation pointer already.
