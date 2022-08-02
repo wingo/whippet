@@ -1264,10 +1264,9 @@ static void collect(struct mutator *mut, enum gc_reason reason) {
 static int sweep_byte(uint8_t *loc, uintptr_t sweep_mask) {
   uint8_t metadata = atomic_load_explicit(loc, memory_order_relaxed);
   // If the metadata byte is nonzero, that means either a young, dead,
-  // survived, or marked object.  If it's live (young, survived, or
-  // marked), we found the next mark.  Otherwise it's dead and we clear
-  // the byte.  If we see an END, that means an end of a dead object;
-  // clear it.
+  // survived, or marked object.  If it's live (survived or marked), we
+  // found the next mark.  Otherwise it's dead and we clear the byte.
+  // If we see an END, that means an end of a dead object; clear it.
   if (metadata) {
     if (metadata & sweep_mask)
       return 1;
@@ -1715,7 +1714,7 @@ static int mark_space_init(struct mark_space *space, struct heap *heap) {
   uint8_t survived = METADATA_BYTE_MARK_1;
   uint8_t marked = METADATA_BYTE_MARK_2;
   space->marked_mask = marked;
-  space->live_mask = METADATA_BYTE_YOUNG | survived | marked;
+  space->live_mask = survived | marked;
   rotate_mark_bytes(space);
   space->slabs = slabs;
   space->nslabs = nslabs;
