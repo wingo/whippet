@@ -1153,11 +1153,14 @@ static double heap_last_gc_yield(struct heap *heap) {
   struct mark_space *mark_space = heap_mark_space(heap);
   size_t mark_space_yield = mark_space->granules_freed_by_last_collection;
   mark_space_yield <<= GRANULE_SIZE_LOG_2;
+  size_t evacuation_block_yield =
+    atomic_load_explicit(&mark_space->evacuation_targets.count,
+                         memory_order_acquire) * BLOCK_SIZE;
   struct large_object_space *lospace = heap_large_object_space(heap);
   size_t lospace_yield = lospace->pages_freed_by_last_collection;
   lospace_yield <<= lospace->page_size_log2;
 
-  double yield = mark_space_yield + lospace_yield;
+  double yield = mark_space_yield + lospace_yield + evacuation_block_yield;
   return yield / heap->size;
 }
 
