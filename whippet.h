@@ -309,6 +309,7 @@ struct mark_space {
   struct block_list empty;
   struct block_list unavailable;
   struct block_list evacuation_targets;
+  double evacuation_minimum_reserve;
   double evacuation_reserve;
   ssize_t pending_unavailable_bytes; // atomically
   struct evacuation_allocator evacuation_allocator;
@@ -351,6 +352,7 @@ struct heap {
   double fragmentation_high_threshold;
   double minor_gc_yield_threshold;
   double major_gc_yield_threshold;
+  double minimum_major_gc_yield_threshold;
 };
 
 struct mutator_mark_buf {
@@ -393,12 +395,7 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
 
-enum gc_reason {
-  GC_REASON_SMALL_ALLOCATION,
-  GC_REASON_LARGE_ALLOCATION
-};
-
-static void collect(struct mutator *mut, enum gc_reason reason) NEVER_INLINE;
+static void collect(struct mutator *mut) NEVER_INLINE;
 
 static int heap_object_is_large(struct gcobj *obj) {
   switch (tag_live_alloc_kind(obj->tag)) {
@@ -479,7 +476,8 @@ static void finish_evacuation_allocator_block(uintptr_t block,
 
 static void finish_evacuation_allocator(struct evacuation_allocator *alloc,
                                         struct block_list *targets,
-                                        struct block_list *empties) {
+                                        struct block_list *empties,
+                                        size_t reserve) {
   // Blocks that we used for evacuation get returned to the mutator as
   // sweepable blocks.  Blocks that we didn't get to use go to the
   // empties.
@@ -499,12 +497,9 @@ static void finish_evacuation_allocator(struct evacuation_allocator *alloc,
     ASSERT(block);
     finish_evacuation_allocator_block(block, allocated);
   }
-  while (1) {
-    uintptr_t block = pop_block(targets);
-    if (!block)
-      break;
-    push_block(empties, block);
-  }
+  size_t remaining = atomic_load_explicit(&targets->count, memory_order_acquire);
+  while (remaining-- > reserve)
+    push_block(empties, pop_block(targets));
 }
 
 static struct gcobj *evacuation_allocate(struct mark_space *space,
@@ -770,28 +765,38 @@ static uintptr_t pop_empty_block(struct mark_space *space) {
   return pop_block(&space->empty);
 }
 
-static void push_empty_block(struct mark_space *space, uintptr_t block) {
+static int maybe_push_evacuation_target(struct mark_space *space,
+                                        uintptr_t block, double reserve) {
   ASSERT(!block_summary_has_flag(block_summary_for_addr(block),
                                  BLOCK_NEEDS_SWEEP));
-  push_block(&space->empty, block);
-}
-
-static int maybe_push_evacuation_target(struct mark_space *space,
-                                        uintptr_t block) {
   size_t targets = atomic_load_explicit(&space->evacuation_targets.count,
                                         memory_order_acquire);
   size_t total = space->nslabs * NONMETA_BLOCKS_PER_SLAB;
   size_t unavailable = atomic_load_explicit(&space->unavailable.count,
                                             memory_order_acquire);
-  if (targets >= (total - unavailable) * space->evacuation_reserve)
+  if (targets >= (total - unavailable) * reserve)
     return 0;
 
-  // We reached the end of the allocation cycle and just obtained a
-  // known-empty block from the empties list.  If the last cycle was an
-  // evacuating collection, put this block back on the list of
-  // evacuation target blocks.
   push_block(&space->evacuation_targets, block);
   return 1;
+}
+
+static int push_evacuation_target_if_needed(struct mark_space *space,
+                                            uintptr_t block) {
+  return maybe_push_evacuation_target(space, block,
+                                      space->evacuation_minimum_reserve);
+}
+
+static int push_evacuation_target_if_possible(struct mark_space *space,
+                                              uintptr_t block) {
+  return maybe_push_evacuation_target(space, block,
+                                      space->evacuation_reserve);
+}
+
+static void push_empty_block(struct mark_space *space, uintptr_t block) {
+  ASSERT(!block_summary_has_flag(block_summary_for_addr(block),
+                                 BLOCK_NEEDS_SWEEP));
+  push_block(&space->empty, block);
 }
 
 static ssize_t mark_space_request_release_memory(struct mark_space *space,
@@ -806,6 +811,8 @@ static void mark_space_reacquire_memory(struct mark_space *space,
   while (pending + BLOCK_SIZE <= 0) {
     uintptr_t block = pop_unavailable_block(space);
     ASSERT(block);
+    if (push_evacuation_target_if_needed(space, block))
+      continue;
     push_empty_block(space, block);
     pending = atomic_fetch_add(&space->pending_unavailable_bytes, BLOCK_SIZE)
       + BLOCK_SIZE;
@@ -1145,7 +1152,7 @@ static void reset_statistics(struct mark_space *space) {
   space->fragmentation_granules_since_last_collection = 0;
 }
 
-static int maybe_grow_heap(struct heap *heap, enum gc_reason reason) {
+static int maybe_grow_heap(struct heap *heap) {
   return 0;
 }
 
@@ -1156,6 +1163,12 @@ static double heap_last_gc_yield(struct heap *heap) {
   size_t evacuation_block_yield =
     atomic_load_explicit(&mark_space->evacuation_targets.count,
                          memory_order_acquire) * BLOCK_SIZE;
+  size_t minimum_evacuation_block_yield =
+    heap->size * mark_space->evacuation_minimum_reserve;
+  if (evacuation_block_yield < minimum_evacuation_block_yield)
+    evacuation_block_yield = 0;
+  else
+    evacuation_block_yield -= minimum_evacuation_block_yield;
   struct large_object_space *lospace = heap_large_object_space(heap);
   size_t lospace_yield = lospace->pages_freed_by_last_collection;
   lospace_yield <<= lospace->page_size_log2;
@@ -1166,97 +1179,127 @@ static double heap_last_gc_yield(struct heap *heap) {
 
 static double heap_fragmentation(struct heap *heap) {
   struct mark_space *mark_space = heap_mark_space(heap);
-  size_t mark_space_blocks = mark_space->nslabs * NONMETA_BLOCKS_PER_SLAB;
-  mark_space_blocks -= atomic_load(&mark_space->unavailable.count);
-  size_t mark_space_granules = mark_space_blocks * GRANULES_PER_BLOCK;
   size_t fragmentation_granules =
     mark_space->fragmentation_granules_since_last_collection;
-
-  struct large_object_space *lospace = heap_large_object_space(heap);
-  size_t lospace_pages = lospace->total_pages - lospace->free_pages;
-  size_t lospace_granules =
-    lospace_pages << (lospace->page_size_log2 - GRANULE_SIZE_LOG_2);
-
-  size_t heap_granules = mark_space_granules + lospace_granules;
+  size_t heap_granules = heap->size >> GRANULE_SIZE_LOG_2;
 
   return ((double)fragmentation_granules) / heap_granules;
 }
 
-static enum gc_kind determine_collection_kind(struct heap *heap,
-                                              enum gc_reason reason) {
+static void detect_out_of_memory(struct heap *heap) {
+  struct mark_space *mark_space = heap_mark_space(heap);
+  struct large_object_space *lospace = heap_large_object_space(heap);
+
+  if (heap->count == 0)
+    return;
+
+  double last_yield = heap_last_gc_yield(heap);
+  double fragmentation = heap_fragmentation(heap);
+
+  double yield_epsilon = BLOCK_SIZE * 1.0 / heap->size;
+  double fragmentation_epsilon = LARGE_OBJECT_THRESHOLD * 1.0 / BLOCK_SIZE;
+
+  if (last_yield - fragmentation > yield_epsilon)
+    return;
+
+  if (fragmentation > fragmentation_epsilon
+      && atomic_load(&mark_space->evacuation_targets.count))
+    return;
+
+  // No yield in last gc and we do not expect defragmentation to
+  // be able to yield more space: out of memory.
+  fprintf(stderr, "ran out of space, heap size %zu (%zu slabs)\n",
+          heap->size, mark_space->nslabs);
+  abort();
+}
+
+static double clamp_major_gc_yield_threshold(struct heap *heap,
+                                             double threshold) {
+  if (threshold < heap->minimum_major_gc_yield_threshold)
+    threshold = heap->minimum_major_gc_yield_threshold;
+  double one_block = BLOCK_SIZE * 1.0 / heap->size;
+  if (threshold < one_block)
+    threshold = one_block;
+  return threshold;
+}
+
+static enum gc_kind determine_collection_kind(struct heap *heap) {
+  struct mark_space *mark_space = heap_mark_space(heap);
   enum gc_kind previous_gc_kind = atomic_load(&heap->gc_kind);
   enum gc_kind gc_kind;
-  switch (reason) {
-    case GC_REASON_LARGE_ALLOCATION:
-      // We are collecting because a large allocation could not find
-      // enough free blocks, and we decided not to expand the heap.
-      // Let's do an evacuating major collection to maximize the free
-      // block yield.
-      gc_kind = GC_KIND_MAJOR_EVACUATING;
-      break;
-    case GC_REASON_SMALL_ALLOCATION: {
-      // We are making a small allocation and ran out of blocks.
-      // Evacuate if the heap is "too fragmented", where fragmentation
-      // is measured as a percentage of granules that couldn't be used
-      // for allocations in the last cycle.
-      double fragmentation = heap_fragmentation(heap);
-      if (previous_gc_kind == GC_KIND_MAJOR_EVACUATING
-          && fragmentation >= heap->fragmentation_low_threshold) {
-        DEBUG("continuing evacuation due to fragmentation %.2f%% > %.2f%%\n",
-              fragmentation * 100.,
-              heap->fragmentation_low_threshold * 100.);
-        // For some reason, we already decided to compact in the past,
-        // and fragmentation hasn't yet fallen below a low-water-mark.
-        // Keep going.
-        gc_kind = GC_KIND_MAJOR_EVACUATING;
-      } else if (fragmentation > heap->fragmentation_high_threshold) {
-        // Switch to evacuation mode if the heap is too fragmented.
-        DEBUG("triggering compaction due to fragmentation %.2f%% > %.2f%%\n",
-              fragmentation * 100.,
-              heap->fragmentation_high_threshold * 100.);
-        gc_kind = GC_KIND_MAJOR_EVACUATING;
-      } else if (previous_gc_kind == GC_KIND_MAJOR_EVACUATING) {
-        // We were evacuating, but we're good now.  Go back to minor
-        // collections.
-        DEBUG("returning to in-place collection, fragmentation %.2f%% < %.2f%%\n",
-              fragmentation * 100.,
-              heap->fragmentation_low_threshold * 100.);
-        gc_kind = GC_KIND_MINOR_IN_PLACE;
-      } else if (previous_gc_kind != GC_KIND_MINOR_IN_PLACE) {
-        DEBUG("returning to minor collection after major collection\n");
-        // Go back to minor collections.
-        gc_kind = GC_KIND_MINOR_IN_PLACE;
-      } else if (heap_last_gc_yield(heap) < heap->major_gc_yield_threshold) {
-        DEBUG("collection yield too low, triggering major collection\n");
-        // Nursery is getting tight; trigger a major GC.
-        gc_kind = GC_KIND_MAJOR_IN_PLACE;
-      } else {
-        DEBUG("keeping on with minor GC\n");
-        // Nursery has adequate space; keep trucking with minor GCs.
-        ASSERT(previous_gc_kind == GC_KIND_MINOR_IN_PLACE);
-        gc_kind = GC_KIND_MINOR_IN_PLACE;
-      }
-      break;
-    }
+  double yield = heap_last_gc_yield(heap);
+  double fragmentation = heap_fragmentation(heap);
+
+  if (heap->count == 0) {
+    DEBUG("first collection is always major\n");
+    gc_kind = GC_KIND_MAJOR_IN_PLACE;
+  } else if (atomic_load_explicit(&mark_space->pending_unavailable_bytes,
+                                  memory_order_acquire) > 0) {
+    // During the last cycle, a large allocation could not find enough
+    // free blocks, and we decided not to expand the heap.  Let's do an
+    // evacuating major collection to maximize the free block yield.
+    gc_kind = GC_KIND_MAJOR_EVACUATING;
+  } else if (previous_gc_kind == GC_KIND_MAJOR_EVACUATING
+             && fragmentation >= heap->fragmentation_low_threshold) {
+    DEBUG("continuing evacuation due to fragmentation %.2f%% > %.2f%%\n",
+          fragmentation * 100.,
+          heap->fragmentation_low_threshold * 100.);
+    // For some reason, we already decided to compact in the past,
+    // and fragmentation hasn't yet fallen below a low-water-mark.
+    // Keep going.
+    gc_kind = GC_KIND_MAJOR_EVACUATING;
+  } else if (fragmentation > heap->fragmentation_high_threshold) {
+    // Switch to evacuation mode if the heap is too fragmented.
+    DEBUG("triggering compaction due to fragmentation %.2f%% > %.2f%%\n",
+          fragmentation * 100.,
+          heap->fragmentation_high_threshold * 100.);
+    gc_kind = GC_KIND_MAJOR_EVACUATING;
+  } else if (previous_gc_kind == GC_KIND_MAJOR_EVACUATING) {
+    // We were evacuating, but we're good now.  Go back to minor
+    // collections.
+    DEBUG("returning to in-place collection, fragmentation %.2f%% < %.2f%%\n",
+          fragmentation * 100.,
+          heap->fragmentation_low_threshold * 100.);
+    gc_kind = GC_KIND_MINOR_IN_PLACE;
+  } else if (previous_gc_kind != GC_KIND_MINOR_IN_PLACE) {
+    DEBUG("returning to minor collection after major collection\n");
+    // Go back to minor collections.
+    gc_kind = GC_KIND_MINOR_IN_PLACE;
+  } else if (yield < heap->major_gc_yield_threshold) {
+    DEBUG("collection yield too low, triggering major collection\n");
+    // Nursery is getting tight; trigger a major GC.
+    gc_kind = GC_KIND_MAJOR_IN_PLACE;
+  } else {
+    DEBUG("keeping on with minor GC\n");
+    // Nursery has adequate space; keep trucking with minor GCs.
+    ASSERT(previous_gc_kind == GC_KIND_MINOR_IN_PLACE);
+    gc_kind = GC_KIND_MINOR_IN_PLACE;
   }
+
   // If this is the first in a series of minor collections, reset the
   // threshold at which we should do a major GC.
   if ((gc_kind & GC_KIND_FLAG_MINOR) &&
       (previous_gc_kind & GC_KIND_FLAG_MINOR) != GC_KIND_FLAG_MINOR) {
     double yield = heap_last_gc_yield(heap);
     double threshold = yield * heap->minor_gc_yield_threshold;
-    heap->major_gc_yield_threshold = threshold;
+    double clamped = clamp_major_gc_yield_threshold(heap, threshold);
+    heap->major_gc_yield_threshold = clamped;
     DEBUG("first minor collection at yield %.2f%%, threshold %.2f%%\n",
-          yield * 100., threshold * 100.);
+          yield * 100., clamped * 100.);
   }
   atomic_store(&heap->gc_kind, gc_kind);
   return gc_kind;
 }
 
 static void release_evacuation_target_blocks(struct mark_space *space) {
-  // Move any collected evacuation target blocks back to empties.
+  // Move excess evacuation target blocks back to empties.
+  size_t total = space->nslabs * NONMETA_BLOCKS_PER_SLAB;
+  size_t unavailable = atomic_load_explicit(&space->unavailable.count,
+                                            memory_order_acquire);
+  size_t reserve = space->evacuation_minimum_reserve * (total - unavailable);
   finish_evacuation_allocator(&space->evacuation_allocator,
-                              &space->evacuation_targets, &space->empty);
+                              &space->evacuation_targets, &space->empty,
+                              reserve);
 }
 
 static void prepare_for_evacuation(struct heap *heap) {
@@ -1264,7 +1307,7 @@ static void prepare_for_evacuation(struct heap *heap) {
 
   if ((heap->gc_kind & GC_KIND_FLAG_EVACUATING) == 0) {
     space->evacuating = 0;
-    space->evacuation_reserve = 0.02;
+    space->evacuation_reserve = space->evacuation_minimum_reserve;
     return;
   }
 
@@ -1290,21 +1333,27 @@ static void prepare_for_evacuation(struct heap *heap) {
   const size_t bucket_count = 33;
   size_t histogram[33] = {0,};
   size_t bucket_size = GRANULES_PER_BLOCK / 32;
+  size_t empties = 0;
   for (size_t slab = 0; slab < space->nslabs; slab++) {
     for (size_t block = 0; block < NONMETA_BLOCKS_PER_SLAB; block++) {
       struct block_summary *summary = &space->slabs[slab].summaries[block];
       if (block_summary_has_flag(summary, BLOCK_UNAVAILABLE))
         continue;
+      if (!block_summary_has_flag(summary, BLOCK_NEEDS_SWEEP)) {
+        empties++;
+        continue;
+      }
       size_t survivor_granules = GRANULES_PER_BLOCK - summary->free_granules;
       size_t bucket = (survivor_granules + bucket_size - 1) / bucket_size;
       histogram[bucket]++;
     }
   }
 
-  // Evacuation targets must be in bucket 0.  These blocks will later be
-  // marked also as evacuation candidates, but that's not a problem,
-  // because they contain no source objects.
-  ASSERT(histogram[0] >= target_blocks);
+  // Blocks which lack the NEEDS_SWEEP flag are empty, either because
+  // they have been removed from the pool and have the UNAVAILABLE flag
+  // set, or because they are on the empties or evacuation target
+  // lists.  When evacuation starts, the empties list should be empty.
+  ASSERT(empties == target_blocks);
 
   // Now select a number of blocks that is likely to fill the space in
   // the target blocks.  Prefer candidate blocks with fewer survivors
@@ -1325,6 +1374,8 @@ static void prepare_for_evacuation(struct heap *heap) {
     for (size_t block = 0; block < NONMETA_BLOCKS_PER_SLAB; block++) {
       struct block_summary *summary = &space->slabs[slab].summaries[block];
       if (block_summary_has_flag(summary, BLOCK_UNAVAILABLE))
+        continue;
+      if (!block_summary_has_flag(summary, BLOCK_NEEDS_SWEEP))
         continue;
       size_t survivor_granules = GRANULES_PER_BLOCK - summary->free_granules;
       size_t bucket = (survivor_granules + bucket_size - 1) / bucket_size;
@@ -1365,16 +1416,16 @@ static void mark_space_finish_gc(struct mark_space *space,
   release_evacuation_target_blocks(space);
 }
 
-static void collect(struct mutator *mut, enum gc_reason reason) {
+static void collect(struct mutator *mut) {
   struct heap *heap = mutator_heap(mut);
   struct mark_space *space = heap_mark_space(heap);
   struct large_object_space *lospace = heap_large_object_space(heap);
-  if (maybe_grow_heap(heap, reason)) {
+  if (maybe_grow_heap(heap)) {
     DEBUG("grew heap instead of collecting #%ld:\n", heap->count);
     return;
   }
   DEBUG("start collect #%ld:\n", heap->count);
-  enum gc_kind gc_kind = determine_collection_kind(heap, reason);
+  enum gc_kind gc_kind = determine_collection_kind(heap);
   large_object_space_start_gc(lospace, gc_kind & GC_KIND_FLAG_MINOR);
   tracer_prepare(heap);
   request_mutators_to_stop(heap);
@@ -1384,6 +1435,7 @@ static void collect(struct mutator *mut, enum gc_reason reason) {
   double yield = heap_last_gc_yield(heap);
   double fragmentation = heap_fragmentation(heap);
   fprintf(stderr, "last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
+  detect_out_of_memory(heap);
   trace_conservative_roots_after_stop(heap);
   prepare_for_evacuation(heap);
   trace_precise_roots_after_stop(heap);
@@ -1533,6 +1585,7 @@ static size_t next_hole_in_block(struct mutator *mut) {
 
     struct block_summary *summary = block_summary_for_addr(sweep);
     summary->hole_count++;
+    ASSERT(free_granules <= GRANULES_PER_BLOCK - summary->free_granules);
     summary->free_granules += free_granules;
 
     size_t free_bytes = free_granules * GRANULE_SIZE;
@@ -1566,7 +1619,6 @@ static int maybe_release_swept_empty_block(struct mutator *mut) {
                            memory_order_acquire) <= 0)
     return 0;
 
-  block_summary_clear_flag(block_summary_for_addr(block), BLOCK_NEEDS_SWEEP);
   push_unavailable_block(space, block);
   atomic_fetch_sub(&space->pending_unavailable_bytes, BLOCK_SIZE);
   mut->alloc = mut->sweep = mut->block = 0;
@@ -1587,17 +1639,26 @@ static size_t next_hole(struct mutator *mut) {
       // If the hole spans only part of a block, give it to the mutator.
       if (granules < GRANULES_PER_BLOCK)
         return granules;
-      // Sweeping found a completely empty block.  If we have pending
-      // pages to release to the OS, we should unmap this block.
+      struct block_summary *summary = block_summary_for_addr(mut->block);
+      block_summary_clear_flag(summary, BLOCK_NEEDS_SWEEP);
+      // Sweeping found a completely empty block.  If we are below the
+      // minimum evacuation reserve, take the block.
+      if (push_evacuation_target_if_needed(space, mut->block)) {
+        mut->alloc = mut->sweep = mut->block = 0;
+        continue;
+      }
+      // If we have pending pages to release to the OS, we should unmap
+      // this block.
       if (maybe_release_swept_empty_block(mut))
         continue;
       // Otherwise if we've already returned lots of empty blocks to the
       // freelist, give this block to the mutator.
-      if (!empties_countdown)
+      if (!empties_countdown) {
+        // After this block is allocated into, it will need to be swept.
+        block_summary_set_flag(summary, BLOCK_NEEDS_SWEEP);
         return granules;
+      }
       // Otherwise we push to the empty blocks list.
-      struct block_summary *summary = block_summary_for_addr(mut->block);
-      block_summary_clear_flag(summary, BLOCK_NEEDS_SWEEP);
       push_empty_block(space, mut->block);
       mut->alloc = mut->sweep = mut->block = 0;
       empties_countdown--;
@@ -1640,7 +1701,7 @@ static size_t next_hole(struct mutator *mut) {
           return 0;
 
         // Maybe we should use this empty as a target for evacuation.
-        if (maybe_push_evacuation_target(space, block))
+        if (push_evacuation_target_if_possible(space, block))
           continue;
 
         // Otherwise return the block to the mutator.
@@ -1671,11 +1732,14 @@ static void finish_sweeping(struct mutator *mut) {
     finish_hole(mut);
 }
 
-static void out_of_memory(struct mutator *mut) {
+static void trigger_collection(struct mutator *mut) {
   struct heap *heap = mutator_heap(mut);
-  fprintf(stderr, "ran out of space, heap size %zu (%zu slabs)\n",
-          heap->size, heap_mark_space(heap)->nslabs);
-  abort();
+  heap_lock(heap);
+  if (mutators_are_stopping(heap))
+    pause_mutator_for_collection_with_lock(mut);
+  else
+    collect(mut);
+  heap_unlock(heap);
 }
 
 static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
@@ -1688,16 +1752,9 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
 
   mark_space_request_release_memory(heap_mark_space(heap),
                                     npages << space->page_size_log2);
-  if (!sweep_until_memory_released(mut)) {
-    heap_lock(heap);
-    if (mutators_are_stopping(heap))
-      pause_mutator_for_collection_with_lock(mut);
-    else
-      collect(mut, GC_REASON_LARGE_ALLOCATION);
-    heap_unlock(heap);
-    if (!sweep_until_memory_released(mut))
-      out_of_memory(mut);
-  }
+
+  while (!sweep_until_memory_released(mut))
+    trigger_collection(mut);
   atomic_fetch_add(&heap->large_object_pages, npages);
 
   void *ret = large_object_space_alloc(space, npages);
@@ -1717,27 +1774,14 @@ static void* allocate_small_slow(struct mutator *mut, enum alloc_kind kind,
                                  size_t granules) NEVER_INLINE;
 static void* allocate_small_slow(struct mutator *mut, enum alloc_kind kind,
                                  size_t granules) {
-  int swept_from_beginning = 0;
   while (1) {
     size_t hole = next_hole(mut);
     if (hole >= granules) {
       clear_memory(mut->alloc, hole * GRANULE_SIZE);
       break;
     }
-    if (!hole) {
-      struct heap *heap = mutator_heap(mut);
-      if (swept_from_beginning) {
-        out_of_memory(mut);
-      } else {
-        heap_lock(heap);
-        if (mutators_are_stopping(heap))
-          pause_mutator_for_collection_with_lock(mut);
-        else
-          collect(mut, GC_REASON_SMALL_ALLOCATION);
-        heap_unlock(heap);
-        swept_from_beginning = 1;
-      }
-    }
+    if (!hole)
+      trigger_collection(mut);
   }
   struct gcobj* ret = (struct gcobj*)mut->alloc;
   mut->alloc += granules * GRANULE_SIZE;
@@ -1848,7 +1892,9 @@ static int heap_init(struct heap *heap, size_t size) {
   heap->fragmentation_low_threshold = 0.05;
   heap->fragmentation_high_threshold = 0.10;
   heap->minor_gc_yield_threshold = 0.30;
-  heap->major_gc_yield_threshold = heap->minor_gc_yield_threshold;
+  heap->minimum_major_gc_yield_threshold = 0.05;
+  heap->major_gc_yield_threshold =
+    clamp_major_gc_yield_threshold(heap, heap->minor_gc_yield_threshold);
 
   return 1;
 }
@@ -1871,7 +1917,8 @@ static int mark_space_init(struct mark_space *space, struct heap *heap) {
   space->low_addr = (uintptr_t) slabs;
   space->extent = size;
   space->next_block = 0;
-  space->evacuation_reserve = 0.02;
+  space->evacuation_minimum_reserve = 0.02;
+  space->evacuation_reserve = space->evacuation_minimum_reserve;
   for (size_t slab = 0; slab < nslabs; slab++) {
     for (size_t block = 0; block < NONMETA_BLOCKS_PER_SLAB; block++) {
       uintptr_t addr = (uintptr_t)slabs[slab].blocks[block].data;
@@ -1879,7 +1926,8 @@ static int mark_space_init(struct mark_space *space, struct heap *heap) {
         push_unavailable_block(space, addr);
         size -= BLOCK_SIZE;
       } else {
-        push_empty_block(space, addr);
+        if (!push_evacuation_target_if_needed(space, addr))
+          push_empty_block(space, addr);
       }
     }
   }
