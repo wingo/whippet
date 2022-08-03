@@ -1030,39 +1030,73 @@ heap_object_is_young(struct heap *heap, struct gcobj *obj) {
   return (*object_metadata_byte(obj)) & METADATA_BYTE_YOUNG;
 }
 
-static void mark_space_trace_generational_roots(struct mark_space *space,
-                                                struct heap *heap) {
+static inline uint64_t load_eight_aligned_bytes(uint8_t *mark) {
+  ASSERT(((uintptr_t)mark & 7) == 0);
+  uint8_t * __attribute__((aligned(8))) aligned_mark = mark;
+  uint64_t word;
+  memcpy(&word, aligned_mark, 8);
+#ifdef WORDS_BIGENDIAN
+  word = __builtin_bswap64(word);
+#endif
+  return word;
+}
+
+static inline size_t count_zero_bytes(uint64_t bytes) {
+  return bytes ? (__builtin_ctzll(bytes) / 8) : sizeof(bytes);
+}
+
+static uint64_t broadcast_byte(uint8_t byte) {
+  uint64_t result = byte;
+  return result * 0x0101010101010101ULL;
+}
+
+// Note that it's quite possible (and even likely) that any given remset
+// byte doesn't hold any roots, if all stores were to nursery objects.
+STATIC_ASSERT_EQ(GRANULES_PER_REMSET_BYTE % 8, 0);
+static void mark_space_trace_card(struct mark_space *space,
+                                  struct heap *heap, struct slab *slab,
+                                  size_t card) {
+  uintptr_t first_addr_in_slab = (uintptr_t) &slab->blocks[0];
+  size_t granule_base = card * GRANULES_PER_REMSET_BYTE;
+  for (size_t granule_in_remset = 0;
+       granule_in_remset < GRANULES_PER_REMSET_BYTE;
+       granule_in_remset += 8, granule_base += 8) {
+    uint64_t mark_bytes = load_eight_aligned_bytes(slab->metadata + granule_base);
+    mark_bytes &= space->sweep_mask;
+    while (mark_bytes) {
+      size_t granule_offset = count_zero_bytes(mark_bytes);
+      mark_bytes &= ~(((uint64_t)0xff) << (granule_offset * 8));
+      size_t granule = granule_base + granule_offset;
+      uintptr_t addr = first_addr_in_slab + granule * GRANULE_SIZE;
+      struct gcobj *obj = (struct gcobj*)addr;
+      ASSERT(object_metadata_byte(obj) == &slab->metadata[granule]);
+      tracer_enqueue_root(&heap->tracer, obj);
+    }
+  }
+}
+
+static void mark_space_trace_remembered_set(struct mark_space *space,
+                                            struct heap *heap) {
   ASSERT(!space->evacuating);
-  uint8_t live_tenured_mask = space->live_mask;
   for (size_t s = 0; s < space->nslabs; s++) {
     struct slab *slab = &space->slabs[s];
     uint8_t *remset = slab->remembered_set;
-    // TODO: Load 8 bytes at a time instead.
-    for (size_t card = 0; card < REMSET_BYTES_PER_SLAB; card++) {
-      if (remset[card]) {
-        remset[card] = 0;
-        size_t base = card * GRANULES_PER_REMSET_BYTE;
-        size_t limit = base + GRANULES_PER_REMSET_BYTE;
-        // We could accelerate this but GRANULES_PER_REMSET_BYTE is 16
-        // on 64-bit hosts, so maybe it's not so important.
-        for (size_t granule = base; granule < limit; granule++) {
-          if (slab->metadata[granule] & space->live_mask) {
-            struct block *block0 = &slab->blocks[0];
-            uintptr_t addr = ((uintptr_t)block0->data) + granule * GRANULE_SIZE;
-            struct gcobj *obj = (struct gcobj*)addr;
-            ASSERT(object_metadata_byte(obj) == &slab->metadata[granule]);
-            tracer_enqueue_root(&heap->tracer, obj);
-          }
-        }
-        // Note that it's quite possible (and even likely) that this
-        // remset byte doesn't cause any roots, if all stores were to
-        // nursery objects.
+    for (size_t card_base = 0;
+         card_base < REMSET_BYTES_PER_SLAB;
+         card_base += 8) {
+      uint64_t remset_bytes = load_eight_aligned_bytes(remset + card_base);
+      if (!remset_bytes) continue;
+      memset(remset + card_base, 0, 8);
+      while (remset_bytes) {
+        size_t card_offset = count_zero_bytes(remset_bytes);
+        remset_bytes &= ~(((uint64_t)0xff) << (card_offset * 8));
+        mark_space_trace_card(space, heap, slab, card_base + card_offset);
       }
     }
   }
 }
 
-static void mark_space_clear_generational_roots(struct mark_space *space) {
+static void mark_space_clear_remembered_set(struct mark_space *space) {
   if (!GC_GENERATIONAL) return;
   for (size_t slab = 0; slab < space->nslabs; slab++) {
     memset(space->slabs[slab].remembered_set, 0, REMSET_BYTES_PER_SLAB);
@@ -1072,9 +1106,9 @@ static void mark_space_clear_generational_roots(struct mark_space *space) {
 static void trace_generational_roots(struct heap *heap) {
   // TODO: Add lospace nursery.
   if (atomic_load(&heap->gc_kind) & GC_KIND_FLAG_MINOR) {
-    mark_space_trace_generational_roots(heap_mark_space(heap), heap);
+    mark_space_trace_remembered_set(heap_mark_space(heap), heap);
   } else {
-    mark_space_clear_generational_roots(heap_mark_space(heap));
+    mark_space_clear_remembered_set(heap_mark_space(heap));
   }
 }
 
@@ -1135,11 +1169,6 @@ static inline void maybe_pause_mutator_for_collection(struct mutator *mut) {
 
 static void reset_sweeper(struct mark_space *space) {
   space->next_block = (uintptr_t) &space->slabs[0].blocks;
-}
-
-static uint64_t broadcast_byte(uint8_t byte) {
-  uint64_t result = byte;
-  return result * 0x0101010101010101ULL;
 }
 
 static void update_mark_patterns(struct mark_space *space,
@@ -1480,21 +1509,6 @@ static int sweep_word(uintptr_t *loc, uintptr_t sweep_mask) {
   return 0;
 }
 
-static inline uint64_t load_mark_bytes(uint8_t *mark) {
-  ASSERT(((uintptr_t)mark & 7) == 0);
-  uint8_t * __attribute__((aligned(8))) aligned_mark = mark;
-  uint64_t word;
-  memcpy(&word, aligned_mark, 8);
-#ifdef WORDS_BIGENDIAN
-  word = __builtin_bswap64(word);
-#endif
-  return word;
-}
-
-static inline size_t count_zero_bytes(uint64_t bytes) {
-  return bytes ? (__builtin_ctzll(bytes) / 8) : sizeof(bytes);
-}
-
 static size_t next_mark(uint8_t *mark, size_t limit, uint64_t sweep_mask) {
   size_t n = 0;
   // If we have a hole, it is likely to be more that 8 granules long.
@@ -1502,7 +1516,7 @@ static size_t next_mark(uint8_t *mark, size_t limit, uint64_t sweep_mask) {
   // sweep pointer, then we load aligned mark words.
   size_t unaligned = ((uintptr_t) mark) & 7;
   if (unaligned) {
-    uint64_t bytes = load_mark_bytes(mark - unaligned) >> (unaligned * 8);
+    uint64_t bytes = load_eight_aligned_bytes(mark - unaligned) >> (unaligned * 8);
     bytes &= sweep_mask;
     if (bytes)
       return count_zero_bytes(bytes);
@@ -1510,7 +1524,7 @@ static size_t next_mark(uint8_t *mark, size_t limit, uint64_t sweep_mask) {
   }
 
   for(; n < limit; n += 8) {
-    uint64_t bytes = load_mark_bytes(mark + n);
+    uint64_t bytes = load_eight_aligned_bytes(mark + n);
     bytes &= sweep_mask;
     if (bytes)
       return n + count_zero_bytes(bytes);
@@ -2014,7 +2028,8 @@ static inline void print_start_gc_stats(struct heap *heap) {
 }
 
 static inline void print_end_gc_stats(struct heap *heap) {
-  printf("Completed %ld collections\n", heap->count);
+  printf("Completed %ld collections (%ld major)\n",
+         heap->count, heap->count - heap->minor_count);
   printf("Heap size with overhead is %zd (%zu slabs)\n",
          heap->size, heap_mark_space(heap)->nslabs);
 }
