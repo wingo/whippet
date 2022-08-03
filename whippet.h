@@ -1032,6 +1032,7 @@ heap_object_is_young(struct heap *heap, struct gcobj *obj) {
 
 static void mark_space_trace_generational_roots(struct mark_space *space,
                                                 struct heap *heap) {
+  ASSERT(!space->evacuating);
   uint8_t live_tenured_mask = space->live_mask;
   for (size_t s = 0; s < space->nslabs; s++) {
     struct slab *slab = &space->slabs[s];
@@ -1045,7 +1046,7 @@ static void mark_space_trace_generational_roots(struct mark_space *space,
         // We could accelerate this but GRANULES_PER_REMSET_BYTE is 16
         // on 64-bit hosts, so maybe it's not so important.
         for (size_t granule = base; granule < limit; granule++) {
-          if (slab->metadata[granule] & live_tenured_mask) {
+          if (slab->metadata[granule] & space->live_mask) {
             struct block *block0 = &slab->blocks[0];
             uintptr_t addr = ((uintptr_t)block0->data) + granule * GRANULE_SIZE;
             struct gcobj *obj = (struct gcobj*)addr;
@@ -1141,9 +1142,13 @@ static uint64_t broadcast_byte(uint8_t byte) {
   return result * 0x0101010101010101ULL;
 }
 
-static void rotate_mark_bytes(struct mark_space *space) {
-  space->live_mask = rotate_dead_survivor_marked(space->live_mask);
-  space->marked_mask = rotate_dead_survivor_marked(space->marked_mask);
+static void update_mark_patterns(struct mark_space *space,
+                                 int advance_mark_mask) {
+  uint8_t survivor_mask = space->marked_mask;
+  uint8_t next_marked_mask = rotate_dead_survivor_marked(survivor_mask);
+  if (advance_mark_mask)
+    space->marked_mask = next_marked_mask;
+  space->live_mask = survivor_mask | next_marked_mask;
   space->sweep_mask = broadcast_byte(space->live_mask);
 }
 
@@ -1410,8 +1415,7 @@ static void mark_space_finish_gc(struct mark_space *space,
                                  enum gc_kind gc_kind) {
   space->evacuating = 0;
   reset_sweeper(space);
-  if ((gc_kind & GC_KIND_FLAG_MINOR) == 0)
-    rotate_mark_bytes(space);
+  update_mark_patterns(space, 0);
   reset_statistics(space);
   release_evacuation_target_blocks(space);
 }
@@ -1426,6 +1430,7 @@ static void collect(struct mutator *mut) {
   }
   DEBUG("start collect #%ld:\n", heap->count);
   enum gc_kind gc_kind = determine_collection_kind(heap);
+  update_mark_patterns(space, !(gc_kind & GC_KIND_FLAG_MINOR));
   large_object_space_start_gc(lospace, gc_kind & GC_KIND_FLAG_MINOR);
   tracer_prepare(heap);
   request_mutators_to_stop(heap);
@@ -1906,12 +1911,8 @@ static int mark_space_init(struct mark_space *space, struct heap *heap) {
   if (!slabs)
     return 0;
 
-  uint8_t dead = METADATA_BYTE_MARK_0;
-  uint8_t survived = METADATA_BYTE_MARK_1;
-  uint8_t marked = METADATA_BYTE_MARK_2;
-  space->marked_mask = marked;
-  space->live_mask = survived | marked;
-  rotate_mark_bytes(space);
+  space->marked_mask = METADATA_BYTE_MARK_0;
+  update_mark_patterns(space, 0);
   space->slabs = slabs;
   space->nslabs = nslabs;
   space->low_addr = (uintptr_t) slabs;
