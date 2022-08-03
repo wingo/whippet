@@ -1492,7 +1492,7 @@ static inline uint64_t load_mark_bytes(uint8_t *mark) {
 }
 
 static inline size_t count_zero_bytes(uint64_t bytes) {
-  return bytes ? (__builtin_ctz(bytes) / 8) : sizeof(bytes);
+  return bytes ? (__builtin_ctzll(bytes) / 8) : sizeof(bytes);
 }
 
 static size_t next_mark(uint8_t *mark, size_t limit, uint64_t sweep_mask) {
