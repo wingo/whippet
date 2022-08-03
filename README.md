@@ -42,13 +42,9 @@ granule is 6.25% overhead on 64-bit, or 12.5% on 32-bit.  Especially on
 32-bit, it's a lot!  On the other hand, instead of the worst case of one
 survivor object wasting a line (or two, in the case of conservative line
 marking), granule-size-is-line-size instead wastes nothing.  Also, you
-don't need GC bits in the object itself, and you get a number of other
-benefits from the mark byte table -- you can also stuff other per-object
-data there, such as pinning bits, nursery and remset bits, multiple mark
-colors for concurrent marking, and you can also use the mark byte (which
-is now a metadata byte) to record the object end, so that finding holes
-in a block can just read the mark table and can avoid looking at object
-memory.
+don't need GC bits in the object itself, and you can use the mark byte
+array to record the object end, so that finding holes in a block can
+just read the mark table and can avoid looking at object memory.
 
 Other ideas in Whippet:
 
@@ -65,10 +61,8 @@ Other ideas in Whippet:
  * Facilitate conservative collection via mark byte array, oracle for
    "does this address start an object"
 
- * Enable in-place generational collection via nursery bit in metadata
-   byte for new allocations, remset bit for objects that should be
-   traced for nursery roots, and a card table with one entry per 256B or
-   so; but write barrier and generational trace not yet implemented
+ * Enable in-place generational collection via card table with one entry
+   per 256B or so
 
  * Enable concurrent marking by having three mark bit states (dead,
    survivor, marked) that rotate at each collection, and sweeping a
@@ -95,6 +89,10 @@ use in optimizing Whippet:
    processes also are quite short-lived, so perhaps it is useful to
    ensure that small heaps remain lightweight.
 
+   To stress Whippet's handling of fragmentation, we modified this
+   benchmark to intersperse pseudorandomly-sized holes between tree
+   nodes.
+
  - [`quads.c`](./quads.c): A synthetic benchmark that allocates quad
    trees.  The mutator begins by allocating one long-lived tree of depth
    N, and then allocates 13% of the heap in depth-3 trees, 20 times,
@@ -110,7 +108,8 @@ situate Whippet's performance in context:
    mark-sweep segregated-fits collector with lazy sweeping.
  - `semi.h`: Semispace copying collector.
  - `whippet.h`: The whippet collector.  Two different marking
-   implementations: single-threaded and parallel.
+   implementations: single-threaded and parallel.  Generational and
+   non-generational variants, also.
 
 ## Guile
 
@@ -154,8 +153,8 @@ large majority of use cases.
 ### Features that would improve Whippet performance
 
  - [X] Immix-style opportunistic evacuation
- - [ ] Overflow allocation
- - [ ] Generational GC via sticky mark bits
+ - ~~[ ] Overflow allocation~~ (should just evacuate instead)
+ - [X] Generational GC via sticky mark bits
  - [ ] Generational GC with semi-space nursery
  - [ ] Concurrent marking with SATB barrier
 
