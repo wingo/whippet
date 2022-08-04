@@ -127,8 +127,8 @@ enum block_summary_flag {
   BLOCK_NEEDS_SWEEP = 0x8,
   BLOCK_UNAVAILABLE = 0x10,
   BLOCK_EVACUATE = 0x20,
-  BLOCK_FLAG_UNUSED_6 = 0x40,
-  BLOCK_FLAG_UNUSED_7 = 0x80,
+  BLOCK_VENERABLE = 0x40,
+  BLOCK_VENERABLE_AFTER_SWEEP = 0x80,
   BLOCK_FLAG_UNUSED_8 = 0x100,
   BLOCK_FLAG_UNUSED_9 = 0x200,
   BLOCK_FLAG_UNUSED_10 = 0x400,
@@ -311,6 +311,7 @@ struct mark_space {
   struct block_list evacuation_targets;
   double evacuation_minimum_reserve;
   double evacuation_reserve;
+  double venerable_threshold;
   ssize_t pending_unavailable_bytes; // atomically
   struct evacuation_allocator evacuation_allocator;
   struct slab *slabs;
@@ -346,6 +347,7 @@ struct heap {
   struct mutator *mutator_trace_list;
   long count;
   long minor_count;
+  uint8_t last_collection_was_minor;
   struct mutator *deactivated_mutators;
   struct tracer tracer;
   double fragmentation_low_threshold;
@@ -1478,7 +1480,8 @@ static void collect(struct mutator *mut) {
   mark_space_finish_gc(space, gc_kind);
   large_object_space_finish_gc(lospace, gc_kind & GC_KIND_FLAG_MINOR);
   heap->count++;
-  if (gc_kind & GC_KIND_FLAG_MINOR)
+  heap->last_collection_was_minor = gc_kind & GC_KIND_FLAG_MINOR;
+  if (heap->last_collection_was_minor)
     heap->minor_count++;
   heap_reset_large_object_pages(heap, lospace->live_pages_at_last_collection);
   allow_mutators_to_continue(heap);
@@ -1562,6 +1565,15 @@ static void finish_block(struct mutator *mut) {
                    block->free_granules);
   atomic_fetch_add(&space->fragmentation_granules_since_last_collection,
                    block->fragmentation_granules);
+
+  // If this block has mostly survivors, we should avoid sweeping it and
+  // trying to allocate into it for a minor GC.  Sweep it next time to
+  // clear any garbage allocated in this cycle and mark it as
+  // "venerable" (i.e., old).
+  ASSERT(!block_summary_has_flag(block, BLOCK_VENERABLE));
+  if (!block_summary_has_flag(block, BLOCK_VENERABLE_AFTER_SWEEP) &&
+      block->free_granules < GRANULES_PER_BLOCK * space->venerable_threshold)
+    block_summary_set_flag(block, BLOCK_VENERABLE_AFTER_SWEEP);
 
   mut->block = mut->alloc = mut->sweep = 0;
 }
@@ -1693,7 +1705,31 @@ static size_t next_hole(struct mutator *mut) {
         // unavailable blocks, so skip and get the next block.
         if (block_summary_has_flag(summary, BLOCK_UNAVAILABLE))
           continue;
+        if (block_summary_has_flag(summary, BLOCK_VENERABLE)) {
+          // Skip venerable blocks after a minor GC -- we don't need to
+          // sweep as they weren't allocated into last cycle, and the
+          // mark bytes didn't rotate, so we have no cleanup to do; and
+          // we shouldn't try to allocate into them as it's not worth
+          // it.  Any wasted space is measured as fragmentation.
+          if (mutator_heap(mut)->last_collection_was_minor)
+            continue;
+          else
+            block_summary_clear_flag(summary, BLOCK_VENERABLE);
+        }
         if (block_summary_has_flag(summary, BLOCK_NEEDS_SWEEP)) {
+          // Prepare to sweep the block for holes.
+          mut->alloc = mut->sweep = mut->block = block;
+          if (block_summary_has_flag(summary, BLOCK_VENERABLE_AFTER_SWEEP)) {
+            // In the last cycle we noted that this block consists of
+            // mostly old data.  Sweep any garbage, commit the mark as
+            // venerable, and avoid allocating into it.
+            block_summary_clear_flag(summary, BLOCK_VENERABLE_AFTER_SWEEP);
+            if (mutator_heap(mut)->last_collection_was_minor) {
+              finish_sweeping_in_block(mut);
+              block_summary_set_flag(summary, BLOCK_VENERABLE);
+              continue;
+            }
+          }
           // This block was marked in the last GC and needs sweeping.
           // As we sweep we'll want to record how many bytes were live
           // at the last collection.  As we allocate we'll record how
@@ -1702,8 +1738,6 @@ static size_t next_hole(struct mutator *mut) {
           summary->free_granules = 0;
           summary->holes_with_fragmentation = 0;
           summary->fragmentation_granules = 0;
-          // Prepare to sweep the block for holes.
-          mut->alloc = mut->sweep = mut->block = block;
           break;
         } else {
           // Otherwise this block is completely empty and is on the
@@ -1934,6 +1968,7 @@ static int mark_space_init(struct mark_space *space, struct heap *heap) {
   space->next_block = 0;
   space->evacuation_minimum_reserve = 0.02;
   space->evacuation_reserve = space->evacuation_minimum_reserve;
+  space->venerable_threshold = 0.1;
   for (size_t slab = 0; slab < nslabs; slab++) {
     for (size_t block = 0; block < NONMETA_BLOCKS_PER_SLAB; block++) {
       uintptr_t addr = (uintptr_t)slabs[slab].blocks[block].data;
