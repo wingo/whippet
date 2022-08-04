@@ -1968,7 +1968,7 @@ static int mark_space_init(struct mark_space *space, struct heap *heap) {
   space->next_block = 0;
   space->evacuation_minimum_reserve = 0.02;
   space->evacuation_reserve = space->evacuation_minimum_reserve;
-  space->venerable_threshold = 0.1;
+  space->venerable_threshold = heap->fragmentation_low_threshold;
   for (size_t slab = 0; slab < nslabs; slab++) {
     for (size_t block = 0; block < NONMETA_BLOCKS_PER_SLAB; block++) {
       uintptr_t addr = (uintptr_t)slabs[slab].blocks[block].data;
