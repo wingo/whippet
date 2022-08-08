@@ -1,7 +1,7 @@
 #ifndef GC_H_
 #define GC_H_
 
-#include "gc-types.h"
+#include "gc-api.h"
 
 #if defined(GC_BDW)
 #include "bdw.h"

@@ -6,7 +6,7 @@
 
 #include "assert.h"
 #include "debug.h"
-#include "gc-types.h"
+#include "gc-api.h"
 
 struct gcobj;
 

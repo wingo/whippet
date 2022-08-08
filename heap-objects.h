@@ -2,7 +2,7 @@
 #define HEAP_OBJECTS_H
 
 #include "inline.h"
-#include "gc-types.h"
+#include "gc-api.h"
 
 #define DECLARE_NODE_TYPE(name, Name, NAME) \
   struct Name;                              \
