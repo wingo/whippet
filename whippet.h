@@ -2079,8 +2079,8 @@ static int gc_init(int argc, struct gc_option argv[],
   return 1;
 }
 
-static struct mutator* initialize_gc_for_thread(uintptr_t *stack_base,
-                                                struct heap *heap) {
+static struct mutator* gc_init_for_thread(uintptr_t *stack_base,
+                                          struct heap *heap) {
   struct mutator *ret = calloc(1, sizeof(struct mutator));
   if (!ret)
     abort();
@@ -2088,7 +2088,7 @@ static struct mutator* initialize_gc_for_thread(uintptr_t *stack_base,
   return ret;
 }
 
-static void finish_gc_for_thread(struct mutator *mut) {
+static void gc_finish_for_thread(struct mutator *mut) {
   remove_mutator(mutator_heap(mut), mut);
   mutator_mark_buf_destroy(&mut->mark_buf);
   free(mut);
@@ -2118,11 +2118,9 @@ static void reactivate_mutator(struct heap *heap, struct mutator *mut) {
   heap_unlock(heap);
 }
 
-static void* call_without_gc(struct mutator *mut, void* (*f)(void*),
-                             void *data) NEVER_INLINE;
-static void* call_without_gc(struct mutator *mut,
-                             void* (*f)(void*),
-                             void *data) {
+static void* gc_call_without_gc(struct mutator *mut,
+                                void* (*f)(void*),
+                                void *data) {
   struct heap *heap = mutator_heap(mut);
   deactivate_mutator(heap, mut);
   void *ret = f(data);

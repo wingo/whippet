@@ -7,6 +7,9 @@
 #define GC_DEBUG 0
 #endif
 
+#define GC_ALWAYS_INLINE __attribute__((always_inline))
+#define GC_NEVER_INLINE __attribute__((noinline))
+
 #define GC_UNLIKELY(e) __builtin_expect(e, 0)
 #define GC_LIKELY(e) __builtin_expect(e, 1)
 
@@ -52,7 +55,7 @@ struct gc_edge {
 static inline struct gc_edge gc_edge(void* addr) {
   return (struct gc_edge){addr};
 }
-static struct gc_ref gc_edge_ref(struct gc_edge edge) {
+static inline struct gc_ref gc_edge_ref(struct gc_edge edge) {
   return *edge.dst;
 }
 static inline void gc_edge_update(struct gc_edge edge, struct gc_ref ref) {
@@ -81,5 +84,11 @@ struct gc_option {
 GC_API_ int gc_option_from_string(const char *str);
 GC_API_ int gc_init(int argc, struct gc_option argv[],
                     struct heap **heap, struct mutator **mutator);
+
+GC_API_ struct mutator* gc_init_for_thread(uintptr_t *stack_base,
+                                           struct heap *heap);
+GC_API_ void gc_finish_for_thread(struct mutator *mut);
+GC_API_ void* gc_call_without_gc(struct mutator *mut, void* (*f)(void*),
+                                 void *data) GC_NEVER_INLINE;
 
 #endif // GC_API_H_

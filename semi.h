@@ -370,17 +370,17 @@ static int gc_init(int argc, struct gc_option argv[],
   return 1;
 }
 
-static struct mutator* initialize_gc_for_thread(uintptr_t *stack_base,
-                                                struct heap *heap) {
+static struct mutator* gc_init_for_thread(uintptr_t *stack_base,
+                                          struct heap *heap) {
   fprintf(stderr,
           "Semispace copying collector not appropriate for multithreaded use.\n");
   exit(1);
 }
-static void finish_gc_for_thread(struct mutator *space) {
+static void gc_finish_for_thread(struct mutator *space) {
 }
 
-static void* call_without_gc(struct mutator *mut, void* (*f)(void*),
-                             void *data) {
+static void* gc_call_without_gc(struct mutator *mut, void* (*f)(void*),
+                                void *data) {
   // Can't be threads, then there won't be collection.
   return f(data);
 }

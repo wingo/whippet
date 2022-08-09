@@ -307,9 +307,9 @@ struct call_with_gc_data {
 };
 static void* call_with_gc_inner(uintptr_t *stack_base, void *arg) {
   struct call_with_gc_data *data = arg;
-  struct mutator *mut = initialize_gc_for_thread(stack_base, data->heap);
+  struct mutator *mut = gc_init_for_thread(stack_base, data->heap);
   void *ret = data->f(mut);
-  finish_gc_for_thread(mut);
+  gc_finish_for_thread(mut);
   return ret;
 }
 static void* call_with_gc(void* (*f)(struct mutator *),
@@ -434,7 +434,7 @@ int main(int argc, char *argv[]) {
   run_one_test(mut);
   for (size_t i = 1; i < nthreads; i++) {
     struct join_data data = { 0, threads[i] };
-    call_without_gc(mut, join_thread, &data);
+    gc_call_without_gc(mut, join_thread, &data);
     if (data.status) {
       errno = data.status;
       perror("Failed to join thread");

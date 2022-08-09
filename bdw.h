@@ -211,8 +211,8 @@ static int gc_init(int argc, struct gc_option argv[],
   return 1;
 }
 
-static struct mutator* initialize_gc_for_thread(uintptr_t *stack_base,
-                                                struct heap *heap) {
+static struct mutator* gc_init_for_thread(uintptr_t *stack_base,
+                                          struct heap *heap) {
   pthread_mutex_lock(&heap->lock);
   if (!heap->multithreaded) {
     GC_allow_register_threads();
@@ -224,15 +224,13 @@ static struct mutator* initialize_gc_for_thread(uintptr_t *stack_base,
   GC_register_my_thread(&base);
   return add_mutator(heap);
 }
-static void finish_gc_for_thread(struct mutator *mut) {
+static void gc_finish_for_thread(struct mutator *mut) {
   GC_unregister_my_thread();
 }
 
-static void* call_without_gc(struct mutator *mut, void* (*f)(void*),
-                             void *data) NEVER_INLINE;
-static void* call_without_gc(struct mutator *mut,
-                             void* (*f)(void*),
-                             void *data) {
+static void* gc_call_without_gc(struct mutator *mut,
+                                void* (*f)(void*),
+                                void *data) {
   return GC_do_blocking(f, data);
 }
 
