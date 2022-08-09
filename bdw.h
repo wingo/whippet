@@ -80,8 +80,6 @@ allocate_small(void **freelist, size_t idx, enum gc_inline_kind kind) {
   return head;
 }
 
-#define GC_HEADER /**/
-
 static inline void* allocate(struct mutator *mut, enum alloc_kind kind,
                              size_t size) {
   size_t idx = gc_inline_bytes_to_freelist_index(size);

@@ -392,8 +392,6 @@ static inline struct heap* mutator_heap(struct mutator *mutator) {
   return mutator->heap;
 }
 
-#define GC_HEADER uintptr_t _gc_header
-
 static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }

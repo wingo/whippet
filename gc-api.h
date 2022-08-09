@@ -91,4 +91,8 @@ GC_API_ void gc_finish_for_thread(struct mutator *mut);
 GC_API_ void* gc_call_without_gc(struct mutator *mut, void* (*f)(void*),
                                  void *data) GC_NEVER_INLINE;
 
+struct gc_header {
+  uintptr_t tag;
+};
+
 #endif // GC_API_H_

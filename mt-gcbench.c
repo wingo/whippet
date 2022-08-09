@@ -57,20 +57,20 @@ static const int min_tree_depth = 4;
 static const int max_tree_depth = 16;
 
 struct Node {
-  GC_HEADER;
-  struct Node * left;
-  struct Node * right;
+  struct gc_header header;
+  struct Node *left;
+  struct Node *right;
   int i, j;
 };
 
 struct DoubleArray {
-  GC_HEADER;
+  struct gc_header header;
   size_t length;
   double values[0];
 };
 
 struct Hole {
-  GC_HEADER;
+  struct gc_header header;
   size_t length;
   uintptr_t values[0];
 };
@@ -373,13 +373,11 @@ static void *join_thread(void *data) {
 }
 
 int main(int argc, char *argv[]) {
-  // Define size of Node without any GC header.
-  size_t sizeof_node = 2 * sizeof(Node*) + 2 * sizeof(int);
   size_t sizeof_double_array = sizeof(size_t);
   size_t heap_max_live =
-    tree_size(long_lived_tree_depth) * sizeof_node +
-    tree_size(max_tree_depth) * sizeof_node +
-    sizeof_double_array + sizeof(double) * array_size;
+    tree_size(long_lived_tree_depth) * sizeof(Node) +
+    tree_size(max_tree_depth) * sizeof(Node) +
+    sizeof(DoubleArray) + sizeof(double) * array_size;
   if (argc != 4) {
     fprintf(stderr, "usage: %s MULTIPLIER NTHREADS PARALLELISM\n", argv[0]);
     return 1;

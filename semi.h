@@ -48,8 +48,6 @@ static uintptr_t align_up(uintptr_t addr, size_t align) {
   return (addr + align - 1) & ~(align-1);
 }
 
-#define GC_HEADER uintptr_t _gc_header
-
 static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }

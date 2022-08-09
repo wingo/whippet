@@ -7,7 +7,7 @@
 #include "gc.h"
 
 typedef struct Quad {
-  GC_HEADER;
+  struct gc_header header;
   struct Quad *kids[4];
 } Quad;
 static inline size_t quad_size(Quad *obj) {
@@ -125,10 +125,8 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  // Compute byte size not counting any header word, so as to compute the same
-  // heap size whether a header word is there or not.
   size_t nquads = tree_size(depth);
-  size_t tree_bytes = nquads * 4 * sizeof(Quad*);
+  size_t tree_bytes = nquads * sizeof(Quad);
   size_t heap_size = tree_bytes * multiplier;
 
   unsigned long gc_start = current_time();
