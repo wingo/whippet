@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <string.h>
 
 #include "conservative-roots.h"
 
@@ -120,17 +121,89 @@ static inline struct heap *mutator_heap(struct mutator *mutator) {
   return mutator->heap;
 }
 
-static int initialize_gc(size_t heap_size, struct heap **heap,
-                         struct mutator **mutator) {
+#define FOR_EACH_GC_OPTION(M) \
+  M(GC_OPTION_FIXED_HEAP_SIZE, "fixed-heap-size") \
+  M(GC_OPTION_PARALLELISM, "parallelism")
+
+static void dump_available_gc_options(void) {
+  fprintf(stderr, "available gc options:");
+#define PRINT_OPTION(option, name) fprintf(stderr, " %s", name);
+  FOR_EACH_GC_OPTION(PRINT_OPTION)
+#undef PRINT_OPTION
+  fprintf(stderr, "\n");
+}
+
+static int gc_option_from_string(const char *str) {
+#define PARSE_OPTION(option, name) if (strcmp(str, name) == 0) return option;
+  FOR_EACH_GC_OPTION(PARSE_OPTION)
+#undef PARSE_OPTION
+  if (strcmp(str, "fixed-heap-size") == 0)
+    return GC_OPTION_FIXED_HEAP_SIZE;
+  if (strcmp(str, "parallelism") == 0)
+    return GC_OPTION_PARALLELISM;
+  fprintf(stderr, "bad gc option: '%s'\n", str);
+  dump_available_gc_options();
+  return -1;
+}
+
+struct options {
+  size_t fixed_heap_size;
+  size_t parallelism;
+};
+
+static size_t parse_size_t(double value) {
+  ASSERT(value >= 0);
+  ASSERT(value <= (size_t) -1);
+  return value;
+}
+
+static size_t number_of_current_processors(void) { return 1; }
+
+static int parse_options(int argc, struct gc_option argv[],
+                         struct options *options) {
+  for (int i = 0; i < argc; i++) {
+    switch (argv[i].option) {
+    case GC_OPTION_FIXED_HEAP_SIZE:
+      options->fixed_heap_size = parse_size_t(argv[i].value);
+      break;
+    case GC_OPTION_PARALLELISM:
+      options->parallelism = parse_size_t(argv[i].value);
+      break;
+    default:
+      abort();
+    }
+  }
+
+  if (!options->fixed_heap_size) {
+    fprintf(stderr, "fixed heap size is currently required\n");
+    return 0;
+  }
+  if (!options->parallelism)
+    options->parallelism = number_of_current_processors();
+
+  return 1;
+}
+
+static int gc_init(int argc, struct gc_option argv[],
+                   struct heap **heap, struct mutator **mutator) {
+  struct options options = { 0, };
+  if (!parse_options(argc, argv, &options))
+    return 0;
+
   // GC_full_freq = 30;
   // GC_free_space_divisor = 16;
   // GC_enable_incremental();
-  GC_INIT();
+  
+  GC_set_max_heap_size(options.fixed_heap_size);
+  // Not part of 7.3, sigh.  Have to set an env var.
+  // GC_set_markers_count(options.parallelism);
+  char markers[21] = {0,}; // 21 bytes enough for 2**64 in decimal + NUL.
+  snprintf(markers, sizeof(markers), "%zu", options.parallelism);
+  setenv("GC_MARKERS", markers, 1);
+  GC_init();
   size_t current_heap_size = GC_get_heap_size();
-  if (heap_size > current_heap_size) {
-    GC_set_max_heap_size (heap_size);
-    GC_expand_hp(heap_size - current_heap_size);
-  }
+  if (options.fixed_heap_size > current_heap_size)
+    GC_expand_hp(options.fixed_heap_size - current_heap_size);
   GC_allow_register_threads();
   *heap = GC_malloc(sizeof(struct heap));
   pthread_mutex_init(&(*heap)->lock, NULL);

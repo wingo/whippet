@@ -325,8 +325,6 @@ struct local_tracer {
 struct context;
 static inline struct tracer* heap_tracer(struct heap *heap);
 
-static size_t number_of_current_processors(void) { return 1; }
-
 static int
 trace_worker_init(struct trace_worker *worker, struct heap *heap,
                  struct tracer *tracer, size_t id) {
@@ -416,18 +414,15 @@ trace_worker_request_stop(struct trace_worker *worker) {
 }  
 
 static int
-tracer_init(struct heap *heap) {
+tracer_init(struct heap *heap, size_t parallelism) {
   struct tracer *tracer = heap_tracer(heap);
   atomic_init(&tracer->active_tracers, 0);
   atomic_init(&tracer->running_tracers, 0);
   tracer->count = 0;
   pthread_mutex_init(&tracer->lock, NULL);
   pthread_cond_init(&tracer->cond, NULL);
-  size_t desired_worker_count = 0;
-  if (getenv("GC_TRACERS"))
-    desired_worker_count = atoi(getenv("GC_TRACERS"));
-  if (desired_worker_count == 0)
-    desired_worker_count = number_of_current_processors();
+  size_t desired_worker_count = parallelism;
+  ASSERT(desired_worker_count);
   if (desired_worker_count > TRACE_WORKERS_MAX_COUNT)
     desired_worker_count = TRACE_WORKERS_MAX_COUNT;
   for (size_t i = 0; i < desired_worker_count; i++) {

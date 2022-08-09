@@ -59,4 +59,27 @@ static inline void gc_edge_update(struct gc_edge edge, struct gc_ref ref) {
   *edge.dst = ref;
 }
 
+// FIXME: prefix with gc_
+struct heap;
+struct mutator;
+
+enum {
+  GC_OPTION_FIXED_HEAP_SIZE,
+  GC_OPTION_PARALLELISM
+};
+
+struct gc_option {
+  int option;
+  double value;
+};
+
+// FIXME: Conflict with bdw-gc GC_API.  Switch prefix?
+#ifndef GC_API_
+#define GC_API_ static
+#endif
+
+GC_API_ int gc_option_from_string(const char *str);
+GC_API_ int gc_init(int argc, struct gc_option argv[],
+                    struct heap **heap, struct mutator **mutator);
+
 #endif // GC_API_H_

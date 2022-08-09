@@ -103,18 +103,25 @@ static size_t tree_size(size_t depth) {
   return nquads;
 }
 
+#define MAX_THREAD_COUNT 256
 
 int main(int argc, char *argv[]) {
   if (argc != 3) {
-    fprintf(stderr, "usage: %s DEPTH MULTIPLIER\n", argv[0]);
+    fprintf(stderr, "usage: %s DEPTH MULTIPLIER PARALLELISM\n", argv[0]);
     return 1;
   }
 
   size_t depth = parse_size(argv[1], "depth");
   double multiplier = atof(argv[2]);
+  size_t parallelism = atol(argv[3]);
 
   if (!(1.0 < multiplier && multiplier < 100)) {
     fprintf(stderr, "Failed to parse heap multiplier '%s'\n", argv[2]);
+    return 1;
+  }
+  if (parallelism < 1 || parallelism > MAX_THREAD_COUNT) {
+    fprintf(stderr, "Expected integer between 1 and %d for parallelism, got '%s'\n",
+            (int)MAX_THREAD_COUNT, argv[3]);
     return 1;
   }
 
@@ -127,9 +134,12 @@ int main(int argc, char *argv[]) {
   unsigned long gc_start = current_time();
   printf("Allocating heap of %.3fGB (%.2f multiplier of live data).\n",
          heap_size / 1e9, multiplier);
+
+  struct gc_option options[] = { { GC_OPTION_FIXED_HEAP_SIZE, heap_size },
+                                 { GC_OPTION_PARALLELISM, parallelism } };
   struct heap *heap;
   struct mutator *mut;
-  if (!initialize_gc(heap_size, &heap, &mut)) {
+  if (!gc_init(sizeof options / sizeof options[0], options, &heap, &mut)) {
     fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
             heap_size);
     return 1;

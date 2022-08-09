@@ -380,13 +380,14 @@ int main(int argc, char *argv[]) {
     tree_size(long_lived_tree_depth) * sizeof_node +
     tree_size(max_tree_depth) * sizeof_node +
     sizeof_double_array + sizeof(double) * array_size;
-  if (argc != 3) {
-    fprintf(stderr, "usage: %s MULTIPLIER NTHREADS\n", argv[0]);
+  if (argc != 4) {
+    fprintf(stderr, "usage: %s MULTIPLIER NTHREADS PARALLELISM\n", argv[0]);
     return 1;
   }
 
   double multiplier = atof(argv[1]);
   size_t nthreads = atol(argv[2]);
+  size_t parallelism = atol(argv[3]);
 
   if (!(0.1 < multiplier && multiplier < 100)) {
     fprintf(stderr, "Failed to parse heap multiplier '%s'\n", argv[1]);
@@ -397,11 +398,18 @@ int main(int argc, char *argv[]) {
             (int)MAX_THREAD_COUNT, argv[2]);
     return 1;
   }
+  if (parallelism < 1 || parallelism > MAX_THREAD_COUNT) {
+    fprintf(stderr, "Expected integer between 1 and %d for parallelism, got '%s'\n",
+            (int)MAX_THREAD_COUNT, argv[3]);
+    return 1;
+  }
 
   size_t heap_size = heap_max_live * multiplier * nthreads;
+  struct gc_option options[] = { { GC_OPTION_FIXED_HEAP_SIZE, heap_size },
+                                 { GC_OPTION_PARALLELISM, parallelism } };
   struct heap *heap;
   struct mutator *mut;
-  if (!initialize_gc(heap_size, &heap, &mut)) {
+  if (!gc_init(sizeof options / sizeof options[0], options, &heap, &mut)) {
     fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
             heap_size);
     return 1;

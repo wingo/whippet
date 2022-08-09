@@ -129,7 +129,7 @@ struct heap;
 static inline struct tracer* heap_tracer(struct heap *heap);
 
 static int
-tracer_init(struct heap *heap) {
+tracer_init(struct heap *heap, size_t parallelism) {
   return trace_queue_init(&heap_tracer(heap)->queue);
 }
 static void tracer_prepare(struct heap *heap) {}
