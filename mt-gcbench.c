@@ -88,8 +88,8 @@ static inline void
 visit_node_fields(Node *node,
                   void (*visit)(struct gc_edge edge, void *visit_data),
                   void *visit_data) {
-  visit(object_field(&node->left), visit_data);
-  visit(object_field(&node->right), visit_data);
+  visit(gc_edge(&node->left), visit_data);
+  visit(gc_edge(&node->right), visit_data);
 }
 static inline void
 visit_double_array_fields(DoubleArray *obj,

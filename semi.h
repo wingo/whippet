@@ -144,7 +144,7 @@ static void* forward(struct semi_space *space, void *obj) {
 
 static void visit_semi_space(struct heap *heap, struct semi_space *space,
                              struct gc_edge edge, void *obj) {
-  update_edge(edge, forward(space, obj));
+  gc_edge_update(edge, gc_ref_from_heap_object(forward(space, obj)));
 }
 
 static void visit_large_object_space(struct heap *heap,
@@ -160,10 +160,11 @@ static int semi_space_contains(struct semi_space *space, void *obj) {
 
 static void visit(struct gc_edge edge, void *visit_data) {
   struct heap *heap = visit_data;
-  void *obj = dereference_edge(edge);
-  if (obj == NULL)
+  struct gc_ref ref = gc_edge_ref(edge);
+  if (!gc_ref_is_heap_object(ref))
     return;
-  else if (semi_space_contains(heap_semi_space(heap), obj))
+  void *obj = gc_ref_heap_object(ref);
+  if (semi_space_contains(heap_semi_space(heap), obj))
     visit_semi_space(heap, heap_semi_space(heap), edge, obj);
   else if (large_object_space_contains(heap_large_object_space(heap), obj))
     visit_large_object_space(heap, heap_large_object_space(heap), obj);

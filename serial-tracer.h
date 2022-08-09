@@ -156,7 +156,8 @@ static inline void
 tracer_visit(struct gc_edge edge, void *trace_data) {
   struct heap *heap = trace_data;
   if (trace_edge(heap, edge))
-    tracer_enqueue_root(heap_tracer(heap), dereference_edge(edge));
+    tracer_enqueue_root(heap_tracer(heap),
+                        gc_ref_heap_object(gc_edge_ref(edge)));
 }
 static inline void
 tracer_trace(struct heap *heap) {

@@ -18,7 +18,7 @@ visit_quad_fields(Quad *quad,
                   void (*visit)(struct gc_edge edge, void *visit_data),
                   void *visit_data) {
   for (size_t i = 0; i < 4; i++)
-    visit(object_field(&quad->kids[i]), visit_data);
+    visit(gc_edge(&quad->kids[i]), visit_data);
 }
 typedef HANDLE_TO(Quad) QuadHandle;
 

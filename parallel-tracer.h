@@ -471,7 +471,8 @@ tracer_visit(struct gc_edge edge, void *trace_data) {
   if (trace_edge(trace->heap, edge)) {
     if (local_trace_queue_full(&trace->local))
       tracer_share(trace);
-    local_trace_queue_push(&trace->local, dereference_edge(edge));
+    local_trace_queue_push(&trace->local,
+                           gc_ref_heap_object(gc_edge_ref(edge)));
   }
 }
 

@@ -423,8 +423,8 @@ static size_t mark_space_live_object_granules(uint8_t *metadata) {
 }
 
 static inline int mark_space_mark_object(struct mark_space *space,
-                                         struct gc_edge edge) {
-  struct gcobj *obj = dereference_edge(edge);
+                                         struct gc_ref ref) {
+  struct gcobj *obj = gc_ref_heap_object(ref);
   uint8_t *loc = object_metadata_byte(obj);
   uint8_t byte = *loc;
   if (byte & space->marked_mask)
@@ -567,8 +567,9 @@ static struct gcobj *evacuation_allocate(struct mark_space *space,
 }
 
 static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
-                                                     struct gc_edge edge) {
-  struct gcobj *obj = dereference_edge(edge);
+                                                     struct gc_edge edge,
+                                                     struct gc_ref old_ref) {
+  struct gcobj *obj = gc_ref_heap_object(old_ref);
   uint8_t *metadata = object_metadata_byte(obj);
   uint8_t byte = *metadata;
   if (byte & space->marked_mask)
@@ -588,8 +589,7 @@ static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
       // The object has been evacuated already.  Update the edge;
       // whoever forwarded the object will make sure it's eventually
       // traced.
-      struct gcobj *forwarded = (struct gcobj*) header_word;
-      update_edge(edge, forwarded);
+      gc_edge_update(edge, gc_ref(header_word));
       return 0;
     }
     // Otherwise try to claim it for evacuation.
@@ -613,7 +613,7 @@ static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
                object_granules * GRANULE_SIZE - sizeof(header_word));
         uint8_t *new_metadata = object_metadata_byte(new_obj);
         memcpy(new_metadata + 1, metadata + 1, object_granules - 1);
-        update_edge(edge, new_obj);
+        gc_edge_update(edge, gc_ref_from_heap_object(new_obj));
         obj = new_obj;
         metadata = new_metadata;
         // Fall through to set mark bits.
@@ -634,10 +634,8 @@ static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
           break;
         yield_for_spin(spin_count);
       }
-      if ((header_word & gcobj_not_forwarded_bit) == 0) {
-        struct gcobj *forwarded = (struct gcobj*) header_word;
-        update_edge(edge, forwarded);
-      }
+      if ((header_word & gcobj_not_forwarded_bit) == 0)
+        gc_edge_update(edge, gc_ref(header_word));
       // Either way, the other party is responsible for adding the
       // object to the mark queue.
       return 0;
@@ -661,13 +659,15 @@ static inline int large_object_space_mark_object(struct large_object_space *spac
 }
 
 static inline int trace_edge(struct heap *heap, struct gc_edge edge) {
-  struct gcobj *obj = dereference_edge(edge);
-  if (!obj)
+  struct gc_ref ref = gc_edge_ref(edge);
+  if (!gc_ref_is_heap_object(ref))
     return 0;
-  else if (LIKELY(mark_space_contains(heap_mark_space(heap), obj))) {
+  struct gcobj *obj = gc_ref_heap_object(ref);
+  if (LIKELY(mark_space_contains(heap_mark_space(heap), obj))) {
     if (heap_mark_space(heap)->evacuating)
-      return mark_space_evacuate_or_mark_object(heap_mark_space(heap), edge);
-    return mark_space_mark_object(heap_mark_space(heap), edge);
+      return mark_space_evacuate_or_mark_object(heap_mark_space(heap), edge,
+                                                ref);
+    return mark_space_mark_object(heap_mark_space(heap), ref);
   }
   else if (large_object_space_contains(heap_large_object_space(heap), obj))
     return large_object_space_mark_object(heap_large_object_space(heap),
@@ -955,7 +955,8 @@ static void mark_stopping_mutator_roots(struct mutator *mut) {
   for (struct handle *h = mut->roots; h; h = h->next) {
     struct gc_edge root = gc_edge(&h->v);
     if (trace_edge(heap, root))
-      mutator_mark_buf_push(local_roots, dereference_edge(root));
+      mutator_mark_buf_push(local_roots,
+                            gc_ref_heap_object(gc_edge_ref(root)));
   }
 }
 
@@ -965,7 +966,8 @@ static void mark_mutator_roots_with_lock(struct mutator *mut) {
   for (struct handle *h = mut->roots; h; h = h->next) {
     struct gc_edge root = gc_edge(&h->v);
     if (trace_edge(heap, root))
-      tracer_enqueue_root(&heap->tracer, dereference_edge(root));
+      tracer_enqueue_root(&heap->tracer,
+                          gc_ref_heap_object(gc_edge_ref(root)));
   }
 }
 
@@ -1018,7 +1020,8 @@ static void trace_global_roots(struct heap *heap) {
   for (struct handle *h = heap->global_roots; h; h = h->next) {
     struct gc_edge edge = gc_edge(&h->v);
     if (trace_edge(heap, edge))
-      tracer_enqueue_root(&heap->tracer, dereference_edge(edge));
+      tracer_enqueue_root(&heap->tracer,
+                          gc_ref_heap_object(gc_edge_ref(edge)));
   }
 }
 
