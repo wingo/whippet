@@ -4,6 +4,8 @@
 
 #include "assert.h"
 #include "quads-types.h"
+#include "simple-allocator.h"
+#include "simple-gc-embedder.h"
 #include "gc.h"
 
 typedef struct Quad {
@@ -24,7 +26,7 @@ typedef HANDLE_TO(Quad) QuadHandle;
 
 static Quad* allocate_quad(struct mutator *mut) {
   // memset to 0 by the collector.
-  return allocate(mut, ALLOC_KIND_QUAD, sizeof (Quad));
+  return gc_allocate_with_kind(mut, ALLOC_KIND_QUAD, sizeof (Quad));
 }
 
 /* Get the current time in microseconds */
@@ -106,7 +108,7 @@ static size_t tree_size(size_t depth) {
 #define MAX_THREAD_COUNT 256
 
 int main(int argc, char *argv[]) {
-  if (argc != 3) {
+  if (argc != 4) {
     fprintf(stderr, "usage: %s DEPTH MULTIPLIER PARALLELISM\n", argv[0]);
     return 1;
   }

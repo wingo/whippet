@@ -44,10 +44,17 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
-#include "assert.h"
+// Tracer will be specialized with respect to tags defined in this header.
 #include "mt-gcbench-types.h"
+
+#include "assert.h"
+#include "simple-allocator.h"
+#include "simple-gc-embedder.h"
+#include "gc-api.h"
+
 #include "gc.h"
-#include "inline.h"
+
+#include "gc-inline.h"
 
 #define MAX_THREAD_COUNT 256
 
@@ -100,6 +107,7 @@ static inline void
 visit_hole_fields(Hole *obj,
                   void (*visit)(struct gc_edge edge, void *visit_data),
                   void *visit_data) {
+  abort();
 }
 
 typedef HANDLE_TO(Node) NodeHandle;
@@ -107,22 +115,22 @@ typedef HANDLE_TO(DoubleArray) DoubleArrayHandle;
 
 static Node* allocate_node(struct mutator *mut) {
   // memset to 0 by the collector.
-  return allocate(mut, ALLOC_KIND_NODE, sizeof (Node));
+  return gc_allocate_with_kind(mut, ALLOC_KIND_NODE, sizeof (Node));
 }
 
 static DoubleArray* allocate_double_array(struct mutator *mut,
                                                  size_t size) {
   // May be uninitialized.
+  size_t bytes = sizeof(DoubleArray) + sizeof (double) * size;
   DoubleArray *ret =
-    allocate_pointerless(mut, ALLOC_KIND_DOUBLE_ARRAY,
-                         sizeof(DoubleArray) + sizeof (double) * size);
+    gc_allocate_pointerless_with_kind(mut, ALLOC_KIND_DOUBLE_ARRAY, bytes);
   ret->length = size;
   return ret;
 }
 
 static Hole* allocate_hole(struct mutator *mut, size_t size) {
-  Hole *ret = allocate(mut, ALLOC_KIND_HOLE,
-                       sizeof(Hole) + sizeof (uintptr_t) * size);
+  size_t bytes = sizeof(Hole) + sizeof (uintptr_t) * size;
+  Hole *ret = gc_allocate_with_kind(mut, ALLOC_KIND_HOLE, bytes);
   ret->length = size;
   return ret;
 }
@@ -289,8 +297,8 @@ static void time_construction(struct thread *t, int depth) {
   POP_HANDLE(mut);
 }
 
-static void* call_with_stack_base(void* (*)(uintptr_t*, void*), void*) NEVER_INLINE;
-static void* call_with_stack_base_inner(void* (*)(uintptr_t*, void*), uintptr_t*, void*) NEVER_INLINE;
+static void* call_with_stack_base(void* (*)(uintptr_t*, void*), void*) GC_NEVER_INLINE;
+static void* call_with_stack_base_inner(void* (*)(uintptr_t*, void*), uintptr_t*, void*) GC_NEVER_INLINE;
 static void* call_with_stack_base_inner(void* (*f)(uintptr_t *stack_base, void *arg),
                                         uintptr_t *stack_base, void *arg) {
   return f(stack_base, arg);

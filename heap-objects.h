@@ -1,8 +1,8 @@
 #ifndef HEAP_OBJECTS_H
 #define HEAP_OBJECTS_H
 
-#include "inline.h"
-#include "gc-api.h"
+#include "gc-inline.h"
+#include "gc-edge.h"
 
 #define DECLARE_NODE_TYPE(name, Name, NAME) \
   struct Name;                              \
@@ -17,10 +17,10 @@ enum alloc_kind {
 #undef DEFINE_ENUM
 
 #define DEFINE_METHODS(name, Name, NAME) \
-  static inline size_t name##_size(Name *obj) ALWAYS_INLINE; \
+  static inline size_t name##_size(Name *obj) GC_ALWAYS_INLINE; \
   static inline void visit_##name##_fields(Name *obj,\
                                            void (*visit)(struct gc_edge edge, void *visit_data), \
-                                           void *visit_data) ALWAYS_INLINE;
+                                           void *visit_data) GC_ALWAYS_INLINE;
 FOR_EACH_HEAP_OBJECT_KIND(DEFINE_METHODS)
 #undef DEFINE_METHODS
 

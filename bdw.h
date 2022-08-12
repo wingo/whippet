@@ -54,7 +54,7 @@ enum gc_inline_kind {
 };
 
 static void* allocate_small_slow(void **freelist, size_t idx,
-                                 enum gc_inline_kind kind) NEVER_INLINE;
+                                 enum gc_inline_kind kind) GC_NEVER_INLINE;
 static void* allocate_small_slow(void **freelist, size_t idx,
                                  enum gc_inline_kind kind) {
   size_t bytes = gc_inline_freelist_object_size(idx);
@@ -80,8 +80,7 @@ allocate_small(void **freelist, size_t idx, enum gc_inline_kind kind) {
   return head;
 }
 
-static inline void* allocate(struct mutator *mut, enum alloc_kind kind,
-                             size_t size) {
+static inline void* gc_allocate(struct mutator *mut, size_t size) {
   size_t idx = gc_inline_bytes_to_freelist_index(size);
 
   if (UNLIKELY(idx >= GC_INLINE_FREELIST_COUNT))
@@ -90,8 +89,8 @@ static inline void* allocate(struct mutator *mut, enum alloc_kind kind,
   return allocate_small(&mut->freelists[idx], idx, GC_INLINE_KIND_NORMAL);
 }
 
-static inline void* allocate_pointerless(struct mutator *mut,
-                                         enum alloc_kind kind, size_t size) {
+static inline void* gc_allocate_pointerless(struct mutator *mut,
+                                            size_t size) {
   // Because the BDW API requires us to implement a custom marker so
   // that the pointerless freelist gets traced, even though it's in a
   // pointerless region, we punt on thread-local pointerless freelists.

@@ -52,8 +52,8 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
 
-static void collect(struct mutator *mut) NEVER_INLINE;
-static void collect_for_alloc(struct mutator *mut, size_t bytes) NEVER_INLINE;
+static void collect(struct mutator *mut) GC_NEVER_INLINE;
+static void collect_for_alloc(struct mutator *mut, size_t bytes) GC_NEVER_INLINE;
 
 static void visit(struct gc_edge edge, void *visit_data);
 
@@ -93,18 +93,9 @@ static void flip(struct semi_space *space) {
   space->count++;
 }  
 
-static void* copy(struct semi_space *space, uintptr_t kind, void *obj) {
+static void* copy(struct semi_space *space, void *obj) {
   size_t size;
-  switch (kind) {
-#define COMPUTE_SIZE(name, Name, NAME) \
-    case ALLOC_KIND_##NAME: \
-      size = name##_size(obj); \
-      break;
-    FOR_EACH_HEAP_OBJECT_KIND(COMPUTE_SIZE)
-#undef COMPUTE_SIZE
-  default:
-    abort ();
-  }
+  gc_trace_object(obj, NULL, NULL, &size);
   void *new_obj = (void*)space->hp;
   memcpy(new_obj, obj, size);
   *(uintptr_t*) obj = space->hp;
@@ -113,31 +104,14 @@ static void* copy(struct semi_space *space, uintptr_t kind, void *obj) {
 }
 
 static uintptr_t scan(struct heap *heap, uintptr_t grey) {
-  void *obj = (void*)grey;
-  uintptr_t kind = *(uintptr_t*) obj;
-  switch (kind) {
-#define SCAN_OBJECT(name, Name, NAME) \
-    case ALLOC_KIND_##NAME: \
-      visit_##name##_fields((Name*)obj, visit, heap); \
-      return grey + align_up(name##_size((Name*)obj), ALIGNMENT);
-    FOR_EACH_HEAP_OBJECT_KIND(SCAN_OBJECT)
-#undef SCAN_OBJECT
-  default:
-    abort ();
-  }
+  size_t size;
+  gc_trace_object((void*)grey, visit, heap, &size);
+  return grey + align_up(size, ALIGNMENT);
 }
 
 static void* forward(struct semi_space *space, void *obj) {
-  uintptr_t header_word = *(uintptr_t*)obj;
-  switch (header_word) {
-#define CASE_ALLOC_KIND(name, Name, NAME) \
-    case ALLOC_KIND_##NAME:
-    FOR_EACH_HEAP_OBJECT_KIND(CASE_ALLOC_KIND)
-#undef CASE_ALLOC_KIND
-    return copy(space, header_word, obj);
-  default:
-    return (void*)header_word;
-  }
+  uintptr_t forwarded = gc_object_forwarded_nonatomic(obj);
+  return forwarded ? (void*)forwarded : copy(space, obj);
 }  
 
 static void visit_semi_space(struct heap *heap, struct semi_space *space,
@@ -198,8 +172,7 @@ static void collect_for_alloc(struct mutator *mut, size_t bytes) {
 }
 
 static const size_t LARGE_OBJECT_THRESHOLD = 8192;
-static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
-                            size_t size) {
+static void* allocate_large(struct mutator *mut, size_t size) {
   struct heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);
   struct semi_space *semi_space = heap_semi_space(heap);
@@ -222,14 +195,12 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
     abort();
   }
 
-  *(uintptr_t*)ret = kind;
   return ret;
 }
 
-static inline void* allocate(struct mutator *mut, enum alloc_kind kind,
-                             size_t size) {
+static inline void* gc_allocate(struct mutator *mut, size_t size) {
   if (size >= LARGE_OBJECT_THRESHOLD)
-    return allocate_large(mut, kind, size);
+    return allocate_large(mut, size);
 
   struct semi_space *space = mutator_semi_space(mut);
   while (1) {
@@ -240,18 +211,13 @@ static inline void* allocate(struct mutator *mut, enum alloc_kind kind,
       continue;
     }
     space->hp = new_hp;
-    void *ret = (void *)addr;
-    uintptr_t *header_word = ret;
-    *header_word = kind;
-    // FIXME: Allow allocator to avoid initializing pointerless memory?
-    // if (kind == NODE)
-    clear_memory(addr + sizeof(uintptr_t), size - sizeof(uintptr_t));
-    return ret;
+    // FIXME: Allow allocator to avoid clearing memory?
+    clear_memory(addr, size);
+    return (void *)addr;
   }
 }
-static inline void* allocate_pointerless(struct mutator *mut,
-                                         enum alloc_kind kind, size_t size) {
-  return allocate(mut, kind, size);
+static inline void* gc_allocate_pointerless(struct mutator *mut, size_t size) {
+  return gc_allocate(mut, size);
 }
 
 static inline void init_field(void *obj, void **addr, void *val) {

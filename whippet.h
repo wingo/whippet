@@ -15,9 +15,8 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "assert.h"
 #include "debug.h"
-#include "inline.h"
+#include "gc-inline.h"
 #include "large-object-space.h"
 #include "precise-roots.h"
 #if GC_PARALLEL_TRACE
@@ -194,7 +193,7 @@ static uint8_t *object_metadata_byte(void *obj) {
 #define GRANULES_PER_BLOCK (BLOCK_SIZE / GRANULE_SIZE)
 #define GRANULES_PER_REMSET_BYTE (GRANULES_PER_BLOCK / REMSET_BYTES_PER_BLOCK)
 static uint8_t *object_remset_byte(void *obj) {
-  ASSERT(!heap_object_is_large(obj));
+  GC_ASSERT(!heap_object_is_large(obj));
   uintptr_t addr = (uintptr_t) obj;
   uintptr_t base = addr & ~(SLAB_SIZE - 1);
   uintptr_t granule = (addr & (SLAB_SIZE - 1)) >> GRANULE_SIZE_LOG_2;
@@ -225,7 +224,7 @@ static uintptr_t block_summary_next(struct block_summary *summary) {
 }
 static void block_summary_set_next(struct block_summary *summary,
                                    uintptr_t next) {
-  ASSERT((next & (BLOCK_SIZE - 1)) == 0);
+  GC_ASSERT((next & (BLOCK_SIZE - 1)) == 0);
   summary->next_and_flags =
     (summary->next_and_flags & (BLOCK_SIZE - 1)) | next;
 }
@@ -268,29 +267,7 @@ static inline size_t size_to_granules(size_t size) {
   return (size + GRANULE_SIZE - 1) >> GRANULE_SIZE_LOG_2;
 }
 
-// Alloc kind is in bits 1-7, for live objects.
-static const uintptr_t gcobj_alloc_kind_mask = 0x7f;
-static const uintptr_t gcobj_alloc_kind_shift = 1;
-static const uintptr_t gcobj_forwarded_mask = 0x1;
-static const uintptr_t gcobj_not_forwarded_bit = 0x1;
-static inline uint8_t tag_live_alloc_kind(uintptr_t tag) {
-  return (tag >> gcobj_alloc_kind_shift) & gcobj_alloc_kind_mask;
-}
-static inline uintptr_t tag_live(uint8_t alloc_kind) {
-  return ((uintptr_t)alloc_kind << gcobj_alloc_kind_shift)
-    | gcobj_not_forwarded_bit;
-}
-static inline uintptr_t tag_forwarded(struct gcobj *new_addr) {
-  return (uintptr_t)new_addr;
-}
-
-struct gcobj {
-  union {
-    uintptr_t tag;
-    uintptr_t words[0];
-    void *pointers[0];
-  };
-};
+struct gcobj;
 
 struct evacuation_allocator {
   size_t allocated; // atomically
@@ -396,18 +373,12 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
 
-static void collect(struct mutator *mut) NEVER_INLINE;
+static void collect(struct mutator *mut) GC_NEVER_INLINE;
 
 static int heap_object_is_large(struct gcobj *obj) {
-  switch (tag_live_alloc_kind(obj->tag)) {
-#define IS_LARGE(name, Name, NAME) \
-    case ALLOC_KIND_##NAME: \
-      return name##_size((Name*)obj) > LARGE_OBJECT_THRESHOLD;
-      break;
-    FOR_EACH_HEAP_OBJECT_KIND(IS_LARGE)
-#undef IS_LARGE
-  }
-  abort();
+  size_t size;
+  gc_trace_object(obj, NULL, NULL, &size);
+  return size > LARGE_OBJECT_THRESHOLD;
 }
 
 static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
@@ -436,7 +407,7 @@ static inline int mark_space_mark_object(struct mark_space *space,
 
 static uintptr_t make_evacuation_allocator_cursor(uintptr_t block,
                                                   size_t allocated) {
-  ASSERT(allocated < (BLOCK_SIZE - 1) * (uint64_t) BLOCK_SIZE);
+  GC_ASSERT(allocated < (BLOCK_SIZE - 1) * (uint64_t) BLOCK_SIZE);
   return (block & ~(BLOCK_SIZE - 1)) | (allocated / BLOCK_SIZE);
 }
 
@@ -453,17 +424,17 @@ static void prepare_evacuation_allocator(struct evacuation_allocator *alloc,
 
 static void clear_remaining_metadata_bytes_in_block(uintptr_t block,
                                                     uintptr_t allocated) {
-  ASSERT((allocated & (GRANULE_SIZE - 1)) == 0);
+  GC_ASSERT((allocated & (GRANULE_SIZE - 1)) == 0);
   uintptr_t base = block + allocated;
   uintptr_t limit = block + BLOCK_SIZE;
   uintptr_t granules = (limit - base) >> GRANULE_SIZE_LOG_2;
-  ASSERT(granules <= GRANULES_PER_BLOCK);
+  GC_ASSERT(granules <= GRANULES_PER_BLOCK);
   memset(object_metadata_byte((void*)base), 0, granules);
 }
 
 static void finish_evacuation_allocator_block(uintptr_t block,
                                               uintptr_t allocated) {
-  ASSERT(allocated <= BLOCK_SIZE);
+  GC_ASSERT(allocated <= BLOCK_SIZE);
   struct block_summary *summary = block_summary_for_addr(block);
   block_summary_set_flag(summary, BLOCK_NEEDS_SWEEP);
   size_t fragmentation = (BLOCK_SIZE - allocated) >> GRANULE_SIZE_LOG_2;
@@ -489,13 +460,13 @@ static void finish_evacuation_allocator(struct evacuation_allocator *alloc,
     allocated = alloc->limit;
   while (allocated >= BLOCK_SIZE) {
     uintptr_t block = pop_block(targets);
-    ASSERT(block);
+    GC_ASSERT(block);
     allocated -= BLOCK_SIZE;
   }
   if (allocated) {
     // Finish off the last partially-filled block.
     uintptr_t block = pop_block(targets);
-    ASSERT(block);
+    GC_ASSERT(block);
     finish_evacuation_allocator_block(block, allocated);
   }
   size_t remaining = atomic_load_explicit(&targets->count, memory_order_acquire);
@@ -536,7 +507,7 @@ static struct gcobj *evacuation_allocate(struct mark_space *space,
   uintptr_t base = seq * BLOCK_SIZE;
 
   while ((base ^ next) & ~block_mask) {
-    ASSERT(base < next);
+    GC_ASSERT(base < next);
     if (base + BLOCK_SIZE > prev) {
       // The allocation straddles a block boundary, and the cursor has
       // caught up so that we identify the block for the previous
@@ -549,10 +520,10 @@ static struct gcobj *evacuation_allocate(struct mark_space *space,
     base += BLOCK_SIZE;
     if (base >= alloc->limit) {
       // Ran out of blocks!
-      ASSERT(!block);
+      GC_ASSERT(!block);
       return NULL;
     }
-    ASSERT(block);
+    GC_ASSERT(block);
     // This store can race with other allocators, but that's OK as long
     // as it never advances the cursor beyond the allocation pointer,
     // which it won't because we updated the allocation pointer already.
@@ -579,37 +550,28 @@ static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
       ((byte & METADATA_BYTE_PINNED) == 0)) {
     // This is an evacuating collection, and we are attempting to
     // evacuate this block, and this particular object isn't pinned.
-    // First, see if someone evacuated this object already.
-    uintptr_t header_word = atomic_load_explicit(&obj->tag,
-                                                 memory_order_relaxed);
-    uintptr_t busy_header_word = 0;
-    if (header_word != busy_header_word &&
-        (header_word & gcobj_not_forwarded_bit) == 0) {
-      // The object has been evacuated already.  Update the edge;
-      // whoever forwarded the object will make sure it's eventually
-      // traced.
-      gc_edge_update(edge, gc_ref(header_word));
-      return 0;
-    }
-    // Otherwise try to claim it for evacuation.
-    if (header_word != busy_header_word &&
-        atomic_compare_exchange_strong(&obj->tag, &header_word,
-                                       busy_header_word)) {
+    struct gc_atomic_forward fwd = gc_atomic_forward_begin(obj);
+
+    if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
+      gc_atomic_forward_acquire(&fwd);
+
+    switch (fwd.state) {
+    case GC_FORWARDING_STATE_NOT_FORWARDED:
+    case GC_FORWARDING_STATE_ABORTED:
+      // Impossible.
+      abort();
+    case GC_FORWARDING_STATE_ACQUIRED: {
       // We claimed the object successfully; evacuating is up to us.
       size_t object_granules = mark_space_live_object_granules(metadata);
       struct gcobj *new_obj = evacuation_allocate(space, object_granules);
       if (new_obj) {
-        // We were able to reserve space in which to evacuate this object.
-        // Commit the evacuation by overwriting the tag.
-        uintptr_t new_header_word = tag_forwarded(new_obj);
-        atomic_store_explicit(&obj->tag, new_header_word,
-                              memory_order_release);
-        // Now copy the object contents, update extent metadata, and
-        // indicate to the caller that the object's fields need to be
-        // traced.
-        new_obj->tag = header_word;
-        memcpy(&new_obj->words[1], &obj->words[1],
-               object_granules * GRANULE_SIZE - sizeof(header_word));
+        // Copy object contents before committing, as we don't know what
+        // part of the object (if any) will be overwritten by the
+        // commit.
+        memcpy(new_obj, obj, object_granules * GRANULE_SIZE);
+        gc_atomic_forward_commit(&fwd, (uintptr_t)new_obj);
+        // Now update extent metadata, and indicate to the caller that
+        // the object's fields need to be traced.
         uint8_t *new_metadata = object_metadata_byte(new_obj);
         memcpy(new_metadata + 1, metadata + 1, object_granules - 1);
         gc_edge_update(edge, gc_ref_from_heap_object(new_obj));
@@ -619,27 +581,33 @@ static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
       } else {
         // Well shucks; allocation failed, marking the end of
         // opportunistic evacuation.  No future evacuation of this
-        // object will succeed.  Restore the original header word and
-        // mark instead.
-        atomic_store_explicit(&obj->tag, header_word,
-                              memory_order_release);
+        // object will succeed.  Mark in place instead.
+        gc_atomic_forward_abort(&fwd);
       }
-    } else {
+      break;
+    }
+    case GC_FORWARDING_STATE_BUSY:
       // Someone else claimed this object first.  Spin until new address
       // known, or evacuation aborts.
       for (size_t spin_count = 0;; spin_count++) {
-        header_word = atomic_load_explicit(&obj->tag, memory_order_acquire);
-        if (header_word)
+        if (gc_atomic_forward_retry_busy(&fwd))
           break;
         yield_for_spin(spin_count);
       }
-      if ((header_word & gcobj_not_forwarded_bit) == 0)
-        gc_edge_update(edge, gc_ref(header_word));
-      // Either way, the other party is responsible for adding the
-      // object to the mark queue.
+      if (fwd.state == GC_FORWARDING_STATE_ABORTED)
+        // Remove evacuation aborted; remote will mark and enqueue.
+        return 0;
+      ASSERT(fwd.state == GC_FORWARDING_STATE_FORWARDED);
+      // Fall through.
+    case GC_FORWARDING_STATE_FORWARDED:
+      // The object has been evacuated already.  Update the edge;
+      // whoever forwarded the object will make sure it's eventually
+      // traced.
+      gc_edge_update(edge, gc_ref(gc_atomic_forward_address(&fwd)));
       return 0;
     }
   }
+
   uint8_t mask = METADATA_BYTE_YOUNG | METADATA_BYTE_MARK_0
     | METADATA_BYTE_MARK_1 | METADATA_BYTE_MARK_2;
   *metadata = (byte & ~mask) | space->marked_mask;
@@ -662,7 +630,7 @@ static inline int trace_edge(struct heap *heap, struct gc_edge edge) {
   if (!gc_ref_is_heap_object(ref))
     return 0;
   struct gcobj *obj = gc_ref_heap_object(ref);
-  if (LIKELY(mark_space_contains(heap_mark_space(heap), obj))) {
+  if (GC_LIKELY(mark_space_contains(heap_mark_space(heap), obj))) {
     if (heap_mark_space(heap)->evacuating)
       return mark_space_evacuate_or_mark_object(heap_mark_space(heap), edge,
                                                 ref);
@@ -676,16 +644,7 @@ static inline int trace_edge(struct heap *heap, struct gc_edge edge) {
 }
 
 static inline void trace_one(struct gcobj *obj, void *mark_data) {
-  switch (tag_live_alloc_kind(obj->tag)) {
-#define SCAN_OBJECT(name, Name, NAME) \
-    case ALLOC_KIND_##NAME: \
-      visit_##name##_fields((Name*)obj, tracer_visit, mark_data); \
-      break;
-    FOR_EACH_HEAP_OBJECT_KIND(SCAN_OBJECT)
-#undef SCAN_OBJECT
-  default:
-    abort ();
-  }
+  gc_trace_object(obj, tracer_visit, mark_data, NULL);
 }
 
 static int heap_has_multiple_mutators(struct heap *heap) {
@@ -730,23 +689,23 @@ static void remove_mutator(struct heap *heap, struct mutator *mut) {
 }
 
 static void request_mutators_to_stop(struct heap *heap) {
-  ASSERT(!mutators_are_stopping(heap));
+  GC_ASSERT(!mutators_are_stopping(heap));
   atomic_store_explicit(&heap->collecting, 1, memory_order_relaxed);
 }
 
 static void allow_mutators_to_continue(struct heap *heap) {
-  ASSERT(mutators_are_stopping(heap));
-  ASSERT(heap->active_mutator_count == 0);
+  GC_ASSERT(mutators_are_stopping(heap));
+  GC_ASSERT(heap->active_mutator_count == 0);
   heap->active_mutator_count++;
   atomic_store_explicit(&heap->collecting, 0, memory_order_relaxed);
-  ASSERT(!mutators_are_stopping(heap));
+  GC_ASSERT(!mutators_are_stopping(heap));
   pthread_cond_broadcast(&heap->mutator_cond);
 }
 
 static void push_unavailable_block(struct mark_space *space, uintptr_t block) {
   struct block_summary *summary = block_summary_for_addr(block);
-  ASSERT(!block_summary_has_flag(summary, BLOCK_NEEDS_SWEEP));
-  ASSERT(!block_summary_has_flag(summary, BLOCK_UNAVAILABLE));
+  GC_ASSERT(!block_summary_has_flag(summary, BLOCK_NEEDS_SWEEP));
+  GC_ASSERT(!block_summary_has_flag(summary, BLOCK_UNAVAILABLE));
   block_summary_set_flag(summary, BLOCK_UNAVAILABLE);
   madvise((void*)block, BLOCK_SIZE, MADV_DONTNEED);
   push_block(&space->unavailable, block);
@@ -757,7 +716,7 @@ static uintptr_t pop_unavailable_block(struct mark_space *space) {
   if (!block)
     return 0;
   struct block_summary *summary = block_summary_for_addr(block);
-  ASSERT(block_summary_has_flag(summary, BLOCK_UNAVAILABLE));
+  GC_ASSERT(block_summary_has_flag(summary, BLOCK_UNAVAILABLE));
   block_summary_clear_flag(summary, BLOCK_UNAVAILABLE);
   return block;
 }
@@ -768,7 +727,7 @@ static uintptr_t pop_empty_block(struct mark_space *space) {
 
 static int maybe_push_evacuation_target(struct mark_space *space,
                                         uintptr_t block, double reserve) {
-  ASSERT(!block_summary_has_flag(block_summary_for_addr(block),
+  GC_ASSERT(!block_summary_has_flag(block_summary_for_addr(block),
                                  BLOCK_NEEDS_SWEEP));
   size_t targets = atomic_load_explicit(&space->evacuation_targets.count,
                                         memory_order_acquire);
@@ -795,7 +754,7 @@ static int push_evacuation_target_if_possible(struct mark_space *space,
 }
 
 static void push_empty_block(struct mark_space *space, uintptr_t block) {
-  ASSERT(!block_summary_has_flag(block_summary_for_addr(block),
+  GC_ASSERT(!block_summary_has_flag(block_summary_for_addr(block),
                                  BLOCK_NEEDS_SWEEP));
   push_block(&space->empty, block);
 }
@@ -811,7 +770,7 @@ static void mark_space_reacquire_memory(struct mark_space *space,
     atomic_fetch_sub(&space->pending_unavailable_bytes, bytes) - bytes;
   while (pending + BLOCK_SIZE <= 0) {
     uintptr_t block = pop_unavailable_block(space);
-    ASSERT(block);
+    GC_ASSERT(block);
     if (push_evacuation_target_if_needed(space, block))
       continue;
     push_empty_block(space, block);
@@ -859,7 +818,7 @@ static int sweep_until_memory_released(struct mutator *mut) {
 static void heap_reset_large_object_pages(struct heap *heap, size_t npages) {
   size_t previous = heap->large_object_pages;
   heap->large_object_pages = npages;
-  ASSERT(npages <= previous);
+  GC_ASSERT(npages <= previous);
   size_t bytes = (previous - npages) <<
     heap_large_object_space(heap)->page_size_log2;
   mark_space_reacquire_memory(heap_mark_space(heap), bytes);
@@ -888,7 +847,7 @@ static void mutator_mark_buf_grow(struct mutator_mark_buf *buf) {
 
 static void mutator_mark_buf_push(struct mutator_mark_buf *buf,
                                   struct gcobj *val) {
-  if (UNLIKELY(buf->size == buf->capacity))
+  if (GC_UNLIKELY(buf->size == buf->capacity))
     mutator_mark_buf_grow(buf);
   buf->objects[buf->size++] = val;
 }
@@ -908,7 +867,7 @@ static void mutator_mark_buf_destroy(struct mutator_mark_buf *buf) {
 
 static void enqueue_mutator_for_tracing(struct mutator *mut) {
   struct heap *heap = mutator_heap(mut);
-  ASSERT(mut->next == NULL);
+  GC_ASSERT(mut->next == NULL);
   struct mutator *next =
     atomic_load_explicit(&heap->mutator_trace_list, memory_order_acquire);
   do {
@@ -948,7 +907,7 @@ static int mutator_should_mark_while_stopping(struct mutator *mut) {
 // Mark the roots of a mutator that is stopping for GC.  We can't
 // enqueue them directly, so we send them to the controller in a buffer.
 static void mark_stopping_mutator_roots(struct mutator *mut) {
-  ASSERT(mutator_should_mark_while_stopping(mut));
+  GC_ASSERT(mutator_should_mark_while_stopping(mut));
   struct heap *heap = mutator_heap(mut);
   struct mutator_mark_buf *local_roots = &mut->mark_buf;
   for (struct handle *h = mut->roots; h; h = h->next) {
@@ -1026,16 +985,16 @@ static void trace_global_roots(struct heap *heap) {
 
 static inline int
 heap_object_is_young(struct heap *heap, struct gcobj *obj) {
-  if (UNLIKELY(!mark_space_contains(heap_mark_space(heap), obj))) {
+  if (GC_UNLIKELY(!mark_space_contains(heap_mark_space(heap), obj))) {
     // No lospace nursery, for the moment.
     return 0;
   }
-  ASSERT(!heap_object_is_large(obj));
+  GC_ASSERT(!heap_object_is_large(obj));
   return (*object_metadata_byte(obj)) & METADATA_BYTE_YOUNG;
 }
 
 static inline uint64_t load_eight_aligned_bytes(uint8_t *mark) {
-  ASSERT(((uintptr_t)mark & 7) == 0);
+  GC_ASSERT(((uintptr_t)mark & 7) == 0);
   uint8_t * __attribute__((aligned(8))) aligned_mark = mark;
   uint64_t word;
   memcpy(&word, aligned_mark, 8);
@@ -1073,7 +1032,7 @@ static void mark_space_trace_card(struct mark_space *space,
       size_t granule = granule_base + granule_offset;
       uintptr_t addr = first_addr_in_slab + granule * GRANULE_SIZE;
       struct gcobj *obj = (struct gcobj*)addr;
-      ASSERT(object_metadata_byte(obj) == &slab->metadata[granule]);
+      GC_ASSERT(object_metadata_byte(obj) == &slab->metadata[granule]);
       tracer_enqueue_root(&heap->tracer, obj);
     }
   }
@@ -1081,7 +1040,7 @@ static void mark_space_trace_card(struct mark_space *space,
 
 static void mark_space_trace_remembered_set(struct mark_space *space,
                                             struct heap *heap) {
-  ASSERT(!space->evacuating);
+  GC_ASSERT(!space->evacuating);
   for (size_t s = 0; s < space->nslabs; s++) {
     struct slab *slab = &space->slabs[s];
     uint8_t *remset = slab->remembered_set;
@@ -1116,10 +1075,10 @@ static void trace_generational_roots(struct heap *heap) {
   }
 }
 
-static void pause_mutator_for_collection(struct heap *heap) NEVER_INLINE;
+static void pause_mutator_for_collection(struct heap *heap) GC_NEVER_INLINE;
 static void pause_mutator_for_collection(struct heap *heap) {
-  ASSERT(mutators_are_stopping(heap));
-  ASSERT(heap->active_mutator_count);
+  GC_ASSERT(mutators_are_stopping(heap));
+  GC_ASSERT(heap->active_mutator_count);
   heap->active_mutator_count--;
   if (heap->active_mutator_count == 0)
     pthread_cond_signal(&heap->collector_cond);
@@ -1139,10 +1098,10 @@ static void pause_mutator_for_collection(struct heap *heap) {
   heap->active_mutator_count++;
 }
 
-static void pause_mutator_for_collection_with_lock(struct mutator *mut) NEVER_INLINE;
+static void pause_mutator_for_collection_with_lock(struct mutator *mut) GC_NEVER_INLINE;
 static void pause_mutator_for_collection_with_lock(struct mutator *mut) {
   struct heap *heap = mutator_heap(mut);
-  ASSERT(mutators_are_stopping(heap));
+  GC_ASSERT(mutators_are_stopping(heap));
   finish_sweeping_in_block(mut);
   if (mutator_should_mark_while_stopping(mut))
     // No need to collect results in mark buf; we can enqueue roots directly.
@@ -1152,10 +1111,10 @@ static void pause_mutator_for_collection_with_lock(struct mutator *mut) {
   pause_mutator_for_collection(heap);
 }
 
-static void pause_mutator_for_collection_without_lock(struct mutator *mut) NEVER_INLINE;
+static void pause_mutator_for_collection_without_lock(struct mutator *mut) GC_NEVER_INLINE;
 static void pause_mutator_for_collection_without_lock(struct mutator *mut) {
   struct heap *heap = mutator_heap(mut);
-  ASSERT(mutators_are_stopping(heap));
+  GC_ASSERT(mutators_are_stopping(heap));
   finish_sweeping(mut);
   if (mutator_should_mark_while_stopping(mut))
     mark_stopping_mutator_roots(mut);
@@ -1310,7 +1269,7 @@ static enum gc_kind determine_collection_kind(struct heap *heap) {
   } else {
     DEBUG("keeping on with minor GC\n");
     // Nursery has adequate space; keep trucking with minor GCs.
-    ASSERT(previous_gc_kind == GC_KIND_MINOR_IN_PLACE);
+    GC_ASSERT(previous_gc_kind == GC_KIND_MINOR_IN_PLACE);
     gc_kind = GC_KIND_MINOR_IN_PLACE;
   }
 
@@ -1391,7 +1350,7 @@ static void prepare_for_evacuation(struct heap *heap) {
   // they have been removed from the pool and have the UNAVAILABLE flag
   // set, or because they are on the empties or evacuation target
   // lists.  When evacuation starts, the empties list should be empty.
-  ASSERT(empties == target_blocks);
+  GC_ASSERT(empties == target_blocks);
 
   // Now select a number of blocks that is likely to fill the space in
   // the target blocks.  Prefer candidate blocks with fewer survivors
@@ -1560,7 +1519,7 @@ static uintptr_t mark_space_next_block_to_sweep(struct mark_space *space) {
 }
 
 static void finish_block(struct mutator *mut) {
-  ASSERT(mut->block);
+  GC_ASSERT(mut->block);
   struct block_summary *block = block_summary_for_addr(mut->block);
   struct mark_space *space = heap_mark_space(mutator_heap(mut));
   atomic_fetch_add(&space->granules_freed_by_last_collection,
@@ -1572,7 +1531,7 @@ static void finish_block(struct mutator *mut) {
   // trying to allocate into it for a minor GC.  Sweep it next time to
   // clear any garbage allocated in this cycle and mark it as
   // "venerable" (i.e., old).
-  ASSERT(!block_summary_has_flag(block, BLOCK_VENERABLE));
+  GC_ASSERT(!block_summary_has_flag(block, BLOCK_VENERABLE));
   if (!block_summary_has_flag(block, BLOCK_VENERABLE_AFTER_SWEEP) &&
       block->free_granules < GRANULES_PER_BLOCK * space->venerable_threshold)
     block_summary_set_flag(block, BLOCK_VENERABLE_AFTER_SWEEP);
@@ -1590,7 +1549,7 @@ static size_t next_hole_in_block(struct mutator *mut) {
   uintptr_t sweep_mask = heap_mark_space(mutator_heap(mut))->sweep_mask;
 
   while (sweep != limit) {
-    ASSERT((sweep & (GRANULE_SIZE - 1)) == 0);
+    GC_ASSERT((sweep & (GRANULE_SIZE - 1)) == 0);
     uint8_t* metadata = object_metadata_byte((struct gcobj*)sweep);
     size_t limit_granules = (limit - sweep) >> GRANULE_SIZE_LOG_2;
 
@@ -1613,12 +1572,12 @@ static size_t next_hole_in_block(struct mutator *mut) {
     }
 
     size_t free_granules = next_mark(metadata, limit_granules, sweep_mask);
-    ASSERT(free_granules);
-    ASSERT(free_granules <= limit_granules);
+    GC_ASSERT(free_granules);
+    GC_ASSERT(free_granules <= limit_granules);
 
     struct block_summary *summary = block_summary_for_addr(sweep);
     summary->hole_count++;
-    ASSERT(free_granules <= GRANULES_PER_BLOCK - summary->free_granules);
+    GC_ASSERT(free_granules <= GRANULES_PER_BLOCK - summary->free_granules);
     summary->free_granules += free_granules;
 
     size_t free_bytes = free_granules * GRANULE_SIZE;
@@ -1645,7 +1604,7 @@ static void finish_hole(struct mutator *mut) {
 }
 
 static int maybe_release_swept_empty_block(struct mutator *mut) {
-  ASSERT(mut->block);
+  GC_ASSERT(mut->block);
   struct mark_space *space = heap_mark_space(mutator_heap(mut));
   uintptr_t block = mut->block;
   if (atomic_load_explicit(&space->pending_unavailable_bytes,
@@ -1696,7 +1655,7 @@ static size_t next_hole(struct mutator *mut) {
       mut->alloc = mut->sweep = mut->block = 0;
       empties_countdown--;
     }
-    ASSERT(mut->block == 0);
+    GC_ASSERT(mut->block == 0);
     while (1) {
       uintptr_t block = mark_space_next_block_to_sweep(space);
       if (block) {
@@ -1797,8 +1756,7 @@ static void trigger_collection(struct mutator *mut) {
   heap_unlock(heap);
 }
 
-static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
-                            size_t granules) {
+static void* allocate_large(struct mutator *mut, size_t granules) {
   struct heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);
 
@@ -1821,14 +1779,11 @@ static void* allocate_large(struct mutator *mut, enum alloc_kind kind,
     abort();
   }
 
-  *(uintptr_t*)ret = tag_live(kind);
   return ret;
 }
 
-static void* allocate_small_slow(struct mutator *mut, enum alloc_kind kind,
-                                 size_t granules) NEVER_INLINE;
-static void* allocate_small_slow(struct mutator *mut, enum alloc_kind kind,
-                                 size_t granules) {
+static void* allocate_small_slow(struct mutator *mut, size_t granules) GC_NEVER_INLINE;
+static void* allocate_small_slow(struct mutator *mut, size_t granules) {
   while (1) {
     size_t hole = next_hole(mut);
     if (hole >= granules) {
@@ -1843,9 +1798,8 @@ static void* allocate_small_slow(struct mutator *mut, enum alloc_kind kind,
   return ret;
 }
 
-static inline void* allocate_small(struct mutator *mut, enum alloc_kind kind,
-                                   size_t granules) {
-  ASSERT(granules > 0); // allocating 0 granules would be silly
+static inline void* allocate_small(struct mutator *mut, size_t granules) {
+  GC_ASSERT(granules > 0); // allocating 0 granules would be silly
   uintptr_t alloc = mut->alloc;
   uintptr_t sweep = mut->sweep;
   uintptr_t new_alloc = alloc + granules * GRANULE_SIZE;
@@ -1854,9 +1808,8 @@ static inline void* allocate_small(struct mutator *mut, enum alloc_kind kind,
     mut->alloc = new_alloc;
     obj = (struct gcobj *)alloc;
   } else {
-    obj = allocate_small_slow(mut, kind, granules);
+    obj = allocate_small_slow(mut, granules);
   }
-  obj->tag = tag_live(kind);
   uint8_t *metadata = object_metadata_byte(obj);
   if (granules == 1) {
     metadata[0] = METADATA_BYTE_YOUNG | METADATA_BYTE_END;
@@ -1869,24 +1822,20 @@ static inline void* allocate_small(struct mutator *mut, enum alloc_kind kind,
   return obj;
 }
 
-static inline void* allocate_medium(struct mutator *mut, enum alloc_kind kind,
-                                    size_t granules) {
-  return allocate_small(mut, kind, granules);
+static inline void* allocate_medium(struct mutator *mut, size_t granules) {
+  return allocate_small(mut, granules);
 }
 
-static inline void* allocate(struct mutator *mut, enum alloc_kind kind,
-                             size_t size) {
+static inline void* gc_allocate(struct mutator *mut, size_t size) {
   size_t granules = size_to_granules(size);
   if (granules <= MEDIUM_OBJECT_GRANULE_THRESHOLD)
-    return allocate_small(mut, kind, granules);
+    return allocate_small(mut, granules);
   if (granules <= LARGE_OBJECT_GRANULE_THRESHOLD)
-    return allocate_medium(mut, kind, granules);
-  return allocate_large(mut, kind, granules);
+    return allocate_medium(mut, granules);
+  return allocate_large(mut, granules);
 }
-static inline void* allocate_pointerless(struct mutator *mut,
-                                         enum alloc_kind kind,
-                                         size_t size) {
-  return allocate(mut, kind, size);
+static inline void* gc_allocate_pointerless(struct mutator *mut, size_t size) {
+  return gc_allocate(mut, size);
 }
 
 static inline void mark_space_write_barrier(void *obj) {
@@ -1940,8 +1889,8 @@ struct options {
 };
 
 static size_t parse_size_t(double value) {
-  ASSERT(value >= 0);
-  ASSERT(value <= (size_t) -1);
+  GC_ASSERT(value >= 0);
+  GC_ASSERT(value <= (size_t) -1);
   return value;
 }
 
@@ -2093,7 +2042,7 @@ static void gc_finish_for_thread(struct mutator *mut) {
 }
 
 static void deactivate_mutator(struct heap *heap, struct mutator *mut) {
-  ASSERT(mut->next == NULL);
+  GC_ASSERT(mut->next == NULL);
   heap_lock(heap);
   mut->next = heap->deactivated_mutators;
   heap->deactivated_mutators = mut;

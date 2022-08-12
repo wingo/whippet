@@ -8,7 +8,7 @@
 
 #include "assert.h"
 #include "debug.h"
-#include "inline.h"
+#include "gc-inline.h"
 #include "spin.h"
 
 // The Chase-Lev work-stealing deque, as initially described in "Dynamic
@@ -448,10 +448,10 @@ static void tracer_release(struct heap *heap) {
 }
 
 struct gcobj;
-static inline void tracer_visit(struct gc_edge edge, void *trace_data) ALWAYS_INLINE;
-static inline void trace_one(struct gcobj *obj, void *trace_data) ALWAYS_INLINE;
+static inline void tracer_visit(struct gc_edge edge, void *trace_data) GC_ALWAYS_INLINE;
+static inline void trace_one(struct gcobj *obj, void *trace_data) GC_ALWAYS_INLINE;
 static inline int trace_edge(struct heap *heap,
-                             struct gc_edge edge) ALWAYS_INLINE;
+                             struct gc_edge edge) GC_ALWAYS_INLINE;
 
 static inline void
 tracer_share(struct local_tracer *trace) {

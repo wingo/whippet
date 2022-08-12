@@ -52,7 +52,7 @@ trace_queue_put(struct trace_queue *q, size_t idx, struct gcobj *x) {
   q->buf[idx & (q->size - 1)] = x;
 }
 
-static int trace_queue_grow(struct trace_queue *q) NEVER_INLINE;
+static int trace_queue_grow(struct trace_queue *q) GC_NEVER_INLINE;
 
 static int
 trace_queue_grow(struct trace_queue *q) {
@@ -138,10 +138,10 @@ static void tracer_release(struct heap *heap) {
 }
 
 struct gcobj;
-static inline void tracer_visit(struct gc_edge edge, void *trace_data) ALWAYS_INLINE;
-static inline void trace_one(struct gcobj *obj, void *trace_data) ALWAYS_INLINE;
+static inline void tracer_visit(struct gc_edge edge, void *trace_data) GC_ALWAYS_INLINE;
+static inline void trace_one(struct gcobj *obj, void *trace_data) GC_ALWAYS_INLINE;
 static inline int trace_edge(struct heap *heap,
-                             struct gc_edge edge) ALWAYS_INLINE;
+                             struct gc_edge edge) GC_ALWAYS_INLINE;
 
 static inline void
 tracer_enqueue_root(struct tracer *tracer, struct gcobj *obj) {

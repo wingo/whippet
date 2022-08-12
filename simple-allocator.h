@@ -1,0 +1,21 @@
+#ifndef SIMPLE_ALLOCATOR_H
+#define SIMPLE_ALLOCATOR_H
+
+#include "simple-tagging-scheme.h"
+#include "gc-api.h"
+
+static inline void*
+gc_allocate_with_kind(struct mutator *mut, enum alloc_kind kind, size_t bytes) {
+  void *obj = gc_allocate(mut, bytes);
+  *tag_word(obj) = tag_live(kind);
+  return obj;
+}
+
+static inline void*
+gc_allocate_pointerless_with_kind(struct mutator *mut, enum alloc_kind kind, size_t bytes) {
+  void *obj = gc_allocate_pointerless(mut, bytes);
+  *tag_word(obj) = tag_live(kind);
+  return obj;
+}
+
+#endif // SIMPLE_ALLOCATOR_H
