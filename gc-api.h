@@ -3,6 +3,7 @@
 
 #include "gc-config.h"
 #include "gc-assert.h"
+#include "gc-inline.h"
 #include "gc-ref.h"
 #include "gc-edge.h"
 
