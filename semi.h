@@ -29,6 +29,43 @@ struct mutator {
   struct handle *roots;
 };
 
+static const uintptr_t ALIGNMENT = 8;
+static const size_t LARGE_OBJECT_THRESHOLD = 8192;
+
+static inline void clear_memory(uintptr_t addr, size_t size) {
+  memset((char*)addr, 0, size);
+}
+
+static inline enum gc_allocator_kind gc_allocator_kind(void) {
+  return GC_ALLOCATOR_INLINE_BUMP_POINTER;
+}
+static inline size_t gc_allocator_small_granule_size(void) {
+  return ALIGNMENT;
+}
+static inline size_t gc_allocator_large_threshold(void) {
+  return LARGE_OBJECT_THRESHOLD;
+}
+
+static inline size_t gc_allocator_allocation_pointer_offset(void) {
+  return offsetof(struct semi_space, hp);
+}
+static inline size_t gc_allocator_allocation_limit_offset(void) {
+  return offsetof(struct semi_space, limit);
+}
+
+static inline size_t gc_allocator_freelist_offset(size_t size) {
+  abort();
+}
+
+static inline void gc_allocator_inline_success(struct mutator *mut,
+                                               struct gc_ref obj,
+                                               uintptr_t aligned_size) {
+  // FIXME: Allow allocator to avoid clearing memory?
+  clear_memory(gc_ref_value(obj), aligned_size);
+}
+static inline void gc_allocator_inline_failure(struct mutator *mut,
+                                               uintptr_t aligned_size) {}
+
 static inline struct heap* mutator_heap(struct mutator *mut) {
   return &mut->heap;
 }
@@ -42,14 +79,8 @@ static inline struct semi_space* mutator_semi_space(struct mutator *mut) {
   return heap_semi_space(mutator_heap(mut));
 }
 
-static const uintptr_t ALIGNMENT = 8;
-
 static uintptr_t align_up(uintptr_t addr, size_t align) {
   return (addr + align - 1) & ~(align-1);
-}
-
-static inline void clear_memory(uintptr_t addr, size_t size) {
-  memset((char*)addr, 0, size);
 }
 
 static void collect(struct mutator *mut) GC_NEVER_INLINE;
@@ -171,8 +202,7 @@ static void collect_for_alloc(struct mutator *mut, size_t bytes) {
   }
 }
 
-static const size_t LARGE_OBJECT_THRESHOLD = 8192;
-static void* allocate_large(struct mutator *mut, size_t size) {
+static void* gc_allocate_large(struct mutator *mut, size_t size) {
   struct heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);
   struct semi_space *semi_space = heap_semi_space(heap);
@@ -198,10 +228,7 @@ static void* allocate_large(struct mutator *mut, size_t size) {
   return ret;
 }
 
-static inline void* gc_allocate(struct mutator *mut, size_t size) {
-  if (size >= LARGE_OBJECT_THRESHOLD)
-    return allocate_large(mut, size);
-
+static void* gc_allocate_small(struct mutator *mut, size_t size) {
   struct semi_space *space = mutator_semi_space(mut);
   while (1) {
     uintptr_t addr = space->hp;

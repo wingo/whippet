@@ -45,6 +45,34 @@ static inline size_t gc_inline_freelist_object_size(size_t idx) {
   return (idx + 1U) * GC_INLINE_GRANULE_BYTES;
 }
 
+static inline enum gc_allocator_kind gc_allocator_kind(void) {
+  return GC_ALLOCATOR_INLINE_FREELIST;
+}
+static inline size_t gc_allocator_small_granule_size(void) {
+  return GC_INLINE_GRANULE_BYTES;
+}
+static inline size_t gc_allocator_large_threshold(void) {
+  return 256;
+}
+
+static inline size_t gc_allocator_allocation_pointer_offset(void) {
+  abort();
+}
+static inline size_t gc_allocator_allocation_limit_offset(void) {
+  abort();
+}
+
+static inline size_t gc_allocator_freelist_offset(size_t size) {
+  GC_ASSERT(size);
+  return sizeof(void*) * gc_inline_bytes_to_freelist_index(size);
+}
+
+static inline void gc_allocator_inline_success(struct mutator *mut,
+                                               struct gc_ref obj,
+                                               uintptr_t aligned_size) {}
+static inline void gc_allocator_inline_failure(struct mutator *mut,
+                                               uintptr_t aligned_size) {}
+
 // The values of these must match the internal POINTERLESS and NORMAL
 // definitions in libgc, for which unfortunately there are no external
 // definitions.  Alack.
@@ -80,12 +108,14 @@ allocate_small(void **freelist, size_t idx, enum gc_inline_kind kind) {
   return head;
 }
 
-static inline void* gc_allocate(struct mutator *mut, size_t size) {
+static void* gc_allocate_large(struct mutator *mut, size_t size) {
+  return GC_malloc(size);
+}
+
+static void* gc_allocate_small(struct mutator *mut, size_t size) {
+  GC_ASSERT(size != 0);
+  GC_ASSERT(size <= gc_allocator_large_threshold());
   size_t idx = gc_inline_bytes_to_freelist_index(size);
-
-  if (UNLIKELY(idx >= GC_INLINE_FREELIST_COUNT))
-    return GC_malloc(size);
-
   return allocate_small(&mut->freelists[idx], idx, GC_INLINE_KIND_NORMAL);
 }
 

@@ -369,6 +369,44 @@ static inline struct heap* mutator_heap(struct mutator *mutator) {
   return mutator->heap;
 }
 
+static inline enum gc_allocator_kind gc_allocator_kind(void) {
+  return GC_ALLOCATOR_INLINE_BUMP_POINTER;
+}
+static inline size_t gc_allocator_small_granule_size(void) {
+  return GRANULE_SIZE;
+}
+static inline size_t gc_allocator_large_threshold(void) {
+  return LARGE_OBJECT_THRESHOLD;
+}
+
+static inline size_t gc_allocator_allocation_pointer_offset(void) {
+  return offsetof(struct mutator, alloc);
+}
+static inline size_t gc_allocator_allocation_limit_offset(void) {
+  return offsetof(struct mutator, sweep);
+}
+
+static inline size_t gc_allocator_freelist_offset(size_t size) {
+  abort();
+}
+
+static inline void gc_allocator_inline_success(struct mutator *mut,
+                                               struct gc_ref obj,
+                                               uintptr_t aligned_size) {
+  uint8_t *metadata = object_metadata_byte(gc_ref_heap_object(obj));
+  size_t granules = aligned_size >> GRANULE_SIZE_LOG_2;
+  if (granules == 1) {
+    metadata[0] = METADATA_BYTE_YOUNG | METADATA_BYTE_END;
+  } else {
+    metadata[0] = METADATA_BYTE_YOUNG;
+    if (granules > 2)
+      memset(metadata + 1, 0, granules - 2);
+    metadata[granules - 1] = METADATA_BYTE_END;
+  }
+}
+static inline void gc_allocator_inline_failure(struct mutator *mut,
+                                               uintptr_t aligned_size) {}
+
 static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
@@ -1756,11 +1794,10 @@ static void trigger_collection(struct mutator *mut) {
   heap_unlock(heap);
 }
 
-static void* allocate_large(struct mutator *mut, size_t granules) {
+static void* gc_allocate_large(struct mutator *mut, size_t size) {
   struct heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);
 
-  size_t size = granules * GRANULE_SIZE;
   size_t npages = large_object_space_npages(space, size);
 
   mark_space_request_release_memory(heap_mark_space(heap),
@@ -1782,58 +1819,35 @@ static void* allocate_large(struct mutator *mut, size_t granules) {
   return ret;
 }
 
-static void* allocate_small_slow(struct mutator *mut, size_t granules) GC_NEVER_INLINE;
-static void* allocate_small_slow(struct mutator *mut, size_t granules) {
-  while (1) {
-    size_t hole = next_hole(mut);
-    if (hole >= granules) {
-      clear_memory(mut->alloc, hole * GRANULE_SIZE);
-      break;
-    }
-    if (!hole)
-      trigger_collection(mut);
-  }
-  struct gcobj* ret = (struct gcobj*)mut->alloc;
-  mut->alloc += granules * GRANULE_SIZE;
-  return ret;
-}
-
-static inline void* allocate_small(struct mutator *mut, size_t granules) {
-  GC_ASSERT(granules > 0); // allocating 0 granules would be silly
+static void* gc_allocate_small(struct mutator *mut, size_t size) {
+  GC_ASSERT(size > 0); // allocating 0 bytes would be silly
+  GC_ASSERT(size <= gc_allocator_large_threshold());
+  size = align_up(size, GRANULE_SIZE);
   uintptr_t alloc = mut->alloc;
   uintptr_t sweep = mut->sweep;
-  uintptr_t new_alloc = alloc + granules * GRANULE_SIZE;
+  uintptr_t new_alloc = alloc + size;
   struct gcobj *obj;
   if (new_alloc <= sweep) {
     mut->alloc = new_alloc;
     obj = (struct gcobj *)alloc;
   } else {
-    obj = allocate_small_slow(mut, granules);
+    size_t granules = size >> GRANULE_SIZE_LOG_2;
+    while (1) {
+      size_t hole = next_hole(mut);
+      if (hole >= granules) {
+        clear_memory(mut->alloc, hole * GRANULE_SIZE);
+        break;
+      }
+      if (!hole)
+        trigger_collection(mut);
+    }
+    obj = (struct gcobj*)mut->alloc;
+    mut->alloc += size;
   }
-  uint8_t *metadata = object_metadata_byte(obj);
-  if (granules == 1) {
-    metadata[0] = METADATA_BYTE_YOUNG | METADATA_BYTE_END;
-  } else {
-    metadata[0] = METADATA_BYTE_YOUNG;
-    if (granules > 2)
-      memset(metadata + 1, 0, granules - 2);
-    metadata[granules - 1] = METADATA_BYTE_END;
-  }
+  gc_allocator_inline_success(mut, gc_ref_from_heap_object(obj), size);
   return obj;
 }
 
-static inline void* allocate_medium(struct mutator *mut, size_t granules) {
-  return allocate_small(mut, granules);
-}
-
-static inline void* gc_allocate(struct mutator *mut, size_t size) {
-  size_t granules = size_to_granules(size);
-  if (granules <= MEDIUM_OBJECT_GRANULE_THRESHOLD)
-    return allocate_small(mut, granules);
-  if (granules <= LARGE_OBJECT_GRANULE_THRESHOLD)
-    return allocate_medium(mut, granules);
-  return allocate_large(mut, granules);
-}
 static inline void* gc_allocate_pointerless(struct mutator *mut, size_t size) {
   return gc_allocate(mut, size);
 }
