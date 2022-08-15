@@ -302,8 +302,6 @@ static int parse_options(int argc, struct gc_option argv[],
   return 1;
 }
 
-#define GC_ASSERT_EQ(a, b) GC_ASSERT((a) == (b))
-
 static int gc_init(int argc, struct gc_option argv[],
                    struct heap **heap, struct mutator **mut) {
   GC_ASSERT_EQ(gc_allocator_allocation_pointer_offset(),

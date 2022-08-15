@@ -12,4 +12,6 @@
 #define GC_ASSERT(x) do { } while (0)
 #endif
 
+#define GC_ASSERT_EQ(a, b) GC_ASSERT((a) == (b))
+
 #endif // GC_ASSERT_H

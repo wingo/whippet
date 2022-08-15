@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "bdw-inline.h"
 #include "conservative-roots.h"
 
 // When pthreads are used, let `libgc' know about it and redirect
@@ -44,34 +45,6 @@ static inline size_t gc_inline_bytes_to_freelist_index(size_t bytes) {
 static inline size_t gc_inline_freelist_object_size(size_t idx) {
   return (idx + 1U) * GC_INLINE_GRANULE_BYTES;
 }
-
-static inline enum gc_allocator_kind gc_allocator_kind(void) {
-  return GC_ALLOCATOR_INLINE_FREELIST;
-}
-static inline size_t gc_allocator_small_granule_size(void) {
-  return GC_INLINE_GRANULE_BYTES;
-}
-static inline size_t gc_allocator_large_threshold(void) {
-  return 256;
-}
-
-static inline size_t gc_allocator_allocation_pointer_offset(void) {
-  abort();
-}
-static inline size_t gc_allocator_allocation_limit_offset(void) {
-  abort();
-}
-
-static inline size_t gc_allocator_freelist_offset(size_t size) {
-  GC_ASSERT(size);
-  return sizeof(void*) * gc_inline_bytes_to_freelist_index(size);
-}
-
-static inline void gc_allocator_inline_success(struct mutator *mut,
-                                               struct gc_ref obj,
-                                               uintptr_t aligned_size) {}
-static inline void gc_allocator_inline_failure(struct mutator *mut,
-                                               uintptr_t aligned_size) {}
 
 // The values of these must match the internal POINTERLESS and NORMAL
 // definitions in libgc, for which unfortunately there are no external
@@ -129,30 +102,6 @@ static inline void* gc_allocate_pointerless(struct mutator *mut,
 
 static inline void collect(struct mutator *mut) {
   GC_gcollect();
-}
-
-static inline enum gc_write_barrier_kind gc_small_write_barrier_kind(void) {
-  return GC_WRITE_BARRIER_NONE;
-}
-static inline size_t gc_small_write_barrier_card_table_alignment(void) {
-  abort();
-}
-static inline size_t gc_small_write_barrier_card_size(void) {
-  abort();
-}
-
-static inline size_t gc_allocator_alloc_table_alignment(void) {
-  return 0;
-}
-static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) {
-  abort();
-}
-static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
-  abort();
-}
-
-static inline int gc_allocator_needs_clear(void) {
-  return 0;
 }
 
 static inline struct mutator *add_mutator(struct heap *heap) {
@@ -230,6 +179,10 @@ static int parse_options(int argc, struct gc_option argv[],
 
 static int gc_init(int argc, struct gc_option argv[],
                    struct heap **heap, struct mutator **mutator) {
+  GC_ASSERT_EQ(gc_allocator_small_granule_size(), GC_INLINE_GRANULE_BYTES);
+  GC_ASSERT_EQ(gc_allocator_large_threshold(),
+               GC_INLINE_FREELIST_COUNT * GC_INLINE_GRANULE_BYTES);
+
   struct options options = { 0, };
   if (!parse_options(argc, argv, &options))
     return 0;
