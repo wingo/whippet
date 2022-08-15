@@ -2097,10 +2097,7 @@ static void* gc_call_without_gc(struct mutator *mut,
   return ret;
 }
 
-static inline void print_start_gc_stats(struct heap *heap) {
-}
-
-static inline void print_end_gc_stats(struct heap *heap) {
+static void gc_print_stats(struct heap *heap) {
   printf("Completed %ld collections (%ld major)\n",
          heap->count, heap->count - heap->minor_count);
   printf("Heap size with overhead is %zd (%zu slabs)\n",

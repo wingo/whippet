@@ -149,8 +149,6 @@ int main(int argc, char *argv[]) {
 
   PUSH_HANDLE(mut, quad);
 
-  print_start_gc_stats(heap);
-
   printf("Making quad tree of depth %zu (%zu nodes).  Total size %.3fGB.\n",
          depth, nquads, (nquads * sizeof(Quad)) / 1e9);
   unsigned long start = current_time();
@@ -176,7 +174,7 @@ int main(int argc, char *argv[]) {
   print_elapsed("allocation loop", garbage_start);
   print_elapsed("quads test", gc_start);
 
-  print_end_gc_stats(heap);
+  gc_print_stats(heap);
 
   POP_HANDLE(mut);
   return 0;

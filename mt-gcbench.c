@@ -430,7 +430,6 @@ int main(int argc, char *argv[]) {
 
   printf("Garbage Collector Test\n");
   printf(" Live storage will peak at %zd bytes.\n\n", heap_max_live);
-  print_start_gc_stats(heap);
 
   unsigned long start = current_time();
         
@@ -456,5 +455,5 @@ int main(int argc, char *argv[]) {
   }
   
   printf("Completed in %.3f msec\n", elapsed_millis(start));
-  print_end_gc_stats(heap);
+  gc_print_stats(heap);
 }

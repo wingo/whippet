@@ -43,6 +43,7 @@ GC_API_ struct mutator* gc_init_for_thread(uintptr_t *stack_base,
 GC_API_ void gc_finish_for_thread(struct mutator *mut);
 GC_API_ void* gc_call_without_gc(struct mutator *mut, void* (*f)(void*),
                                  void *data) GC_NEVER_INLINE;
+GC_API_ void gc_print_stats(struct heap *heap);
 
 enum gc_allocator_kind {
   GC_ALLOCATOR_INLINE_BUMP_POINTER,

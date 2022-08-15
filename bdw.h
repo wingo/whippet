@@ -278,9 +278,7 @@ static void* gc_call_without_gc(struct mutator *mut,
   return GC_do_blocking(f, data);
 }
 
-static inline void print_start_gc_stats(struct heap *heap) {
-}
-static inline void print_end_gc_stats(struct heap *heap) {
+static void gc_print_stats(struct heap *heap) {
   printf("Completed %ld collections\n", (long)GC_get_gc_no());
   printf("Heap size is %ld\n", (long)GC_get_heap_size());
 }

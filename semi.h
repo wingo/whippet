@@ -5,6 +5,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "semi-inline.h"
 #include "large-object-space.h"
 #include "precise-roots.h"
 
@@ -29,46 +30,9 @@ struct mutator {
   struct handle *roots;
 };
 
-static const uintptr_t ALIGNMENT = 8;
-static const size_t LARGE_OBJECT_THRESHOLD = 8192;
 
 static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
-}
-
-static inline enum gc_allocator_kind gc_allocator_kind(void) {
-  return GC_ALLOCATOR_INLINE_BUMP_POINTER;
-}
-static inline size_t gc_allocator_small_granule_size(void) {
-  return ALIGNMENT;
-}
-static inline size_t gc_allocator_large_threshold(void) {
-  return LARGE_OBJECT_THRESHOLD;
-}
-
-static inline size_t gc_allocator_allocation_pointer_offset(void) {
-  return offsetof(struct semi_space, hp);
-}
-static inline size_t gc_allocator_allocation_limit_offset(void) {
-  return offsetof(struct semi_space, limit);
-}
-
-static inline size_t gc_allocator_freelist_offset(size_t size) {
-  abort();
-}
-
-static inline int gc_allocator_needs_clear(void) {
-  return 1;
-}
-
-static inline size_t gc_allocator_alloc_table_alignment(void) {
-  return 0;
-}
-static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) {
-  abort();
-}
-static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
-  abort();
 }
 
 static inline struct heap* mutator_heap(struct mutator *mut) {
@@ -135,14 +99,14 @@ static void* copy(struct semi_space *space, void *obj) {
   void *new_obj = (void*)space->hp;
   memcpy(new_obj, obj, size);
   *(uintptr_t*) obj = space->hp;
-  space->hp += align_up (size, ALIGNMENT);
+  space->hp += align_up (size, GC_ALIGNMENT);
   return new_obj;
 }
 
 static uintptr_t scan(struct heap *heap, uintptr_t grey) {
   size_t size;
   gc_trace_object((void*)grey, visit, heap, &size);
-  return grey + align_up(size, ALIGNMENT);
+  return grey + align_up(size, GC_ALIGNMENT);
 }
 
 static void* forward(struct semi_space *space, void *obj) {
@@ -237,7 +201,7 @@ static void* gc_allocate_small(struct mutator *mut, size_t size) {
   struct semi_space *space = mutator_semi_space(mut);
   while (1) {
     uintptr_t addr = space->hp;
-    uintptr_t new_hp = align_up (addr + size, ALIGNMENT);
+    uintptr_t new_hp = align_up (addr + size, GC_ALIGNMENT);
     if (space->limit < new_hp) {
       collect_for_alloc(mut, size);
       continue;
@@ -250,16 +214,6 @@ static void* gc_allocate_small(struct mutator *mut, size_t size) {
 }
 static inline void* gc_allocate_pointerless(struct mutator *mut, size_t size) {
   return gc_allocate(mut, size);
-}
-
-static inline enum gc_write_barrier_kind gc_small_write_barrier_kind(void) {
-  return GC_WRITE_BARRIER_NONE;
-}
-static inline size_t gc_small_write_barrier_card_table_alignment(void) {
-  abort();
-}
-static inline size_t gc_small_write_barrier_card_size(void) {
-  abort();
 }
 
 static int initialize_semi_space(struct semi_space *space, size_t size) {
@@ -348,8 +302,15 @@ static int parse_options(int argc, struct gc_option argv[],
   return 1;
 }
 
+#define GC_ASSERT_EQ(a, b) GC_ASSERT((a) == (b))
+
 static int gc_init(int argc, struct gc_option argv[],
                    struct heap **heap, struct mutator **mut) {
+  GC_ASSERT_EQ(gc_allocator_allocation_pointer_offset(),
+               offsetof(struct semi_space, hp));
+  GC_ASSERT_EQ(gc_allocator_allocation_limit_offset(),
+               offsetof(struct semi_space, limit));
+
   struct options options = { 0, };
   if (!parse_options(argc, argv, &options))
     return 0;
@@ -384,10 +345,7 @@ static void* gc_call_without_gc(struct mutator *mut, void* (*f)(void*),
   return f(data);
 }
 
-static inline void print_start_gc_stats(struct heap *heap) {
-}
-
-static inline void print_end_gc_stats(struct heap *heap) {
+static void gc_print_stats(struct heap *heap) {
   struct semi_space *space = heap_semi_space(heap);
   printf("Completed %ld collections\n", space->count);
   printf("Heap size is %zd\n", space->size);
