@@ -1852,24 +1852,32 @@ static inline void* gc_allocate_pointerless(struct mutator *mut, size_t size) {
   return gc_allocate(mut, size);
 }
 
-static inline void mark_space_write_barrier(void *obj) {
-  // Unconditionally mark the card the object is in.  Precondition: obj
-  // is in the mark space (is not a large object).
-  atomic_store_explicit(object_remset_byte(obj), 1, memory_order_relaxed);
+static inline enum gc_write_barrier_kind gc_small_write_barrier_kind(void) {
+  if (GC_GENERATIONAL)
+    return GC_WRITE_BARRIER_CARD;
+  return GC_WRITE_BARRIER_NONE;
+}
+static inline size_t gc_small_write_barrier_card_table_alignment(void) {
+  GC_ASSERT(GC_GENERATIONAL);
+  return SLAB_SIZE;
+}
+static inline size_t gc_small_write_barrier_card_size(void) {
+  GC_ASSERT(GC_GENERATIONAL);
+  return GRANULES_PER_REMSET_BYTE * GRANULE_SIZE;
 }
 
-// init_field is an optimization for the case in which there is no
-// intervening allocation or safepoint between allocating an object and
-// setting the value of a field in the object.  For the purposes of
-// generational collection, we can omit the barrier in that case,
-// because we know the source object is in the nursery.  It is always
-// correct to replace it with set_field.
-static inline void init_field(void *obj, void **addr, void *val) {
-  *addr = val;
+static inline size_t gc_allocator_alloc_table_alignment(void) {
+  return SLAB_SIZE;
 }
-static inline void set_field(void *obj, void **addr, void *val) {
-  if (GC_GENERATIONAL) mark_space_write_barrier(obj);
-  *addr = val;
+static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) {
+  return METADATA_BYTE_YOUNG;
+}
+static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
+  return METADATA_BYTE_END;
+}
+
+static inline int gc_allocator_needs_clear(void) {
+  return 0;
 }
 
 #define FOR_EACH_GC_OPTION(M) \

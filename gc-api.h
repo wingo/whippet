@@ -7,7 +7,9 @@
 #include "gc-ref.h"
 #include "gc-edge.h"
 
+#include <stdatomic.h>
 #include <stdint.h>
+#include <string.h>
 
 // FIXME: prefix with gc_
 struct heap;
@@ -42,12 +44,6 @@ GC_API_ void gc_finish_for_thread(struct mutator *mut);
 GC_API_ void* gc_call_without_gc(struct mutator *mut, void* (*f)(void*),
                                  void *data) GC_NEVER_INLINE;
 
-GC_API_ void* gc_allocate_small(struct mutator *mut, size_t bytes) GC_NEVER_INLINE;
-GC_API_ void* gc_allocate_large(struct mutator *mut, size_t bytes) GC_NEVER_INLINE;
-static inline void* gc_allocate(struct mutator *mut, size_t bytes) GC_ALWAYS_INLINE;
-// FIXME: remove :P
-static inline void* gc_allocate_pointerless(struct mutator *mut, size_t bytes);
-
 enum gc_allocator_kind {
   GC_ALLOCATOR_INLINE_BUMP_POINTER,
   GC_ALLOCATOR_INLINE_FREELIST,
@@ -65,11 +61,54 @@ static inline size_t gc_allocator_allocation_limit_offset(void) GC_ALWAYS_INLINE
 
 static inline size_t gc_allocator_freelist_offset(size_t size) GC_ALWAYS_INLINE;
 
-static inline void gc_allocator_inline_success(struct mutator *mut,
-                                               struct gc_ref obj,
-                                               uintptr_t aligned_size);
-static inline void gc_allocator_inline_failure(struct mutator *mut,
-                                               uintptr_t aligned_size);
+static inline size_t gc_allocator_alloc_table_alignment(void) GC_ALWAYS_INLINE;
+static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) GC_ALWAYS_INLINE;
+static inline uint8_t gc_allocator_alloc_table_end_pattern(void) GC_ALWAYS_INLINE;
+
+static inline int gc_allocator_needs_clear(void) GC_ALWAYS_INLINE;
+
+static inline void gc_clear_fresh_allocation(struct gc_ref obj,
+                                             size_t size) GC_ALWAYS_INLINE;
+static inline void gc_clear_fresh_allocation(struct gc_ref obj,
+                                             size_t size) {
+  if (!gc_allocator_needs_clear()) return;
+  memset(gc_ref_heap_object(obj), 0, size);
+}
+
+static inline void gc_update_alloc_table(struct mutator *mut,
+                                         struct gc_ref obj,
+                                         size_t size) GC_ALWAYS_INLINE;
+static inline void gc_update_alloc_table(struct mutator *mut,
+                                         struct gc_ref obj,
+                                         size_t size) {
+  size_t alignment = gc_allocator_alloc_table_alignment();
+  if (!alignment) return;
+
+  uintptr_t addr = gc_ref_value(obj);
+  uintptr_t base = addr & ~(alignment - 1);
+  size_t granule_size = gc_allocator_small_granule_size();
+  uintptr_t granule = (addr & (alignment - 1)) / granule_size;
+  uint8_t *alloc = (uint8_t*)(base + granule);
+
+  uint8_t begin_pattern = gc_allocator_alloc_table_begin_pattern();
+  uint8_t end_pattern = gc_allocator_alloc_table_end_pattern();
+  if (end_pattern) {
+    size_t granules = size / granule_size;
+    if (granules == 1) {
+      alloc[0] = begin_pattern | end_pattern;
+    } else {
+      alloc[0] = begin_pattern;
+      if (granules > 2)
+        memset(alloc + 1, 0, granules - 2);
+      alloc[granules - 1] = end_pattern;
+    }
+  } else {
+    alloc[0] = begin_pattern;
+  }
+}
+
+GC_API_ void* gc_allocate_small(struct mutator *mut, size_t bytes) GC_NEVER_INLINE;
+GC_API_ void* gc_allocate_large(struct mutator *mut, size_t bytes) GC_NEVER_INLINE;
 
 static inline void*
 gc_allocate_bump_pointer(struct mutator *mut, size_t size) GC_ALWAYS_INLINE;
@@ -89,14 +128,14 @@ static inline void* gc_allocate_bump_pointer(struct mutator *mut, size_t size) {
   uintptr_t limit = *limit_loc;
   uintptr_t new_hp = hp + size;
 
-  if (GC_UNLIKELY (new_hp > limit)) {
-    gc_allocator_inline_failure(mut, size);
+  if (GC_UNLIKELY (new_hp > limit))
     return gc_allocate_small(mut, size);
-  }
-
-  gc_allocator_inline_success(mut, gc_ref(hp), size);
 
   *hp_loc = new_hp;
+
+  gc_clear_fresh_allocation(gc_ref(hp), size);
+  gc_update_alloc_table(mut, gc_ref(hp), size);
+
   return (void*)hp;
 }
 
@@ -114,9 +153,14 @@ static inline void* gc_allocate_freelist(struct mutator *mut, size_t size) {
     return gc_allocate_small(mut, size);
 
   *freelist_loc = *(void**)head;
+
+  gc_clear_fresh_allocation(gc_ref_from_heap_object(head), size);
+  gc_update_alloc_table(mut, gc_ref_from_heap_object(head), size);
+
   return head;
 }
 
+static inline void* gc_allocate(struct mutator *mut, size_t bytes) GC_ALWAYS_INLINE;
 static inline void* gc_allocate(struct mutator *mut, size_t size) {
   GC_ASSERT(size != 0);
   if (size > gc_allocator_large_threshold())
@@ -129,6 +173,39 @@ static inline void* gc_allocate(struct mutator *mut, size_t size) {
     return gc_allocate_freelist(mut, size);
   case GC_ALLOCATOR_INLINE_NONE:
     return gc_allocate_small(mut, size);
+  default:
+    abort();
+  }
+}
+
+// FIXME: remove :P
+static inline void* gc_allocate_pointerless(struct mutator *mut, size_t bytes);
+
+enum gc_write_barrier_kind {
+  GC_WRITE_BARRIER_NONE,
+  GC_WRITE_BARRIER_CARD
+};
+
+static inline enum gc_write_barrier_kind gc_small_write_barrier_kind(void);
+static inline size_t gc_small_write_barrier_card_table_alignment(void);
+static inline size_t gc_small_write_barrier_card_size(void);
+
+static inline void gc_small_write_barrier(struct gc_ref obj, struct gc_edge edge,
+                                          struct gc_ref new_val) GC_ALWAYS_INLINE;
+static inline void gc_small_write_barrier(struct gc_ref obj, struct gc_edge edge,
+                                          struct gc_ref new_val) {
+  switch (gc_small_write_barrier_kind()) {
+  case GC_WRITE_BARRIER_NONE:
+    return;
+  case GC_WRITE_BARRIER_CARD: {
+    size_t card_table_alignment = gc_small_write_barrier_card_table_alignment();
+    size_t card_size = gc_small_write_barrier_card_size();
+    uintptr_t addr = gc_ref_value(obj);
+    uintptr_t base = addr & ~(card_table_alignment - 1);
+    uintptr_t card = (addr & (card_table_alignment - 1)) / card_size;
+    atomic_store_explicit((uint8_t*)(base + card), 1, memory_order_relaxed);
+    return;
+  }
   default:
     abort();
   }

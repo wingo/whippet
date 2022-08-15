@@ -51,7 +51,7 @@ static Quad* make_tree(struct mutator *mut, int depth) {
 
     Quad *result = allocate_quad(mut);
     for (size_t i = 0; i < 4; i++)
-      init_field(result, (void**)&result->kids[i], HANDLE_REF(kids[i]));
+      result->kids[i] = HANDLE_REF(kids[i]);
 
     for (size_t i = 0; i < 4; i++)
       POP_HANDLE(mut);

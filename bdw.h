@@ -131,11 +131,28 @@ static inline void collect(struct mutator *mut) {
   GC_gcollect();
 }
 
-static inline void init_field(void *obj, void **addr, void *val) {
-  *addr = val;
+static inline enum gc_write_barrier_kind gc_small_write_barrier_kind(void) {
+  return GC_WRITE_BARRIER_NONE;
 }
-static inline void set_field(void *obj, void **addr, void *val) {
-  *addr = val;
+static inline size_t gc_small_write_barrier_card_table_alignment(void) {
+  abort();
+}
+static inline size_t gc_small_write_barrier_card_size(void) {
+  abort();
+}
+
+static inline size_t gc_allocator_alloc_table_alignment(void) {
+  return 0;
+}
+static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) {
+  abort();
+}
+static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
+  abort();
+}
+
+static inline int gc_allocator_needs_clear(void) {
+  return 0;
 }
 
 static inline struct mutator *add_mutator(struct heap *heap) {

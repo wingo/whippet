@@ -195,6 +195,13 @@ static void allocate_garbage(struct thread *t) {
   }
 }
 
+static void set_field(Node *obj, Node **field, Node *val) {
+  gc_small_write_barrier(gc_ref_from_heap_object(obj),
+                         gc_edge(field),
+                         gc_ref_from_heap_object(val));
+  *field = val;
+}
+
 // Build tree top down, assigning to older objects.
 static void populate(struct thread *t, int depth, Node *node) {
   struct mutator *mut = t->mut;
@@ -210,8 +217,8 @@ static void populate(struct thread *t, int depth, Node *node) {
   NodeHandle r = { allocate_node(mut) };
   PUSH_HANDLE(mut, r);
 
-  set_field(HANDLE_REF(self), (void**)&HANDLE_REF(self)->left, HANDLE_REF(l));
-  set_field(HANDLE_REF(self), (void**)&HANDLE_REF(self)->right, HANDLE_REF(r));
+  set_field(HANDLE_REF(self), &HANDLE_REF(self)->left, HANDLE_REF(l));
+  set_field(HANDLE_REF(self), &HANDLE_REF(self)->right, HANDLE_REF(r));
   // i is 0 because the memory is zeroed.
   HANDLE_REF(self)->j = depth;
 
@@ -236,8 +243,8 @@ static Node* make_tree(struct thread *t, int depth) {
 
   allocate_garbage(t);
   Node *result = allocate_node(mut);
-  init_field(result, (void**)&result->left, HANDLE_REF(left));
-  init_field(result, (void**)&result->right, HANDLE_REF(right));
+  result->left = HANDLE_REF(left);
+  result->right = HANDLE_REF(right);
   // i is 0 because the memory is zeroed.
   result->j = depth;
 

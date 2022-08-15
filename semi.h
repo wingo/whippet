@@ -57,14 +57,19 @@ static inline size_t gc_allocator_freelist_offset(size_t size) {
   abort();
 }
 
-static inline void gc_allocator_inline_success(struct mutator *mut,
-                                               struct gc_ref obj,
-                                               uintptr_t aligned_size) {
-  // FIXME: Allow allocator to avoid clearing memory?
-  clear_memory(gc_ref_value(obj), aligned_size);
+static inline int gc_allocator_needs_clear(void) {
+  return 1;
 }
-static inline void gc_allocator_inline_failure(struct mutator *mut,
-                                               uintptr_t aligned_size) {}
+
+static inline size_t gc_allocator_alloc_table_alignment(void) {
+  return 0;
+}
+static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) {
+  abort();
+}
+static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
+  abort();
+}
 
 static inline struct heap* mutator_heap(struct mutator *mut) {
   return &mut->heap;
@@ -247,11 +252,14 @@ static inline void* gc_allocate_pointerless(struct mutator *mut, size_t size) {
   return gc_allocate(mut, size);
 }
 
-static inline void init_field(void *obj, void **addr, void *val) {
-  *addr = val;
+static inline enum gc_write_barrier_kind gc_small_write_barrier_kind(void) {
+  return GC_WRITE_BARRIER_NONE;
 }
-static inline void set_field(void *obj, void **addr, void *val) {
-  *addr = val;
+static inline size_t gc_small_write_barrier_card_table_alignment(void) {
+  abort();
+}
+static inline size_t gc_small_write_barrier_card_size(void) {
+  abort();
 }
 
 static int initialize_semi_space(struct semi_space *space, size_t size) {
