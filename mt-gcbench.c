@@ -44,14 +44,13 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
-// Tracer will be specialized with respect to tags defined in this header.
 #include "mt-gcbench-types.h"
 
 #include "assert.h"
 #include "simple-allocator.h"
-#include "simple-gc-embedder.h"
 #include "gc-api.h"
 
+#include "mt-gcbench-embedder.h"
 #include "gc.h"
 
 #include "gc-inline.h"
@@ -62,53 +61,6 @@ static const int long_lived_tree_depth = 16; // about 4Mb
 static const int array_size = 500000; // about 4Mb
 static const int min_tree_depth = 4;
 static const int max_tree_depth = 16;
-
-struct Node {
-  struct gc_header header;
-  struct Node *left;
-  struct Node *right;
-  int i, j;
-};
-
-struct DoubleArray {
-  struct gc_header header;
-  size_t length;
-  double values[0];
-};
-
-struct Hole {
-  struct gc_header header;
-  size_t length;
-  uintptr_t values[0];
-};
-
-static inline size_t node_size(Node *obj) {
-  return sizeof(Node);
-}
-static inline size_t double_array_size(DoubleArray *array) {
-  return sizeof(*array) + array->length * sizeof(double);
-}
-static inline size_t hole_size(Hole *hole) {
-  return sizeof(*hole) + hole->length * sizeof(uintptr_t);
-}
-static inline void
-visit_node_fields(Node *node,
-                  void (*visit)(struct gc_edge edge, void *visit_data),
-                  void *visit_data) {
-  visit(gc_edge(&node->left), visit_data);
-  visit(gc_edge(&node->right), visit_data);
-}
-static inline void
-visit_double_array_fields(DoubleArray *obj,
-                          void (*visit)(struct gc_edge edge, void *visit_data),
-                          void *visit_data) {
-}
-static inline void
-visit_hole_fields(Hole *obj,
-                  void (*visit)(struct gc_edge edge, void *visit_data),
-                  void *visit_data) {
-  abort();
-}
 
 typedef HANDLE_TO(Node) NodeHandle;
 typedef HANDLE_TO(DoubleArray) DoubleArrayHandle;

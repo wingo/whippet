@@ -16,12 +16,4 @@ enum alloc_kind {
 };
 #undef DEFINE_ENUM
 
-#define DEFINE_METHODS(name, Name, NAME) \
-  static inline size_t name##_size(Name *obj) GC_ALWAYS_INLINE; \
-  static inline void visit_##name##_fields(Name *obj,\
-                                           void (*visit)(struct gc_edge edge, void *visit_data), \
-                                           void *visit_data) GC_ALWAYS_INLINE;
-FOR_EACH_HEAP_OBJECT_KIND(DEFINE_METHODS)
-#undef DEFINE_METHODS
-
 #endif // HEAP_OBJECTS_H

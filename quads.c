@@ -5,23 +5,11 @@
 #include "assert.h"
 #include "quads-types.h"
 #include "simple-allocator.h"
-#include "simple-gc-embedder.h"
+#include "gc-api.h"
+
+#include "quads-embedder.h"
 #include "gc.h"
 
-typedef struct Quad {
-  struct gc_header header;
-  struct Quad *kids[4];
-} Quad;
-static inline size_t quad_size(Quad *obj) {
-  return sizeof(Quad);
-}
-static inline void
-visit_quad_fields(Quad *quad,
-                  void (*visit)(struct gc_edge edge, void *visit_data),
-                  void *visit_data) {
-  for (size_t i = 0; i < 4; i++)
-    visit(gc_edge(&quad->kids[i]), visit_data);
-}
 typedef HANDLE_TO(Quad) QuadHandle;
 
 static Quad* allocate_quad(struct mutator *mut) {
