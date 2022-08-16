@@ -32,7 +32,7 @@ struct gc_mutator {
 
 // FIXME: Conflict with bdw-gc GC_API.  Switch prefix?
 #ifndef GC_API_
-#define GC_API_ static
+#define GC_API_ __attribute__((visibility("hidden")))
 #endif
 
 GC_API_ int gc_option_from_string(const char *str);
@@ -159,12 +159,12 @@ static inline void* gc_allocate(struct mutator *mut, size_t size) {
   case GC_ALLOCATOR_INLINE_NONE:
     return gc_allocate_small(mut, size);
   default:
-    abort();
+    GC_CRASH();
   }
 }
 
 // FIXME: remove :P
-static inline void* gc_allocate_pointerless(struct mutator *mut, size_t bytes);
+GC_API_ void* gc_allocate_pointerless(struct mutator *mut, size_t bytes);
 
 static inline void gc_small_write_barrier(struct gc_ref obj, struct gc_edge edge,
                                           struct gc_ref new_val) GC_ALWAYS_INLINE;
@@ -183,7 +183,7 @@ static inline void gc_small_write_barrier(struct gc_ref obj, struct gc_edge edge
     return;
   }
   default:
-    abort();
+    GC_CRASH();
   }
 }
 

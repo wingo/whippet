@@ -1,8 +1,18 @@
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#define GC_API_ 
+#include "gc-api.h"
+
 #include "bdw-attrs.h"
-#include "conservative-roots.h"
+
+#if GC_PRECISE
+#error bdw-gc is a conservative collector
+#else
+#include "conservative-roots-embedder.h"
+#endif
 
 // When pthreads are used, let `libgc' know about it and redirect
 // allocation calls such as `GC_MALLOC ()' to (contention-free, faster)
@@ -61,10 +71,10 @@ static void* allocate_small_slow(void **freelist, size_t idx,
   size_t bytes = gc_inline_freelist_object_size(idx);
   GC_generic_malloc_many(bytes, kind, freelist);
   void *head = *freelist;
-  if (UNLIKELY (!head)) {
+  if (GC_UNLIKELY (!head)) {
     fprintf(stderr, "ran out of space, heap size %zu\n",
             GC_get_heap_size());
-    abort();
+    GC_CRASH();
   }
   *freelist = *(void **)(head);
   return head;
@@ -74,25 +84,25 @@ static inline void *
 allocate_small(void **freelist, size_t idx, enum gc_inline_kind kind) {
   void *head = *freelist;
 
-  if (UNLIKELY (!head))
+  if (GC_UNLIKELY (!head))
     return allocate_small_slow(freelist, idx, kind);
 
   *freelist = *(void **)(head);
   return head;
 }
 
-static void* gc_allocate_large(struct mutator *mut, size_t size) {
+void* gc_allocate_large(struct mutator *mut, size_t size) {
   return GC_malloc(size);
 }
 
-static void* gc_allocate_small(struct mutator *mut, size_t size) {
+void* gc_allocate_small(struct mutator *mut, size_t size) {
   GC_ASSERT(size != 0);
   GC_ASSERT(size <= gc_allocator_large_threshold());
   size_t idx = gc_inline_bytes_to_freelist_index(size);
   return allocate_small(&mut->freelists[idx], idx, GC_INLINE_KIND_NORMAL);
 }
 
-static inline void* gc_allocate_pointerless(struct mutator *mut,
+void* gc_allocate_pointerless(struct mutator *mut,
                                             size_t size) {
   // Because the BDW API requires us to implement a custom marker so
   // that the pointerless freelist gets traced, even though it's in a
@@ -126,7 +136,7 @@ static void dump_available_gc_options(void) {
   fprintf(stderr, "\n");
 }
 
-static int gc_option_from_string(const char *str) {
+int gc_option_from_string(const char *str) {
 #define PARSE_OPTION(option, name) if (strcmp(str, name) == 0) return option;
   FOR_EACH_GC_OPTION(PARSE_OPTION)
 #undef PARSE_OPTION
@@ -145,8 +155,8 @@ struct options {
 };
 
 static size_t parse_size_t(double value) {
-  ASSERT(value >= 0);
-  ASSERT(value <= (size_t) -1);
+  GC_ASSERT(value >= 0);
+  GC_ASSERT(value <= (size_t) -1);
   return value;
 }
 
@@ -163,7 +173,7 @@ static int parse_options(int argc, struct gc_option argv[],
       options->parallelism = parse_size_t(argv[i].value);
       break;
     default:
-      abort();
+      GC_CRASH();
     }
   }
 
@@ -177,8 +187,8 @@ static int parse_options(int argc, struct gc_option argv[],
   return 1;
 }
 
-static int gc_init(int argc, struct gc_option argv[],
-                   struct heap **heap, struct mutator **mutator) {
+int gc_init(int argc, struct gc_option argv[],
+            struct heap **heap, struct mutator **mutator) {
   GC_ASSERT_EQ(gc_allocator_small_granule_size(), GC_INLINE_GRANULE_BYTES);
   GC_ASSERT_EQ(gc_allocator_large_threshold(),
                GC_INLINE_FREELIST_COUNT * GC_INLINE_GRANULE_BYTES);
@@ -208,8 +218,8 @@ static int gc_init(int argc, struct gc_option argv[],
   return 1;
 }
 
-static struct mutator* gc_init_for_thread(uintptr_t *stack_base,
-                                          struct heap *heap) {
+struct mutator* gc_init_for_thread(uintptr_t *stack_base,
+                                   struct heap *heap) {
   pthread_mutex_lock(&heap->lock);
   if (!heap->multithreaded) {
     GC_allow_register_threads();
@@ -221,23 +231,23 @@ static struct mutator* gc_init_for_thread(uintptr_t *stack_base,
   GC_register_my_thread(&base);
   return add_mutator(heap);
 }
-static void gc_finish_for_thread(struct mutator *mut) {
+void gc_finish_for_thread(struct mutator *mut) {
   GC_unregister_my_thread();
 }
 
-static void* gc_call_without_gc(struct mutator *mut,
-                                void* (*f)(void*),
-                                void *data) {
+void* gc_call_without_gc(struct mutator *mut,
+                         void* (*f)(void*),
+                         void *data) {
   return GC_do_blocking(f, data);
 }
 
-static void gc_mutator_set_roots(struct mutator *mut,
-                                 struct gc_mutator_roots *roots) {
+void gc_mutator_set_roots(struct mutator *mut,
+                          struct gc_mutator_roots *roots) {
 }
-static void gc_heap_set_roots(struct heap *heap, struct gc_heap_roots *roots) {
+void gc_heap_set_roots(struct heap *heap, struct gc_heap_roots *roots) {
 }
 
-static void gc_print_stats(struct heap *heap) {
+void gc_print_stats(struct heap *heap) {
   printf("Completed %ld collections\n", (long)GC_get_gc_no());
   printf("Heap size is %ld\n", (long)GC_get_heap_size());
 }

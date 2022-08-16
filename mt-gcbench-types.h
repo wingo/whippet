@@ -1,6 +1,9 @@
 #ifndef GCBENCH_TYPES_H
 #define GCBENCH_TYPES_H
 
+#include <stddef.h>
+#include <stdint.h>
+
 #define FOR_EACH_HEAP_OBJECT_KIND(M) \
   M(node, Node, NODE) \
   M(double_array, DoubleArray, DOUBLE_ARRAY) \

@@ -2,6 +2,7 @@
 #define SEMI_ATTRS_H
 
 #include "gc-attrs.h"
+#include "gc-assert.h"
 
 static const uintptr_t GC_ALIGNMENT = 8;
 static const size_t GC_LARGE_OBJECT_THRESHOLD = 8192;
@@ -24,7 +25,7 @@ static inline size_t gc_allocator_allocation_limit_offset(void) {
 }
 
 static inline size_t gc_allocator_freelist_offset(size_t size) {
-  abort();
+  GC_CRASH();
 }
 
 static inline int gc_allocator_needs_clear(void) {
@@ -35,20 +36,20 @@ static inline size_t gc_allocator_alloc_table_alignment(void) {
   return 0;
 }
 static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) {
-  abort();
+  GC_CRASH();
 }
 static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
-  abort();
+  GC_CRASH();
 }
 
 static inline enum gc_write_barrier_kind gc_small_write_barrier_kind(void) {
   return GC_WRITE_BARRIER_NONE;
 }
 static inline size_t gc_small_write_barrier_card_table_alignment(void) {
-  abort();
+  GC_CRASH();
 }
 static inline size_t gc_small_write_barrier_card_size(void) {
-  abort();
+  GC_CRASH();
 }
 
 #endif // SEMI_ATTRS_H

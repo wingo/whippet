@@ -5,9 +5,17 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#define GC_API_ 
+#include "gc-api.h"
+
 #include "semi-attrs.h"
 #include "large-object-space.h"
-#include "precise-roots.h"
+
+#if GC_PRECISE
+#include "precise-roots-embedder.h"
+#else
+#error semi is a precise collector
+#endif
 
 struct semi_space {
   uintptr_t hp;
@@ -141,7 +149,7 @@ static void visit(struct gc_edge edge, void *visit_data) {
   else if (large_object_space_contains(heap_large_object_space(heap), obj))
     visit_large_object_space(heap, heap_large_object_space(heap), obj);
   else
-    abort();
+    GC_CRASH();
 }
 
 static void collect(struct mutator *mut) {
@@ -167,11 +175,11 @@ static void collect_for_alloc(struct mutator *mut, size_t bytes) {
   struct semi_space *space = mutator_semi_space(mut);
   if (space->limit - space->hp < bytes) {
     fprintf(stderr, "ran out of space, heap size %zu\n", space->size);
-    abort();
+    GC_CRASH();
   }
 }
 
-static void* gc_allocate_large(struct mutator *mut, size_t size) {
+void* gc_allocate_large(struct mutator *mut, size_t size) {
   struct heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);
   struct semi_space *semi_space = heap_semi_space(heap);
@@ -181,7 +189,7 @@ static void* gc_allocate_large(struct mutator *mut, size_t size) {
     collect(mut);
     if (!semi_space_steal_pages(semi_space, npages)) {
       fprintf(stderr, "ran out of space, heap size %zu\n", semi_space->size);
-      abort();
+      GC_CRASH();
     }
   }
 
@@ -191,13 +199,13 @@ static void* gc_allocate_large(struct mutator *mut, size_t size) {
 
   if (!ret) {
     perror("weird: we have the space but mmap didn't work");
-    abort();
+    GC_CRASH();
   }
 
   return ret;
 }
 
-static void* gc_allocate_small(struct mutator *mut, size_t size) {
+void* gc_allocate_small(struct mutator *mut, size_t size) {
   struct semi_space *space = mutator_semi_space(mut);
   while (1) {
     uintptr_t addr = space->hp;
@@ -212,7 +220,7 @@ static void* gc_allocate_small(struct mutator *mut, size_t size) {
     return (void *)addr;
   }
 }
-static inline void* gc_allocate_pointerless(struct mutator *mut, size_t size) {
+void* gc_allocate_pointerless(struct mutator *mut, size_t size) {
   return gc_allocate(mut, size);
 }
 
@@ -250,7 +258,7 @@ static void dump_available_gc_options(void) {
   fprintf(stderr, "\n");
 }
 
-static int gc_option_from_string(const char *str) {
+int gc_option_from_string(const char *str) {
 #define PARSE_OPTION(option, name) if (strcmp(str, name) == 0) return option;
   FOR_EACH_GC_OPTION(PARSE_OPTION)
 #undef PARSE_OPTION
@@ -269,8 +277,8 @@ struct options {
 };
 
 static size_t parse_size_t(double value) {
-  ASSERT(value >= 0);
-  ASSERT(value <= (size_t) -1);
+  GC_ASSERT(value >= 0);
+  GC_ASSERT(value <= (size_t) -1);
   return value;
 }
 
@@ -286,7 +294,7 @@ static int parse_options(int argc, struct gc_option argv[],
       options->parallelism = parse_size_t(argv[i].value);
       break;
     default:
-      abort();
+      GC_CRASH();
     }
   }
 
@@ -302,8 +310,8 @@ static int parse_options(int argc, struct gc_option argv[],
   return 1;
 }
 
-static int gc_init(int argc, struct gc_option argv[],
-                   struct heap **heap, struct mutator **mut) {
+int gc_init(int argc, struct gc_option argv[],
+            struct heap **heap, struct mutator **mut) {
   GC_ASSERT_EQ(gc_allocator_allocation_pointer_offset(),
                offsetof(struct semi_space, hp));
   GC_ASSERT_EQ(gc_allocator_allocation_limit_offset(),
@@ -314,7 +322,7 @@ static int gc_init(int argc, struct gc_option argv[],
     return 0;
 
   *mut = calloc(1, sizeof(struct mutator));
-  if (!*mut) abort();
+  if (!*mut) GC_CRASH();
   *heap = mutator_heap(*mut);
 
   struct semi_space *space = mutator_semi_space(*mut);
@@ -328,30 +336,30 @@ static int gc_init(int argc, struct gc_option argv[],
   return 1;
 }
 
-static void gc_mutator_set_roots(struct mutator *mut,
-                                 struct gc_mutator_roots *roots) {
+void gc_mutator_set_roots(struct mutator *mut,
+                          struct gc_mutator_roots *roots) {
   mut->roots = roots;
 }
-static void gc_heap_set_roots(struct heap *heap, struct gc_heap_roots *roots) {
-  abort();
+void gc_heap_set_roots(struct heap *heap, struct gc_heap_roots *roots) {
+  GC_CRASH();
 }
 
-static struct mutator* gc_init_for_thread(uintptr_t *stack_base,
-                                          struct heap *heap) {
+struct mutator* gc_init_for_thread(uintptr_t *stack_base,
+                                   struct heap *heap) {
   fprintf(stderr,
           "Semispace copying collector not appropriate for multithreaded use.\n");
-  exit(1);
+  GC_CRASH();
 }
-static void gc_finish_for_thread(struct mutator *space) {
+void gc_finish_for_thread(struct mutator *space) {
 }
 
-static void* gc_call_without_gc(struct mutator *mut, void* (*f)(void*),
-                                void *data) {
+void* gc_call_without_gc(struct mutator *mut, void* (*f)(void*),
+                         void *data) {
   // Can't be threads, then there won't be collection.
   return f(data);
 }
 
-static void gc_print_stats(struct heap *heap) {
+void gc_print_stats(struct heap *heap) {
   struct semi_space *space = heap_semi_space(heap);
   printf("Completed %ld collections\n", space->count);
   printf("Heap size is %zd\n", space->size);

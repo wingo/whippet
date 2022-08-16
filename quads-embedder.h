@@ -1,6 +1,8 @@
 #ifndef QUADS_EMBEDDER_H
 #define QUADS_EMBEDDER_H
 
+#include <stddef.h>
+
 #include "quads-types.h"
 
 #define DEFINE_METHODS(name, Name, NAME) \

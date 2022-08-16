@@ -8,6 +8,10 @@
 #define GC_EMBEDDER_API static
 #endif
 
+struct gc_mutator_roots;
+struct gc_heap_roots;
+struct gc_atomic_forward;
+
 GC_EMBEDDER_API inline void gc_trace_object(void *object,
                                             void (*trace_edge)(struct gc_edge edge,
                                                                void *trace_data),

@@ -2,6 +2,7 @@
 #define WHIPPET_ATTRS_H
 
 #include "gc-config.h"
+#include "gc-assert.h"
 #include "gc-attrs.h"
 
 static inline enum gc_allocator_kind gc_allocator_kind(void) {
@@ -22,7 +23,7 @@ static inline size_t gc_allocator_allocation_limit_offset(void) {
 }
 
 static inline size_t gc_allocator_freelist_offset(size_t size) {
-  abort();
+  GC_CRASH();
 }
 
 static inline size_t gc_allocator_alloc_table_alignment(void) {

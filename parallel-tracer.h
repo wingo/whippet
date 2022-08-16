@@ -149,7 +149,7 @@ static int
 trace_deque_grow(struct trace_deque *q, int cur, size_t b, size_t t) {
   if (!trace_buf_grow(&q->bufs[cur], &q->bufs[cur + 1], b, t)) {
     fprintf(stderr, "failed to grow deque!!\n");
-    abort();
+    GC_CRASH();
   }
 
   cur++;
@@ -359,7 +359,7 @@ trace_worker_thread(void *data) {
       pthread_mutex_unlock(&worker->lock);
       return NULL;
     default:
-      abort();
+      GC_CRASH();
     }
   }
 }

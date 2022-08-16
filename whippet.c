@@ -1,11 +1,3 @@
-#ifndef GC_PARALLEL_TRACE
-#error define GC_PARALLEL_TRACE to 1 or 0
-#endif
-
-#ifndef GC_GENERATIONAL
-#error define GC_GENERATIONAL to 1 or 0
-#endif
-
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -15,17 +7,25 @@
 #include <string.h>
 #include <unistd.h>
 
+#define GC_API_ 
+#include "gc-api.h"
+
 #include "debug.h"
 #include "gc-inline.h"
 #include "large-object-space.h"
-#include "precise-roots.h"
-#if GC_PARALLEL_TRACE
+#if GC_PARALLEL
 #include "parallel-tracer.h"
 #else
 #include "serial-tracer.h"
 #endif
 #include "spin.h"
 #include "whippet-attrs.h"
+
+#if GC_PRECISE
+#include "precise-roots-embedder.h"
+#else
+#error whippet only currently implements precise collection
+#endif
 
 #define GRANULE_SIZE 16
 #define GRANULE_SIZE_LOG_2 4
@@ -560,7 +560,7 @@ static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
     case GC_FORWARDING_STATE_NOT_FORWARDED:
     case GC_FORWARDING_STATE_ABORTED:
       // Impossible.
-      abort();
+      GC_CRASH();
     case GC_FORWARDING_STATE_ACQUIRED: {
       // We claimed the object successfully; evacuating is up to us.
       size_t object_granules = mark_space_live_object_granules(metadata);
@@ -641,7 +641,7 @@ static inline int trace_edge(struct heap *heap, struct gc_edge edge) {
     return large_object_space_mark_object(heap_large_object_space(heap),
                                           obj);
   else
-    abort();
+    GC_CRASH();
 }
 
 static inline void trace_one(struct gcobj *obj, void *mark_data) {
@@ -836,7 +836,7 @@ static void mutator_mark_buf_grow(struct mutator_mark_buf *buf) {
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
     perror("allocating mutator mark buffer failed");
-    abort();
+    GC_CRASH();
   }
   if (old_bytes) {
     memcpy(mem, buf->objects, old_bytes);
@@ -905,11 +905,11 @@ static int mutator_should_mark_while_stopping(struct mutator *mut) {
   return heap_should_mark_while_stopping(mutator_heap(mut));
 }
 
-static void gc_mutator_set_roots(struct mutator *mut,
-                                 struct gc_mutator_roots *roots) {
+void gc_mutator_set_roots(struct mutator *mut,
+                          struct gc_mutator_roots *roots) {
   mut->roots = roots;
 }
-static void gc_heap_set_roots(struct heap *heap, struct gc_heap_roots *roots) {
+void gc_heap_set_roots(struct heap *heap, struct gc_heap_roots *roots) {
   heap->roots = roots;
 }
 
@@ -1213,7 +1213,7 @@ static void detect_out_of_memory(struct heap *heap) {
   // be able to yield more space: out of memory.
   fprintf(stderr, "ran out of space, heap size %zu (%zu slabs)\n",
           heap->size, mark_space->nslabs);
-  abort();
+  GC_CRASH();
 }
 
 static double clamp_major_gc_yield_threshold(struct heap *heap,
@@ -1762,7 +1762,7 @@ static void trigger_collection(struct mutator *mut) {
   heap_unlock(heap);
 }
 
-static void* gc_allocate_large(struct mutator *mut, size_t size) {
+void* gc_allocate_large(struct mutator *mut, size_t size) {
   struct heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);
 
@@ -1781,13 +1781,13 @@ static void* gc_allocate_large(struct mutator *mut, size_t size) {
 
   if (!ret) {
     perror("weird: we have the space but mmap didn't work");
-    abort();
+    GC_CRASH();
   }
 
   return ret;
 }
 
-static void* gc_allocate_small(struct mutator *mut, size_t size) {
+void* gc_allocate_small(struct mutator *mut, size_t size) {
   GC_ASSERT(size > 0); // allocating 0 bytes would be silly
   GC_ASSERT(size <= gc_allocator_large_threshold());
   size = align_up(size, GRANULE_SIZE);
@@ -1816,7 +1816,7 @@ static void* gc_allocate_small(struct mutator *mut, size_t size) {
   return obj;
 }
 
-static inline void* gc_allocate_pointerless(struct mutator *mut, size_t size) {
+void* gc_allocate_pointerless(struct mutator *mut, size_t size) {
   return gc_allocate(mut, size);
 }
 
@@ -1832,7 +1832,7 @@ static void dump_available_gc_options(void) {
   fprintf(stderr, "\n");
 }
 
-static int gc_option_from_string(const char *str) {
+int gc_option_from_string(const char *str) {
 #define PARSE_OPTION(option, name) if (strcmp(str, name) == 0) return option;
   FOR_EACH_GC_OPTION(PARSE_OPTION)
 #undef PARSE_OPTION
@@ -1869,7 +1869,7 @@ static int parse_options(int argc, struct gc_option argv[],
       options->parallelism = parse_size_t(argv[i].value);
       break;
     default:
-      abort();
+      GC_CRASH();
     }
   }
 
@@ -1916,7 +1916,7 @@ static int heap_init(struct heap *heap, struct options *options) {
   heap->size = options->fixed_heap_size;
 
   if (!tracer_init(heap, options->parallelism))
-    abort();
+    GC_CRASH();
 
   heap->fragmentation_low_threshold = 0.05;
   heap->fragmentation_high_threshold = 0.10;
@@ -1960,7 +1960,7 @@ static int mark_space_init(struct mark_space *space, struct heap *heap) {
   return 1;
 }
 
-static int gc_init(int argc, struct gc_option argv[],
+int gc_init(int argc, struct gc_option argv[],
                    struct heap **heap, struct mutator **mut) {
   GC_ASSERT_EQ(gc_allocator_small_granule_size(), GRANULE_SIZE);
   GC_ASSERT_EQ(gc_allocator_large_threshold(), LARGE_OBJECT_THRESHOLD);
@@ -1982,10 +1982,10 @@ static int gc_init(int argc, struct gc_option argv[],
     return 0;
 
   *heap = calloc(1, sizeof(struct heap));
-  if (!*heap) abort();
+  if (!*heap) GC_CRASH();
 
   if (!heap_init(*heap, &options))
-    abort();
+    GC_CRASH();
 
   struct mark_space *space = heap_mark_space(*heap);
   if (!mark_space_init(space, *heap)) {
@@ -1995,24 +1995,24 @@ static int gc_init(int argc, struct gc_option argv[],
   }
   
   if (!large_object_space_init(heap_large_object_space(*heap), *heap))
-    abort();
+    GC_CRASH();
 
   *mut = calloc(1, sizeof(struct mutator));
-  if (!*mut) abort();
+  if (!*mut) GC_CRASH();
   add_mutator(*heap, *mut);
   return 1;
 }
 
-static struct mutator* gc_init_for_thread(uintptr_t *stack_base,
+struct mutator* gc_init_for_thread(uintptr_t *stack_base,
                                           struct heap *heap) {
   struct mutator *ret = calloc(1, sizeof(struct mutator));
   if (!ret)
-    abort();
+    GC_CRASH();
   add_mutator(heap, ret);
   return ret;
 }
 
-static void gc_finish_for_thread(struct mutator *mut) {
+void gc_finish_for_thread(struct mutator *mut) {
   remove_mutator(mutator_heap(mut), mut);
   mutator_mark_buf_destroy(&mut->mark_buf);
   free(mut);
@@ -2042,7 +2042,7 @@ static void reactivate_mutator(struct heap *heap, struct mutator *mut) {
   heap_unlock(heap);
 }
 
-static void* gc_call_without_gc(struct mutator *mut,
+void* gc_call_without_gc(struct mutator *mut,
                                 void* (*f)(void*),
                                 void *data) {
   struct heap *heap = mutator_heap(mut);
@@ -2052,7 +2052,7 @@ static void* gc_call_without_gc(struct mutator *mut,
   return ret;
 }
 
-static void gc_print_stats(struct heap *heap) {
+void gc_print_stats(struct heap *heap) {
   printf("Completed %ld collections (%ld major)\n",
          heap->count, heap->count - heap->minor_count);
   printf("Heap size with overhead is %zd (%zu slabs)\n",

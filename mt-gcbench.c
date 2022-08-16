@@ -44,16 +44,16 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
-#include "mt-gcbench-types.h"
-
 #include "assert.h"
-#include "simple-allocator.h"
 #include "gc-api.h"
-
-#include "mt-gcbench-embedder.h"
-#include "gc.h"
-
-#include "gc-inline.h"
+#include "mt-gcbench-types.h"
+#if GC_PRECISE
+#include "precise-roots-api.h"
+#else
+#include "conservative-roots-api.h"
+#endif
+#include "mt-gcbench-types.h"
+#include "simple-allocator.h"
 
 #define MAX_THREAD_COUNT 256
 

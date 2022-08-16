@@ -1,14 +1,17 @@
 #include <stdio.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <sys/time.h>
 
 #include "assert.h"
+#include "gc-api.h"
+#if GC_PRECISE
+#include "precise-roots-api.h"
+#else
+#include "conservative-roots-api.h"
+#endif
 #include "quads-types.h"
 #include "simple-allocator.h"
-#include "gc-api.h"
-
-#include "quads-embedder.h"
-#include "gc.h"
 
 typedef HANDLE_TO(Quad) QuadHandle;
 

@@ -85,7 +85,7 @@ static inline void
 trace_queue_push(struct trace_queue *q, struct gcobj *p) {
   if (UNLIKELY(q->write - q->read == q->size)) {
     if (!trace_queue_grow(q))
-      abort();
+      GC_CRASH();
   }
   trace_queue_put(q, q->write++, p);
 }
@@ -94,7 +94,7 @@ static inline void
 trace_queue_push_many(struct trace_queue *q, struct gcobj **pv, size_t count) {
   while (q->size - (q->write - q->read) < count) {
     if (!trace_queue_grow(q))
-      abort();
+      GC_CRASH();
   }
   for (size_t i = 0; i < count; i++)
     trace_queue_put(q, q->write++, pv[i]);
