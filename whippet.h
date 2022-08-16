@@ -25,6 +25,7 @@
 #include "serial-tracer.h"
 #endif
 #include "spin.h"
+#include "whippet-inline.h"
 
 #define GRANULE_SIZE 16
 #define GRANULE_SIZE_LOG_2 4
@@ -368,44 +369,6 @@ static inline struct large_object_space* heap_large_object_space(struct heap *he
 static inline struct heap* mutator_heap(struct mutator *mutator) {
   return mutator->heap;
 }
-
-static inline enum gc_allocator_kind gc_allocator_kind(void) {
-  return GC_ALLOCATOR_INLINE_BUMP_POINTER;
-}
-static inline size_t gc_allocator_small_granule_size(void) {
-  return GRANULE_SIZE;
-}
-static inline size_t gc_allocator_large_threshold(void) {
-  return LARGE_OBJECT_THRESHOLD;
-}
-
-static inline size_t gc_allocator_allocation_pointer_offset(void) {
-  return offsetof(struct mutator, alloc);
-}
-static inline size_t gc_allocator_allocation_limit_offset(void) {
-  return offsetof(struct mutator, sweep);
-}
-
-static inline size_t gc_allocator_freelist_offset(size_t size) {
-  abort();
-}
-
-static inline void gc_allocator_inline_success(struct mutator *mut,
-                                               struct gc_ref obj,
-                                               uintptr_t aligned_size) {
-  uint8_t *metadata = object_metadata_byte(gc_ref_heap_object(obj));
-  size_t granules = aligned_size >> GRANULE_SIZE_LOG_2;
-  if (granules == 1) {
-    metadata[0] = METADATA_BYTE_YOUNG | METADATA_BYTE_END;
-  } else {
-    metadata[0] = METADATA_BYTE_YOUNG;
-    if (granules > 2)
-      memset(metadata + 1, 0, granules - 2);
-    metadata[granules - 1] = METADATA_BYTE_END;
-  }
-}
-static inline void gc_allocator_inline_failure(struct mutator *mut,
-                                               uintptr_t aligned_size) {}
 
 static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
@@ -1844,40 +1807,12 @@ static void* gc_allocate_small(struct mutator *mut, size_t size) {
     obj = (struct gcobj*)mut->alloc;
     mut->alloc += size;
   }
-  gc_allocator_inline_success(mut, gc_ref_from_heap_object(obj), size);
+  gc_update_alloc_table(mut, gc_ref_from_heap_object(obj), size);
   return obj;
 }
 
 static inline void* gc_allocate_pointerless(struct mutator *mut, size_t size) {
   return gc_allocate(mut, size);
-}
-
-static inline enum gc_write_barrier_kind gc_small_write_barrier_kind(void) {
-  if (GC_GENERATIONAL)
-    return GC_WRITE_BARRIER_CARD;
-  return GC_WRITE_BARRIER_NONE;
-}
-static inline size_t gc_small_write_barrier_card_table_alignment(void) {
-  GC_ASSERT(GC_GENERATIONAL);
-  return SLAB_SIZE;
-}
-static inline size_t gc_small_write_barrier_card_size(void) {
-  GC_ASSERT(GC_GENERATIONAL);
-  return GRANULES_PER_REMSET_BYTE * GRANULE_SIZE;
-}
-
-static inline size_t gc_allocator_alloc_table_alignment(void) {
-  return SLAB_SIZE;
-}
-static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) {
-  return METADATA_BYTE_YOUNG;
-}
-static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
-  return METADATA_BYTE_END;
-}
-
-static inline int gc_allocator_needs_clear(void) {
-  return 0;
 }
 
 #define FOR_EACH_GC_OPTION(M) \
@@ -2022,6 +1957,21 @@ static int mark_space_init(struct mark_space *space, struct heap *heap) {
 
 static int gc_init(int argc, struct gc_option argv[],
                    struct heap **heap, struct mutator **mut) {
+  GC_ASSERT_EQ(gc_allocator_small_granule_size(), GRANULE_SIZE);
+  GC_ASSERT_EQ(gc_allocator_large_threshold(), LARGE_OBJECT_THRESHOLD);
+  GC_ASSERT_EQ(gc_allocator_allocation_pointer_offset(),
+               offsetof(struct mutator, alloc));
+  GC_ASSERT_EQ(gc_allocator_allocation_limit_offset(),
+               offsetof(struct mutator, sweep));
+  GC_ASSERT_EQ(gc_allocator_alloc_table_alignment(), SLAB_SIZE);
+  GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(), METADATA_BYTE_YOUNG);
+  GC_ASSERT_EQ(gc_allocator_alloc_table_end_pattern(), METADATA_BYTE_END);
+  if (GC_GENERATIONAL) {
+    GC_ASSERT_EQ(gc_small_write_barrier_card_table_alignment(), SLAB_SIZE);
+    GC_ASSERT_EQ(gc_small_write_barrier_card_size(),
+                 BLOCK_SIZE / REMSET_BYTES_PER_BLOCK);
+  }
+
   struct options options = { 0, };
   if (!parse_options(argc, argv, &options))
     return 0;
