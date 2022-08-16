@@ -2,7 +2,7 @@ TESTS=quads mt-gcbench # MT_GCBench MT_GCBench2
 COLLECTORS=bdw semi whippet parallel-whippet generational-whippet parallel-generational-whippet
 
 CC=gcc
-CFLAGS=-Wall -O2 -g -fno-strict-aliasing -Wno-unused -DNDEBUG
+CFLAGS=-Wall -O2 -g -fno-strict-aliasing -fvisibility=hidden -Wno-unused -DNDEBUG
 INCLUDES=-I.
 LDFLAGS=-lpthread
 COMPILE=$(CC) $(CFLAGS) $(INCLUDES) $(LDFLAGS)
