@@ -27,7 +27,7 @@ struct heap {
 // One mutator per space, can just store the heap in the mutator.
 struct mutator {
   struct heap heap;
-  struct handle *roots;
+  struct gc_mutator_roots *roots;
 };
 
 
@@ -152,8 +152,8 @@ static void collect(struct mutator *mut) {
   large_object_space_start_gc(large, 0);
   flip(semi);
   uintptr_t grey = semi->hp;
-  for (struct handle *h = mut->roots; h; h = h->next)
-    visit(gc_edge(&h->v), heap);
+  if (mut->roots)
+    gc_trace_mutator_roots(mut->roots, visit, heap);
   // fprintf(stderr, "pushed %zd bytes in roots\n", space->hp - grey);
   while(grey < semi->hp)
     grey = scan(heap, grey);
@@ -326,6 +326,14 @@ static int gc_init(int argc, struct gc_option argv[],
   (*mut)->roots = NULL;
 
   return 1;
+}
+
+static void gc_mutator_set_roots(struct mutator *mut,
+                                 struct gc_mutator_roots *roots) {
+  mut->roots = roots;
+}
+static void gc_heap_set_roots(struct heap *heap, struct gc_heap_roots *roots) {
+  abort();
 }
 
 static struct mutator* gc_init_for_thread(uintptr_t *stack_base,

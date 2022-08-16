@@ -38,6 +38,12 @@ GC_API_ int gc_option_from_string(const char *str);
 GC_API_ int gc_init(int argc, struct gc_option argv[],
                     struct heap **heap, struct mutator **mutator);
 
+struct gc_mutator_roots;
+struct gc_heap_roots;
+GC_API_ void gc_mutator_set_roots(struct mutator *mut,
+                                  struct gc_mutator_roots *roots);
+GC_API_ void gc_heap_set_roots(struct heap *heap, struct gc_heap_roots *roots);
+
 GC_API_ struct mutator* gc_init_for_thread(uintptr_t *stack_base,
                                            struct heap *heap);
 GC_API_ void gc_finish_for_thread(struct mutator *mut);

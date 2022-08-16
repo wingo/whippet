@@ -231,6 +231,12 @@ static void* gc_call_without_gc(struct mutator *mut,
   return GC_do_blocking(f, data);
 }
 
+static void gc_mutator_set_roots(struct mutator *mut,
+                                 struct gc_mutator_roots *roots) {
+}
+static void gc_heap_set_roots(struct heap *heap, struct gc_heap_roots *roots) {
+}
+
 static void gc_print_stats(struct heap *heap) {
   printf("Completed %ld collections\n", (long)GC_get_gc_no());
   printf("Heap size is %ld\n", (long)GC_get_heap_size());

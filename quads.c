@@ -38,23 +38,29 @@ static unsigned long current_time(void)
   return t.tv_sec * 1000 * 1000 + t.tv_usec;
 }
 
+struct thread {
+  struct mutator *mut;
+  struct gc_mutator_roots roots;
+  size_t counter;
+};
+
 // Build tree bottom-up
-static Quad* make_tree(struct mutator *mut, int depth) {
+static Quad* make_tree(struct thread *t, int depth) {
   if (depth<=0) {
-    return allocate_quad(mut);
+    return allocate_quad(t->mut);
   } else {
     QuadHandle kids[4] = { { NULL }, };
     for (size_t i = 0; i < 4; i++) {
-      HANDLE_SET(kids[i], make_tree(mut, depth-1));
-      PUSH_HANDLE(mut, kids[i]);
+      HANDLE_SET(kids[i], make_tree(t, depth-1));
+      PUSH_HANDLE(t, kids[i]);
     }
 
-    Quad *result = allocate_quad(mut);
+    Quad *result = allocate_quad(t->mut);
     for (size_t i = 0; i < 4; i++)
       result->kids[i] = HANDLE_REF(kids[i]);
 
     for (size_t i = 0; i < 4; i++)
-      POP_HANDLE(mut);
+      POP_HANDLE(t);
 
     return result;
   }
@@ -144,15 +150,17 @@ int main(int argc, char *argv[]) {
             heap_size);
     return 1;
   }
+  struct thread t = { mut, };
+  gc_mutator_set_roots(mut, &t.roots);
 
   QuadHandle quad = { NULL };
 
-  PUSH_HANDLE(mut, quad);
+  PUSH_HANDLE(&t, quad);
 
   printf("Making quad tree of depth %zu (%zu nodes).  Total size %.3fGB.\n",
          depth, nquads, (nquads * sizeof(Quad)) / 1e9);
   unsigned long start = current_time();
-  HANDLE_SET(quad, make_tree(mut, depth));
+  HANDLE_SET(quad, make_tree(&t, depth));
   print_elapsed("construction", start);
 
   validate_tree(HANDLE_REF(quad), depth);
@@ -165,7 +173,7 @@ int main(int argc, char *argv[]) {
     size_t garbage_depth = 3;
     start = current_time();
     for (size_t i = garbage_step/(tree_size(garbage_depth)*4*sizeof(Quad*)); i; i--)
-      make_tree(mut, garbage_depth);
+      make_tree(&t, garbage_depth);
     print_elapsed("allocating garbage", start);
 
     start = current_time();
@@ -176,7 +184,7 @@ int main(int argc, char *argv[]) {
 
   gc_print_stats(heap);
 
-  POP_HANDLE(mut);
+  POP_HANDLE(&t);
   return 0;
 }
 

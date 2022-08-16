@@ -185,6 +185,7 @@ static size_t power_law(size_t *counter) {
 
 struct thread {
   struct mutator *mut;
+  struct gc_mutator_roots roots;
   size_t counter;
 };
 
@@ -209,13 +210,13 @@ static void populate(struct thread *t, int depth, Node *node) {
     return;
 
   NodeHandle self = { node };
-  PUSH_HANDLE(mut, self);
+  PUSH_HANDLE(t, self);
   allocate_garbage(t);
   NodeHandle l = { allocate_node(mut) };
-  PUSH_HANDLE(mut, l);
+  PUSH_HANDLE(t, l);
   allocate_garbage(t);
   NodeHandle r = { allocate_node(mut) };
-  PUSH_HANDLE(mut, r);
+  PUSH_HANDLE(t, r);
 
   set_field(HANDLE_REF(self), &HANDLE_REF(self)->left, HANDLE_REF(l));
   set_field(HANDLE_REF(self), &HANDLE_REF(self)->right, HANDLE_REF(r));
@@ -225,9 +226,9 @@ static void populate(struct thread *t, int depth, Node *node) {
   populate(t, depth-1, HANDLE_REF(self)->left);
   populate(t, depth-1, HANDLE_REF(self)->right);
 
-  POP_HANDLE(mut);
-  POP_HANDLE(mut);
-  POP_HANDLE(mut);
+  POP_HANDLE(t);
+  POP_HANDLE(t);
+  POP_HANDLE(t);
 }
 
 // Build tree bottom-up
@@ -237,9 +238,9 @@ static Node* make_tree(struct thread *t, int depth) {
     return allocate_node(mut);
 
   NodeHandle left = { make_tree(t, depth-1) };
-  PUSH_HANDLE(mut, left);
+  PUSH_HANDLE(t, left);
   NodeHandle right = { make_tree(t, depth-1) };
-  PUSH_HANDLE(mut, right);
+  PUSH_HANDLE(t, right);
 
   allocate_garbage(t);
   Node *result = allocate_node(mut);
@@ -248,8 +249,8 @@ static Node* make_tree(struct thread *t, int depth) {
   // i is 0 because the memory is zeroed.
   result->j = depth;
 
-  POP_HANDLE(mut);
-  POP_HANDLE(mut);
+  POP_HANDLE(t);
+  POP_HANDLE(t);
 
   return result;
 }
@@ -274,7 +275,7 @@ static void time_construction(struct thread *t, int depth) {
   struct mutator *mut = t->mut;
   int num_iters = compute_num_iters(depth);
   NodeHandle temp_tree = { NULL };
-  PUSH_HANDLE(mut, temp_tree);
+  PUSH_HANDLE(t, temp_tree);
 
   printf("Creating %d trees of depth %d\n", num_iters, depth);
 
@@ -301,7 +302,7 @@ static void time_construction(struct thread *t, int depth) {
            elapsed_millis(start));
   }
 
-  POP_HANDLE(mut);
+  POP_HANDLE(t);
 }
 
 static void* call_with_stack_base(void* (*)(uintptr_t*, void*), void*) GC_NEVER_INLINE;
@@ -337,11 +338,12 @@ static void* run_one_test(struct mutator *mut) {
   NodeHandle long_lived_tree = { NULL };
   NodeHandle temp_tree = { NULL };
   DoubleArrayHandle array = { NULL };
-  struct thread t = { mut, 0 };
+  struct thread t = { mut, };
+  gc_mutator_set_roots(mut, &t.roots);
 
-  PUSH_HANDLE(mut, long_lived_tree);
-  PUSH_HANDLE(mut, temp_tree);
-  PUSH_HANDLE(mut, array);
+  PUSH_HANDLE(&t, long_lived_tree);
+  PUSH_HANDLE(&t, temp_tree);
+  PUSH_HANDLE(&t, array);
 
   // Create a long lived object
   printf(" Creating a long-lived binary tree of depth %d\n",
@@ -368,9 +370,10 @@ static void* run_one_test(struct mutator *mut) {
       || HANDLE_REF(array)->values[1000] != 1.0/1000)
     fprintf(stderr, "Failed\n");
 
-  POP_HANDLE(mut);
-  POP_HANDLE(mut);
-  POP_HANDLE(mut);
+  POP_HANDLE(&t);
+  POP_HANDLE(&t);
+  POP_HANDLE(&t);
+  gc_mutator_set_roots(mut, NULL);
   return NULL;
 }
 

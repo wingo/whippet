@@ -322,7 +322,7 @@ struct heap {
   int allow_pinning;
   size_t active_mutator_count;
   size_t mutator_count;
-  struct handle *global_roots;
+  struct gc_heap_roots *roots;
   struct mutator *mutator_trace_list;
   long count;
   long minor_count;
@@ -348,7 +348,7 @@ struct mutator {
   uintptr_t sweep;
   uintptr_t block;
   struct heap *heap;
-  struct handle *roots;
+  struct gc_mutator_roots *roots;
   struct mutator_mark_buf mark_buf;
   // Three uses for this in-object linked-list pointer:
   //  - inactive (blocked in syscall) mutators
@@ -905,29 +905,39 @@ static int mutator_should_mark_while_stopping(struct mutator *mut) {
   return heap_should_mark_while_stopping(mutator_heap(mut));
 }
 
+static void gc_mutator_set_roots(struct mutator *mut,
+                                 struct gc_mutator_roots *roots) {
+  mut->roots = roots;
+}
+static void gc_heap_set_roots(struct heap *heap, struct gc_heap_roots *roots) {
+  heap->roots = roots;
+}
+
+static void trace_and_enqueue_locally(struct gc_edge edge, void *data) {
+  struct mutator *mut = data;
+  if (trace_edge(mutator_heap(mut), edge))
+    mutator_mark_buf_push(&mut->mark_buf,
+                          gc_ref_heap_object(gc_edge_ref(edge)));
+}
+
+static void trace_and_enqueue_globally(struct gc_edge edge, void *data) {
+  struct heap *heap = data;
+  if (trace_edge(heap, edge))
+    tracer_enqueue_root(&heap->tracer,
+                        gc_ref_heap_object(gc_edge_ref(edge)));
+}
+
 // Mark the roots of a mutator that is stopping for GC.  We can't
 // enqueue them directly, so we send them to the controller in a buffer.
 static void mark_stopping_mutator_roots(struct mutator *mut) {
   GC_ASSERT(mutator_should_mark_while_stopping(mut));
-  struct heap *heap = mutator_heap(mut);
-  struct mutator_mark_buf *local_roots = &mut->mark_buf;
-  for (struct handle *h = mut->roots; h; h = h->next) {
-    struct gc_edge root = gc_edge(&h->v);
-    if (trace_edge(heap, root))
-      mutator_mark_buf_push(local_roots,
-                            gc_ref_heap_object(gc_edge_ref(root)));
-  }
+  gc_trace_mutator_roots(mut->roots, trace_and_enqueue_locally, mut);
 }
 
 // Precondition: the caller holds the heap lock.
 static void mark_mutator_roots_with_lock(struct mutator *mut) {
-  struct heap *heap = mutator_heap(mut);
-  for (struct handle *h = mut->roots; h; h = h->next) {
-    struct gc_edge root = gc_edge(&h->v);
-    if (trace_edge(heap, root))
-      tracer_enqueue_root(&heap->tracer,
-                          gc_ref_heap_object(gc_edge_ref(root)));
-  }
+  gc_trace_mutator_roots(mut->roots, trace_and_enqueue_globally,
+                         mutator_heap(mut));
 }
 
 static void trace_mutator_roots_with_lock(struct mutator *mut) {
@@ -976,12 +986,7 @@ static void trace_mutator_roots_after_stop(struct heap *heap) {
 }
 
 static void trace_global_roots(struct heap *heap) {
-  for (struct handle *h = heap->global_roots; h; h = h->next) {
-    struct gc_edge edge = gc_edge(&h->v);
-    if (trace_edge(heap, edge))
-      tracer_enqueue_root(&heap->tracer,
-                          gc_ref_heap_object(gc_edge_ref(edge)));
-  }
+  gc_trace_heap_roots(heap->roots, trace_and_enqueue_globally, heap);
 }
 
 static inline int
