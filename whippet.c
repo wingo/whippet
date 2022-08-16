@@ -182,11 +182,14 @@ static struct slab *object_slab(void *obj) {
   return (struct slab*) base;
 }
 
-static uint8_t *object_metadata_byte(void *obj) {
-  uintptr_t addr = (uintptr_t) obj;
+static uint8_t *metadata_byte_for_addr(uintptr_t addr) {
   uintptr_t base = addr & ~(SLAB_SIZE - 1);
   uintptr_t granule = (addr & (SLAB_SIZE - 1)) >> GRANULE_SIZE_LOG_2;
   return (uint8_t*) (base + granule);
+}
+
+static uint8_t *metadata_byte_for_object(struct gc_ref ref) {
+  return metadata_byte_for_addr(gc_ref_value(ref));
 }
 
 #define GRANULES_PER_BLOCK (BLOCK_SIZE / GRANULE_SIZE)
@@ -258,8 +261,6 @@ static inline size_t size_to_granules(size_t size) {
   return (size + GRANULE_SIZE - 1) >> GRANULE_SIZE_LOG_2;
 }
 
-struct gcobj;
-
 struct evacuation_allocator {
   size_t allocated; // atomically
   size_t limit;
@@ -329,7 +330,7 @@ struct gc_heap {
 struct gc_mutator_mark_buf {
   size_t size;
   size_t capacity;
-  struct gcobj **objects;
+  struct gc_ref *objects;
 };
 
 struct gc_mutator {
@@ -366,10 +367,6 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
 
 static void collect(struct gc_mutator *mut) GC_NEVER_INLINE;
 
-static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
-  return object_metadata_byte(obj);
-}
-
 static size_t mark_space_live_object_granules(uint8_t *metadata) {
   size_t n = 0;
   while ((metadata[n] & METADATA_BYTE_END) == 0)
@@ -379,8 +376,7 @@ static size_t mark_space_live_object_granules(uint8_t *metadata) {
 
 static inline int mark_space_mark_object(struct mark_space *space,
                                          struct gc_ref ref) {
-  struct gcobj *obj = gc_ref_heap_object(ref);
-  uint8_t *loc = object_metadata_byte(obj);
+  uint8_t *loc = metadata_byte_for_object(ref);
   uint8_t byte = *loc;
   if (byte & space->marked_mask)
     return 0;
@@ -414,7 +410,7 @@ static void clear_remaining_metadata_bytes_in_block(uintptr_t block,
   uintptr_t limit = block + BLOCK_SIZE;
   uintptr_t granules = (limit - base) >> GRANULE_SIZE_LOG_2;
   GC_ASSERT(granules <= GRANULES_PER_BLOCK);
-  memset(object_metadata_byte((void*)base), 0, granules);
+  memset(metadata_byte_for_addr(base), 0, granules);
 }
 
 static void finish_evacuation_allocator_block(uintptr_t block,
@@ -524,7 +520,7 @@ static struct gc_ref evacuation_allocate(struct mark_space *space,
 static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
                                                      struct gc_edge edge,
                                                      struct gc_ref old_ref) {
-  uint8_t *metadata = object_metadata_byte(gc_ref_heap_object(old_ref));
+  uint8_t *metadata = metadata_byte_for_object(old_ref);
   uint8_t byte = *metadata;
   if (byte & space->marked_mask)
     return 0;
@@ -557,7 +553,7 @@ static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
         gc_atomic_forward_commit(&fwd, new_ref);
         // Now update extent metadata, and indicate to the caller that
         // the object's fields need to be traced.
-        uint8_t *new_metadata = object_metadata_byte(gc_ref_heap_object(new_ref));
+        uint8_t *new_metadata = metadata_byte_for_object(new_ref);
         memcpy(new_metadata + 1, metadata + 1, object_granules - 1);
         gc_edge_update(edge, new_ref);
         metadata = new_metadata;
@@ -809,10 +805,10 @@ static void heap_reset_large_object_pages(struct gc_heap *heap, size_t npages) {
 
 static void mutator_mark_buf_grow(struct gc_mutator_mark_buf *buf) {
   size_t old_capacity = buf->capacity;
-  size_t old_bytes = old_capacity * sizeof(struct gcobj*);
+  size_t old_bytes = old_capacity * sizeof(struct gc_ref);
 
   size_t new_bytes = old_bytes ? old_bytes * 2 : getpagesize();
-  size_t new_capacity = new_bytes / sizeof(struct gcobj*);
+  size_t new_capacity = new_bytes / sizeof(struct gc_ref);
 
   void *mem = mmap(NULL, new_bytes, PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
@@ -829,21 +825,21 @@ static void mutator_mark_buf_grow(struct gc_mutator_mark_buf *buf) {
 }
 
 static void mutator_mark_buf_push(struct gc_mutator_mark_buf *buf,
-                                  struct gcobj *val) {
+                                  struct gc_ref ref) {
   if (GC_UNLIKELY(buf->size == buf->capacity))
     mutator_mark_buf_grow(buf);
-  buf->objects[buf->size++] = val;
+  buf->objects[buf->size++] = ref;
 }
 
 static void mutator_mark_buf_release(struct gc_mutator_mark_buf *buf) {
-  size_t bytes = buf->size * sizeof(struct gcobj*);
+  size_t bytes = buf->size * sizeof(struct gc_ref);
   if (bytes >= getpagesize())
     madvise(buf->objects, align_up(bytes, getpagesize()), MADV_DONTNEED);
   buf->size = 0;
 }
 
 static void mutator_mark_buf_destroy(struct gc_mutator_mark_buf *buf) {
-  size_t bytes = buf->capacity * sizeof(struct gcobj*);
+  size_t bytes = buf->capacity * sizeof(struct gc_ref);
   if (bytes)
     munmap(buf->objects, bytes);
 }
@@ -898,15 +894,13 @@ void gc_heap_set_roots(struct gc_heap *heap, struct gc_heap_roots *roots) {
 static void trace_and_enqueue_locally(struct gc_edge edge, void *data) {
   struct gc_mutator *mut = data;
   if (trace_edge(mutator_heap(mut), edge))
-    mutator_mark_buf_push(&mut->mark_buf,
-                          gc_ref_heap_object(gc_edge_ref(edge)));
+    mutator_mark_buf_push(&mut->mark_buf, gc_edge_ref(edge));
 }
 
 static void trace_and_enqueue_globally(struct gc_edge edge, void *data) {
   struct gc_heap *heap = data;
   if (trace_edge(heap, edge))
-    tracer_enqueue_root(&heap->tracer,
-                        gc_ref_heap_object(gc_edge_ref(edge)));
+    tracer_enqueue_root(&heap->tracer, gc_edge_ref(edge));
 }
 
 // Mark the roots of a mutator that is stopping for GC.  We can't
@@ -951,8 +945,8 @@ static void trace_mutator_roots_after_stop(struct gc_heap *heap) {
   int active_mutators_already_marked = heap_should_mark_while_stopping(heap);
   while (mut) {
     if (active_mutators_already_marked)
-      tracer_enqueue_roots(&heap->tracer,
-                           mut->mark_buf.objects, mut->mark_buf.size);
+      tracer_enqueue_roots(&heap->tracer, mut->mark_buf.objects,
+                           mut->mark_buf.size);
     else
       trace_mutator_roots_with_lock(mut);
     struct gc_mutator *next = mut->next;
@@ -1009,9 +1003,8 @@ static void mark_space_trace_card(struct mark_space *space,
       mark_bytes &= ~(((uint64_t)0xff) << (granule_offset * 8));
       size_t granule = granule_base + granule_offset;
       uintptr_t addr = first_addr_in_slab + granule * GRANULE_SIZE;
-      struct gcobj *obj = (struct gcobj*)addr;
-      GC_ASSERT(object_metadata_byte(obj) == &slab->metadata[granule]);
-      tracer_enqueue_root(&heap->tracer, obj);
+      GC_ASSERT(metadata_byte_for_addr(addr) == &slab->metadata[granule]);
+      tracer_enqueue_root(&heap->tracer, gc_ref(addr));
     }
   }
 }
@@ -1528,7 +1521,7 @@ static size_t next_hole_in_block(struct gc_mutator *mut) {
 
   while (sweep != limit) {
     GC_ASSERT((sweep & (GRANULE_SIZE - 1)) == 0);
-    uint8_t* metadata = object_metadata_byte((struct gcobj*)sweep);
+    uint8_t* metadata = metadata_byte_for_addr(sweep);
     size_t limit_granules = (limit - sweep) >> GRANULE_SIZE_LOG_2;
 
     // Except for when we first get a block, mut->sweep is positioned
@@ -1574,7 +1567,7 @@ static void finish_hole(struct gc_mutator *mut) {
     struct block_summary *summary = block_summary_for_addr(mut->block);
     summary->holes_with_fragmentation++;
     summary->fragmentation_granules += granules;
-    uint8_t *metadata = object_metadata_byte((void*)mut->alloc);
+    uint8_t *metadata = metadata_byte_for_addr(mut->alloc);
     memset(metadata, 0, granules);
     mut->alloc = mut->sweep;
   }
@@ -1766,10 +1759,10 @@ void* gc_allocate_small(struct gc_mutator *mut, size_t size) {
   uintptr_t alloc = mut->alloc;
   uintptr_t sweep = mut->sweep;
   uintptr_t new_alloc = alloc + size;
-  struct gcobj *obj;
+  struct gc_ref ret;
   if (new_alloc <= sweep) {
     mut->alloc = new_alloc;
-    obj = (struct gcobj *)alloc;
+    ret = gc_ref(alloc);
   } else {
     size_t granules = size >> GRANULE_SIZE_LOG_2;
     while (1) {
@@ -1781,11 +1774,11 @@ void* gc_allocate_small(struct gc_mutator *mut, size_t size) {
       if (!hole)
         trigger_collection(mut);
     }
-    obj = (struct gcobj*)mut->alloc;
+    ret = gc_ref(mut->alloc);
     mut->alloc += size;
   }
-  gc_update_alloc_table(mut, gc_ref_from_heap_object(obj), size);
-  return obj;
+  gc_update_alloc_table(mut, ret, size);
+  return gc_ref_heap_object(ret);
 }
 
 void* gc_allocate_pointerless(struct gc_mutator *mut, size_t size) {

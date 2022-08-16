@@ -8,22 +8,20 @@
 #include "debug.h"
 #include "gc-api.h"
 
-struct gcobj;
-
 struct trace_queue {
   size_t size;
   size_t read;
   size_t write;
-  struct gcobj **buf;
+  struct gc_ref *buf;
 };
 
 static const size_t trace_queue_max_size =
-  (1ULL << (sizeof(struct gcobj *) * 8 - 1)) / sizeof(struct gcobj *);
+  (1ULL << (sizeof(struct gc_ref) * 8 - 1)) / sizeof(struct gc_ref);
 static const size_t trace_queue_release_byte_threshold = 1 * 1024 * 1024;
 
-static struct gcobj **
+static struct gc_ref *
 trace_queue_alloc(size_t size) {
-  void *mem = mmap(NULL, size * sizeof(struct gcobj *), PROT_READ|PROT_WRITE,
+  void *mem = mmap(NULL, size * sizeof(struct gc_ref), PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
     perror("Failed to grow trace queue");
@@ -35,20 +33,20 @@ trace_queue_alloc(size_t size) {
 
 static int
 trace_queue_init(struct trace_queue *q) {
-  q->size = getpagesize() / sizeof(struct gcobj *);
+  q->size = getpagesize() / sizeof(struct gc_ref);
   q->read = 0;
   q->write = 0;
   q->buf = trace_queue_alloc(q->size);
   return !!q->buf;
 }
   
-static inline struct gcobj *
+static inline struct gc_ref
 trace_queue_get(struct trace_queue *q, size_t idx) {
   return q->buf[idx & (q->size - 1)];
 }
 
 static inline void
-trace_queue_put(struct trace_queue *q, size_t idx, struct gcobj *x) {
+trace_queue_put(struct trace_queue *q, size_t idx, struct gc_ref x) {
   q->buf[idx & (q->size - 1)] = x;
 }
 
@@ -57,14 +55,14 @@ static int trace_queue_grow(struct trace_queue *q) GC_NEVER_INLINE;
 static int
 trace_queue_grow(struct trace_queue *q) {
   size_t old_size = q->size;
-  struct gcobj **old_buf = q->buf;
+  struct gc_ref *old_buf = q->buf;
   if (old_size >= trace_queue_max_size) {
     DEBUG("trace queue already at max size of %zu bytes", old_size);
     return 0;
   }
 
   size_t new_size = old_size * 2;
-  struct gcobj **new_buf = trace_queue_alloc(new_size);
+  struct gc_ref *new_buf = trace_queue_alloc(new_size);
   if (!new_buf)
     return 0;
 
@@ -74,7 +72,7 @@ trace_queue_grow(struct trace_queue *q) {
   for (size_t i = q->read; i < q->write; i++)
     new_buf[i & new_mask] = old_buf[i & old_mask];
 
-  munmap(old_buf, old_size * sizeof(struct gcobj *));
+  munmap(old_buf, old_size * sizeof(struct gc_ref));
 
   q->size = new_size;
   q->buf = new_buf;
@@ -82,7 +80,7 @@ trace_queue_grow(struct trace_queue *q) {
 }
   
 static inline void
-trace_queue_push(struct trace_queue *q, struct gcobj *p) {
+trace_queue_push(struct trace_queue *q, struct gc_ref p) {
   if (UNLIKELY(q->write - q->read == q->size)) {
     if (!trace_queue_grow(q))
       GC_CRASH();
@@ -91,7 +89,7 @@ trace_queue_push(struct trace_queue *q, struct gcobj *p) {
 }
 
 static inline void
-trace_queue_push_many(struct trace_queue *q, struct gcobj **pv, size_t count) {
+trace_queue_push_many(struct trace_queue *q, struct gc_ref *pv, size_t count) {
   while (q->size - (q->write - q->read) < count) {
     if (!trace_queue_grow(q))
       GC_CRASH();
@@ -100,16 +98,16 @@ trace_queue_push_many(struct trace_queue *q, struct gcobj **pv, size_t count) {
     trace_queue_put(q, q->write++, pv[i]);
 }
 
-static inline struct gcobj*
+static inline struct gc_ref
 trace_queue_pop(struct trace_queue *q) {
   if (UNLIKELY(q->read == q->write))
-    return NULL;
+    return gc_ref_null();
   return trace_queue_get(q, q->read++);
 }
 
 static void
 trace_queue_release(struct trace_queue *q) {
-  size_t byte_size = q->size * sizeof(struct gcobj *);
+  size_t byte_size = q->size * sizeof(struct gc_ref);
   if (byte_size >= trace_queue_release_byte_threshold)
     madvise(q->buf, byte_size, MADV_DONTNEED);
   q->read = q->write = 0;
@@ -117,7 +115,7 @@ trace_queue_release(struct trace_queue *q) {
 
 static void
 trace_queue_destroy(struct trace_queue *q) {
-  size_t byte_size = q->size * sizeof(struct gcobj *);
+  size_t byte_size = q->size * sizeof(struct gc_ref);
   munmap(q->buf, byte_size);
 }
 
@@ -137,18 +135,17 @@ static void tracer_release(struct gc_heap *heap) {
   trace_queue_release(&heap_tracer(heap)->queue);
 }
 
-struct gcobj;
 static inline void tracer_visit(struct gc_edge edge, void *trace_data) GC_ALWAYS_INLINE;
 static inline void trace_one(struct gc_ref ref, void *trace_data) GC_ALWAYS_INLINE;
 static inline int trace_edge(struct gc_heap *heap,
                              struct gc_edge edge) GC_ALWAYS_INLINE;
 
 static inline void
-tracer_enqueue_root(struct tracer *tracer, struct gcobj *obj) {
+tracer_enqueue_root(struct tracer *tracer, struct gc_ref obj) {
   trace_queue_push(&tracer->queue, obj);
 }
 static inline void
-tracer_enqueue_roots(struct tracer *tracer, struct gcobj **objs,
+tracer_enqueue_roots(struct tracer *tracer, struct gc_ref *objs,
                      size_t count) {
   trace_queue_push_many(&tracer->queue, objs, count);
 }
@@ -156,14 +153,16 @@ static inline void
 tracer_visit(struct gc_edge edge, void *trace_data) {
   struct gc_heap *heap = trace_data;
   if (trace_edge(heap, edge))
-    tracer_enqueue_root(heap_tracer(heap),
-                        gc_ref_heap_object(gc_edge_ref(edge)));
+    tracer_enqueue_root(heap_tracer(heap), gc_edge_ref(edge));
 }
 static inline void
 tracer_trace(struct gc_heap *heap) {
-  struct gcobj *obj;
-  while ((obj = trace_queue_pop(&heap_tracer(heap)->queue)))
-    trace_one(gc_ref_from_heap_object(obj), heap);
+  do {
+    struct gc_ref obj = trace_queue_pop(&heap_tracer(heap)->queue);
+    if (!gc_ref_is_heap_object(obj))
+      break;
+    trace_one(obj, heap);
+  } while (1);
 }
 
 #endif // SERIAL_TRACER_H

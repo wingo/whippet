@@ -18,12 +18,10 @@
 // for Weak Memory Models" (Lê et al, PPoPP'13)
 // (http://www.di.ens.fr/%7Ezappa/readings/ppopp13.pdf).
 
-struct gcobj;
-
 struct trace_buf {
   unsigned log_size;
   size_t size;
-  struct gcobj **data;
+  uintptr_t *data;
 };
 
 // Min size: 8 kB on 64-bit systems, 4 kB on 32-bit.
@@ -35,7 +33,7 @@ static int
 trace_buf_init(struct trace_buf *buf, unsigned log_size) {
   ASSERT(log_size >= trace_buf_min_log_size);
   ASSERT(log_size <= trace_buf_max_log_size);
-  size_t size = (1 << log_size) * sizeof(struct gcobj *);
+  size_t size = (1 << log_size) * sizeof(uintptr_t);
   void *mem = mmap(NULL, size, PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
@@ -56,7 +54,7 @@ trace_buf_size(struct trace_buf *buf) {
 
 static inline size_t
 trace_buf_byte_size(struct trace_buf *buf) {
-  return trace_buf_size(buf) * sizeof(struct gcobj *);
+  return trace_buf_size(buf) * sizeof(uintptr_t);
 }
 
 static void
@@ -75,16 +73,16 @@ trace_buf_destroy(struct trace_buf *buf) {
   }
 }
 
-static inline struct gcobj *
+static inline struct gc_ref
 trace_buf_get(struct trace_buf *buf, size_t i) {
-  return atomic_load_explicit(&buf->data[i & (buf->size - 1)],
-                              memory_order_relaxed);
+  return gc_ref(atomic_load_explicit(&buf->data[i & (buf->size - 1)],
+                                     memory_order_relaxed));
 }
 
 static inline void
-trace_buf_put(struct trace_buf *buf, size_t i, struct gcobj * o) {
+trace_buf_put(struct trace_buf *buf, size_t i, struct gc_ref ref) {
   return atomic_store_explicit(&buf->data[i & (buf->size - 1)],
-                               o,
+                               gc_ref_value(ref),
                                memory_order_relaxed);
 }
 
@@ -158,7 +156,7 @@ trace_deque_grow(struct trace_deque *q, int cur, size_t b, size_t t) {
 }
 
 static void
-trace_deque_push(struct trace_deque *q, struct gcobj * x) {
+trace_deque_push(struct trace_deque *q, struct gc_ref x) {
   size_t b = LOAD_RELAXED(&q->bottom);
   size_t t = LOAD_ACQUIRE(&q->top);
   int active = LOAD_RELAXED(&q->active);
@@ -172,7 +170,7 @@ trace_deque_push(struct trace_deque *q, struct gcobj * x) {
 }
 
 static void
-trace_deque_push_many(struct trace_deque *q, struct gcobj **objv, size_t count) {
+trace_deque_push_many(struct trace_deque *q, struct gc_ref *objv, size_t count) {
   size_t b = LOAD_RELAXED(&q->bottom);
   size_t t = LOAD_ACQUIRE(&q->top);
   int active = LOAD_RELAXED(&q->active);
@@ -186,7 +184,7 @@ trace_deque_push_many(struct trace_deque *q, struct gcobj **objv, size_t count) 
   STORE_RELAXED(&q->bottom, b + count);
 }
 
-static struct gcobj *
+static struct gc_ref
 trace_deque_try_pop(struct trace_deque *q) {
   size_t b = LOAD_RELAXED(&q->bottom);
   b = b - 1;
@@ -194,7 +192,7 @@ trace_deque_try_pop(struct trace_deque *q) {
   STORE_RELAXED(&q->bottom, b);
   atomic_thread_fence(memory_order_seq_cst);
   size_t t = LOAD_RELAXED(&q->top);
-  struct gcobj * x;
+  struct gc_ref x;
   if (t <= b) { // Non-empty queue.
     x = trace_buf_get(&q->bufs[active], b);
     if (t == b) { // Single last element in queue.
@@ -202,32 +200,32 @@ trace_deque_try_pop(struct trace_deque *q) {
                                                    memory_order_seq_cst,
                                                    memory_order_relaxed))
         // Failed race.
-        x = NULL;
+        x = gc_ref_null();
       STORE_RELAXED(&q->bottom, b + 1);
     }
   } else { // Empty queue.
-    x = NULL;
+    x = gc_ref_null();
     STORE_RELAXED(&q->bottom, b + 1);
   }
   return x;
 }
 
-static struct gcobj *
+static struct gc_ref
 trace_deque_steal(struct trace_deque *q) {
   while (1) {
     size_t t = LOAD_ACQUIRE(&q->top);
     atomic_thread_fence(memory_order_seq_cst);
     size_t b = LOAD_ACQUIRE(&q->bottom);
     if (t >= b)
-      return NULL;
+      return gc_ref_null();
     int active = LOAD_CONSUME(&q->active);
-    struct gcobj *x = x = trace_buf_get(&q->bufs[active], t);
+    struct gc_ref ref = trace_buf_get(&q->bufs[active], t);
     if (!atomic_compare_exchange_strong_explicit(&q->top, &t, t + 1,
                                                  memory_order_seq_cst,
                                                  memory_order_relaxed))
       // Failed race.
       continue;
-    return x;
+    return ref;
   }
 }
 
@@ -251,7 +249,7 @@ trace_deque_can_steal(struct trace_deque *q) {
 struct local_trace_queue {
   size_t read;
   size_t write;
-  struct gcobj * data[LOCAL_TRACE_QUEUE_SIZE];
+  struct gc_ref data[LOCAL_TRACE_QUEUE_SIZE];
 };
 
 static inline void
@@ -275,10 +273,10 @@ local_trace_queue_full(struct local_trace_queue *q) {
   return local_trace_queue_size(q) >= LOCAL_TRACE_QUEUE_SIZE;
 }
 static inline void
-local_trace_queue_push(struct local_trace_queue *q, struct gcobj * v) {
+local_trace_queue_push(struct local_trace_queue *q, struct gc_ref v) {
   q->data[q->write++ & LOCAL_TRACE_QUEUE_MASK] = v;
 }
-static inline struct gcobj *
+static inline struct gc_ref
 local_trace_queue_pop(struct local_trace_queue *q) {
   return q->data[q->read++ & LOCAL_TRACE_QUEUE_MASK];
 }
@@ -447,7 +445,6 @@ static void tracer_release(struct gc_heap *heap) {
     trace_deque_release(&tracer->workers[i].deque);
 }
 
-struct gcobj;
 static inline void tracer_visit(struct gc_edge edge, void *trace_data) GC_ALWAYS_INLINE;
 static inline void trace_one(struct gc_ref ref, void *trace_data) GC_ALWAYS_INLINE;
 static inline int trace_edge(struct gc_heap *heap,
@@ -466,12 +463,11 @@ tracer_visit(struct gc_edge edge, void *trace_data) {
   if (trace_edge(trace->heap, edge)) {
     if (local_trace_queue_full(&trace->local))
       tracer_share(trace);
-    local_trace_queue_push(&trace->local,
-                           gc_ref_heap_object(gc_edge_ref(edge)));
+    local_trace_queue_push(&trace->local, gc_edge_ref(edge));
   }
 }
 
-static struct gcobj *
+static struct gc_ref
 tracer_steal_from_worker(struct tracer *tracer, size_t id) {
   ASSERT(id < tracer->worker_count);
   return trace_deque_steal(&tracer->workers[id].deque);
@@ -483,21 +479,21 @@ tracer_can_steal_from_worker(struct tracer *tracer, size_t id) {
   return trace_deque_can_steal(&tracer->workers[id].deque);
 }
 
-static struct gcobj *
+static struct gc_ref
 trace_worker_steal_from_any(struct trace_worker *worker, struct tracer *tracer) {
   size_t steal_id = worker->steal_id;
   for (size_t i = 0; i < tracer->worker_count; i++) {
     steal_id = (steal_id + 1) % tracer->worker_count;
     DEBUG("tracer #%zu: stealing from #%zu\n", worker->id, steal_id);
-    struct gcobj * obj = tracer_steal_from_worker(tracer, steal_id);
-    if (obj) {
+    struct gc_ref obj = tracer_steal_from_worker(tracer, steal_id);
+    if (gc_ref_is_heap_object(obj)) {
       DEBUG("tracer #%zu: stealing got %p\n", worker->id, obj);
       worker->steal_id = steal_id;
       return obj;
     }
   }
   DEBUG("tracer #%zu: failed to steal\n", worker->id);
-  return 0;
+  return gc_ref_null();
 }
 
 static int
@@ -544,19 +540,19 @@ trace_worker_check_termination(struct trace_worker *worker,
   }
 }
 
-static struct gcobj *
+static struct gc_ref
 trace_worker_steal(struct local_tracer *trace) {
   struct tracer *tracer = heap_tracer(trace->heap);
   struct trace_worker *worker = trace->worker;
 
   while (1) {
     DEBUG("tracer #%zu: trying to steal\n", worker->id);
-    struct gcobj *obj = trace_worker_steal_from_any(worker, tracer);
-    if (obj)
+    struct gc_ref obj = trace_worker_steal_from_any(worker, tracer);
+    if (gc_ref_is_heap_object(obj))
       return obj;
 
     if (trace_worker_check_termination(worker, tracer))
-      return NULL;
+      return gc_ref_null();
   }
 }
 
@@ -571,15 +567,15 @@ trace_worker_trace(struct trace_worker *worker) {
   size_t n = 0;
   DEBUG("tracer #%zu: running trace loop\n", worker->id);
   while (1) {
-    void *obj;
+    struct gc_ref ref;
     if (!local_trace_queue_empty(&trace.local)) {
-      obj = local_trace_queue_pop(&trace.local);
+      ref = local_trace_queue_pop(&trace.local);
     } else {
-      obj = trace_worker_steal(&trace);
-      if (!obj)
+      ref = trace_worker_steal(&trace);
+      if (!gc_ref_is_heap_object(ref))
         break;
     }
-    trace_one(gc_ref_from_heap_object(obj), &trace);
+    trace_one(ref, &trace);
     n++;
   }
   DEBUG("tracer #%zu: done tracing, %zu objects traced\n", worker->id, n);
@@ -588,13 +584,13 @@ trace_worker_trace(struct trace_worker *worker) {
 }
 
 static inline void
-tracer_enqueue_root(struct tracer *tracer, struct gcobj *obj) {
+tracer_enqueue_root(struct tracer *tracer, struct gc_ref ref) {
   struct trace_deque *worker0_deque = &tracer->workers[0].deque;
-  trace_deque_push(worker0_deque, obj);
+  trace_deque_push(worker0_deque, ref);
 }
 
 static inline void
-tracer_enqueue_roots(struct tracer *tracer, struct gcobj **objv,
+tracer_enqueue_roots(struct tracer *tracer, struct gc_ref *objv,
                      size_t count) {
   struct trace_deque *worker0_deque = &tracer->workers[0].deque;
   trace_deque_push_many(worker0_deque, objv, count);
