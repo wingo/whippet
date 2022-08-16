@@ -65,12 +65,12 @@ static const int max_tree_depth = 16;
 typedef HANDLE_TO(Node) NodeHandle;
 typedef HANDLE_TO(DoubleArray) DoubleArrayHandle;
 
-static Node* allocate_node(struct mutator *mut) {
+static Node* allocate_node(struct gc_mutator *mut) {
   // memset to 0 by the collector.
   return gc_allocate_with_kind(mut, ALLOC_KIND_NODE, sizeof (Node));
 }
 
-static DoubleArray* allocate_double_array(struct mutator *mut,
+static DoubleArray* allocate_double_array(struct gc_mutator *mut,
                                                  size_t size) {
   // May be uninitialized.
   size_t bytes = sizeof(DoubleArray) + sizeof (double) * size;
@@ -80,7 +80,7 @@ static DoubleArray* allocate_double_array(struct mutator *mut,
   return ret;
 }
 
-static Hole* allocate_hole(struct mutator *mut, size_t size) {
+static Hole* allocate_hole(struct gc_mutator *mut, size_t size) {
   size_t bytes = sizeof(Hole) + sizeof (uintptr_t) * size;
   Hole *ret = gc_allocate_with_kind(mut, ALLOC_KIND_HOLE, bytes);
   ret->length = size;
@@ -136,7 +136,7 @@ static size_t power_law(size_t *counter) {
 }
 
 struct thread {
-  struct mutator *mut;
+  struct gc_mutator *mut;
   struct gc_mutator_roots roots;
   size_t counter;
 };
@@ -157,7 +157,7 @@ static void set_field(Node *obj, Node **field, Node *val) {
 
 // Build tree top down, assigning to older objects.
 static void populate(struct thread *t, int depth, Node *node) {
-  struct mutator *mut = t->mut;
+  struct gc_mutator *mut = t->mut;
   if (depth <= 0)
     return;
 
@@ -185,7 +185,7 @@ static void populate(struct thread *t, int depth, Node *node) {
 
 // Build tree bottom-up
 static Node* make_tree(struct thread *t, int depth) {
-  struct mutator *mut = t->mut;
+  struct gc_mutator *mut = t->mut;
   if (depth <= 0)
     return allocate_node(mut);
 
@@ -224,7 +224,7 @@ static void validate_tree(Node *tree, int depth) {
 }
 
 static void time_construction(struct thread *t, int depth) {
-  struct mutator *mut = t->mut;
+  struct gc_mutator *mut = t->mut;
   int num_iters = compute_num_iters(depth);
   NodeHandle temp_tree = { NULL };
   PUSH_HANDLE(t, temp_tree);
@@ -270,23 +270,23 @@ static void* call_with_stack_base(void* (*f)(uintptr_t *stack_base, void *arg),
 }
 
 struct call_with_gc_data {
-  void* (*f)(struct mutator *);
-  struct heap *heap;
+  void* (*f)(struct gc_mutator *);
+  struct gc_heap *heap;
 };
 static void* call_with_gc_inner(uintptr_t *stack_base, void *arg) {
   struct call_with_gc_data *data = arg;
-  struct mutator *mut = gc_init_for_thread(stack_base, data->heap);
+  struct gc_mutator *mut = gc_init_for_thread(stack_base, data->heap);
   void *ret = data->f(mut);
   gc_finish_for_thread(mut);
   return ret;
 }
-static void* call_with_gc(void* (*f)(struct mutator *),
-                          struct heap *heap) {
+static void* call_with_gc(void* (*f)(struct gc_mutator *),
+                          struct gc_heap *heap) {
   struct call_with_gc_data data = { f, heap };
   return call_with_stack_base(call_with_gc_inner, &data);
 }
 
-static void* run_one_test(struct mutator *mut) {
+static void* run_one_test(struct gc_mutator *mut) {
   NodeHandle long_lived_tree = { NULL };
   NodeHandle temp_tree = { NULL };
   DoubleArrayHandle array = { NULL };
@@ -330,7 +330,7 @@ static void* run_one_test(struct mutator *mut) {
 }
 
 static void* run_one_test_in_thread(void *arg) {
-  struct heap *heap = arg;
+  struct gc_heap *heap = arg;
   return call_with_gc(run_one_test, heap);
 }
 
@@ -375,8 +375,8 @@ int main(int argc, char *argv[]) {
   size_t heap_size = heap_max_live * multiplier * nthreads;
   struct gc_option options[] = { { GC_OPTION_FIXED_HEAP_SIZE, heap_size },
                                  { GC_OPTION_PARALLELISM, parallelism } };
-  struct heap *heap;
-  struct mutator *mut;
+  struct gc_heap *heap;
+  struct gc_mutator *mut;
   if (!gc_init(sizeof options / sizeof options[0], options, &heap, &mut)) {
     fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
             heap_size);

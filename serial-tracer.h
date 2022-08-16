@@ -125,22 +125,22 @@ struct tracer {
   struct trace_queue queue;
 };
 
-struct heap;
-static inline struct tracer* heap_tracer(struct heap *heap);
+struct gc_heap;
+static inline struct tracer* heap_tracer(struct gc_heap *heap);
 
 static int
-tracer_init(struct heap *heap, size_t parallelism) {
+tracer_init(struct gc_heap *heap, size_t parallelism) {
   return trace_queue_init(&heap_tracer(heap)->queue);
 }
-static void tracer_prepare(struct heap *heap) {}
-static void tracer_release(struct heap *heap) {
+static void tracer_prepare(struct gc_heap *heap) {}
+static void tracer_release(struct gc_heap *heap) {
   trace_queue_release(&heap_tracer(heap)->queue);
 }
 
 struct gcobj;
 static inline void tracer_visit(struct gc_edge edge, void *trace_data) GC_ALWAYS_INLINE;
 static inline void trace_one(struct gcobj *obj, void *trace_data) GC_ALWAYS_INLINE;
-static inline int trace_edge(struct heap *heap,
+static inline int trace_edge(struct gc_heap *heap,
                              struct gc_edge edge) GC_ALWAYS_INLINE;
 
 static inline void
@@ -154,13 +154,13 @@ tracer_enqueue_roots(struct tracer *tracer, struct gcobj **objs,
 }
 static inline void
 tracer_visit(struct gc_edge edge, void *trace_data) {
-  struct heap *heap = trace_data;
+  struct gc_heap *heap = trace_data;
   if (trace_edge(heap, edge))
     tracer_enqueue_root(heap_tracer(heap),
                         gc_ref_heap_object(gc_edge_ref(edge)));
 }
 static inline void
-tracer_trace(struct heap *heap) {
+tracer_trace(struct gc_heap *heap) {
   struct gcobj *obj;
   while ((obj = trace_queue_pop(&heap_tracer(heap)->queue)))
     trace_one(obj, heap);

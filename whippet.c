@@ -308,7 +308,7 @@ enum gc_kind {
   GC_KIND_MAJOR_EVACUATING = GC_KIND_FLAG_EVACUATING,
 };
 
-struct heap {
+struct gc_heap {
   struct mark_space mark_space;
   struct large_object_space large_object_space;
   size_t large_object_pages;
@@ -323,11 +323,11 @@ struct heap {
   size_t active_mutator_count;
   size_t mutator_count;
   struct gc_heap_roots *roots;
-  struct mutator *mutator_trace_list;
+  struct gc_mutator *mutator_trace_list;
   long count;
   long minor_count;
   uint8_t last_collection_was_minor;
-  struct mutator *deactivated_mutators;
+  struct gc_mutator *deactivated_mutators;
   struct tracer tracer;
   double fragmentation_low_threshold;
   double fragmentation_high_threshold;
@@ -336,37 +336,37 @@ struct heap {
   double minimum_major_gc_yield_threshold;
 };
 
-struct mutator_mark_buf {
+struct gc_mutator_mark_buf {
   size_t size;
   size_t capacity;
   struct gcobj **objects;
 };
 
-struct mutator {
+struct gc_mutator {
   // Bump-pointer allocation into holes.
   uintptr_t alloc;
   uintptr_t sweep;
   uintptr_t block;
-  struct heap *heap;
+  struct gc_heap *heap;
   struct gc_mutator_roots *roots;
-  struct mutator_mark_buf mark_buf;
+  struct gc_mutator_mark_buf mark_buf;
   // Three uses for this in-object linked-list pointer:
   //  - inactive (blocked in syscall) mutators
   //  - grey objects when stopping active mutators for mark-in-place
   //  - untraced mutators when stopping active mutators for evacuation
-  struct mutator *next;
+  struct gc_mutator *next;
 };
 
-static inline struct tracer* heap_tracer(struct heap *heap) {
+static inline struct tracer* heap_tracer(struct gc_heap *heap) {
   return &heap->tracer;
 }
-static inline struct mark_space* heap_mark_space(struct heap *heap) {
+static inline struct mark_space* heap_mark_space(struct gc_heap *heap) {
   return &heap->mark_space;
 }
-static inline struct large_object_space* heap_large_object_space(struct heap *heap) {
+static inline struct large_object_space* heap_large_object_space(struct gc_heap *heap) {
   return &heap->large_object_space;
 }
-static inline struct heap* mutator_heap(struct mutator *mutator) {
+static inline struct gc_heap* mutator_heap(struct gc_mutator *mutator) {
   return mutator->heap;
 }
 
@@ -374,7 +374,7 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
 
-static void collect(struct mutator *mut) GC_NEVER_INLINE;
+static void collect(struct gc_mutator *mut) GC_NEVER_INLINE;
 
 static int heap_object_is_large(struct gcobj *obj) {
   size_t size;
@@ -626,7 +626,7 @@ static inline int large_object_space_mark_object(struct large_object_space *spac
   return large_object_space_copy(space, (uintptr_t)obj);
 }
 
-static inline int trace_edge(struct heap *heap, struct gc_edge edge) {
+static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge) {
   struct gc_ref ref = gc_edge_ref(edge);
   if (!gc_ref_is_heap_object(ref))
     return 0;
@@ -648,22 +648,22 @@ static inline void trace_one(struct gcobj *obj, void *mark_data) {
   gc_trace_object(obj, tracer_visit, mark_data, NULL);
 }
 
-static int heap_has_multiple_mutators(struct heap *heap) {
+static int heap_has_multiple_mutators(struct gc_heap *heap) {
   return atomic_load_explicit(&heap->multithreaded, memory_order_relaxed);
 }
 
-static int mutators_are_stopping(struct heap *heap) {
+static int mutators_are_stopping(struct gc_heap *heap) {
   return atomic_load_explicit(&heap->collecting, memory_order_relaxed);
 }
 
-static inline void heap_lock(struct heap *heap) {
+static inline void heap_lock(struct gc_heap *heap) {
   pthread_mutex_lock(&heap->lock);
 }
-static inline void heap_unlock(struct heap *heap) {
+static inline void heap_unlock(struct gc_heap *heap) {
   pthread_mutex_unlock(&heap->lock);
 }
 
-static void add_mutator(struct heap *heap, struct mutator *mut) {
+static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->heap = heap;
   heap_lock(heap);
   // We have no roots.  If there is a GC currently in progress, we have
@@ -677,7 +677,7 @@ static void add_mutator(struct heap *heap, struct mutator *mut) {
   heap_unlock(heap);
 }
 
-static void remove_mutator(struct heap *heap, struct mutator *mut) {
+static void remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->heap = NULL;
   heap_lock(heap);
   heap->active_mutator_count--;
@@ -689,12 +689,12 @@ static void remove_mutator(struct heap *heap, struct mutator *mut) {
   heap_unlock(heap);
 }
 
-static void request_mutators_to_stop(struct heap *heap) {
+static void request_mutators_to_stop(struct gc_heap *heap) {
   GC_ASSERT(!mutators_are_stopping(heap));
   atomic_store_explicit(&heap->collecting, 1, memory_order_relaxed);
 }
 
-static void allow_mutators_to_continue(struct heap *heap) {
+static void allow_mutators_to_continue(struct gc_heap *heap) {
   GC_ASSERT(mutators_are_stopping(heap));
   GC_ASSERT(heap->active_mutator_count == 0);
   heap->active_mutator_count++;
@@ -780,9 +780,9 @@ static void mark_space_reacquire_memory(struct mark_space *space,
   }
 }
 
-static size_t next_hole(struct mutator *mut);
+static size_t next_hole(struct gc_mutator *mut);
 
-static int sweep_until_memory_released(struct mutator *mut) {
+static int sweep_until_memory_released(struct gc_mutator *mut) {
   struct mark_space *space = heap_mark_space(mutator_heap(mut));
   ssize_t pending = atomic_load_explicit(&space->pending_unavailable_bytes,
                                          memory_order_acquire);
@@ -816,7 +816,7 @@ static int sweep_until_memory_released(struct mutator *mut) {
   return pending <= 0;
 }
 
-static void heap_reset_large_object_pages(struct heap *heap, size_t npages) {
+static void heap_reset_large_object_pages(struct gc_heap *heap, size_t npages) {
   size_t previous = heap->large_object_pages;
   heap->large_object_pages = npages;
   GC_ASSERT(npages <= previous);
@@ -825,7 +825,7 @@ static void heap_reset_large_object_pages(struct heap *heap, size_t npages) {
   mark_space_reacquire_memory(heap_mark_space(heap), bytes);
 }
 
-static void mutator_mark_buf_grow(struct mutator_mark_buf *buf) {
+static void mutator_mark_buf_grow(struct gc_mutator_mark_buf *buf) {
   size_t old_capacity = buf->capacity;
   size_t old_bytes = old_capacity * sizeof(struct gcobj*);
 
@@ -846,30 +846,30 @@ static void mutator_mark_buf_grow(struct mutator_mark_buf *buf) {
   buf->capacity = new_capacity;
 }
 
-static void mutator_mark_buf_push(struct mutator_mark_buf *buf,
+static void mutator_mark_buf_push(struct gc_mutator_mark_buf *buf,
                                   struct gcobj *val) {
   if (GC_UNLIKELY(buf->size == buf->capacity))
     mutator_mark_buf_grow(buf);
   buf->objects[buf->size++] = val;
 }
 
-static void mutator_mark_buf_release(struct mutator_mark_buf *buf) {
+static void mutator_mark_buf_release(struct gc_mutator_mark_buf *buf) {
   size_t bytes = buf->size * sizeof(struct gcobj*);
   if (bytes >= getpagesize())
     madvise(buf->objects, align_up(bytes, getpagesize()), MADV_DONTNEED);
   buf->size = 0;
 }
 
-static void mutator_mark_buf_destroy(struct mutator_mark_buf *buf) {
+static void mutator_mark_buf_destroy(struct gc_mutator_mark_buf *buf) {
   size_t bytes = buf->capacity * sizeof(struct gcobj*);
   if (bytes)
     munmap(buf->objects, bytes);
 }
 
-static void enqueue_mutator_for_tracing(struct mutator *mut) {
-  struct heap *heap = mutator_heap(mut);
+static void enqueue_mutator_for_tracing(struct gc_mutator *mut) {
+  struct gc_heap *heap = mutator_heap(mut);
   GC_ASSERT(mut->next == NULL);
-  struct mutator *next =
+  struct gc_mutator *next =
     atomic_load_explicit(&heap->mutator_trace_list, memory_order_acquire);
   do {
     mut->next = next;
@@ -877,7 +877,7 @@ static void enqueue_mutator_for_tracing(struct mutator *mut) {
                                          &next, mut));
 }
 
-static int heap_should_mark_while_stopping(struct heap *heap) {
+static int heap_should_mark_while_stopping(struct gc_heap *heap) {
   if (heap->allow_pinning) {
     // The metadata byte is mostly used for marking and object extent.
     // For marking, we allow updates to race, because the state
@@ -901,27 +901,27 @@ static int heap_should_mark_while_stopping(struct heap *heap) {
   return (atomic_load(&heap->gc_kind) & GC_KIND_FLAG_EVACUATING) == 0;
 }
 
-static int mutator_should_mark_while_stopping(struct mutator *mut) {
+static int mutator_should_mark_while_stopping(struct gc_mutator *mut) {
   return heap_should_mark_while_stopping(mutator_heap(mut));
 }
 
-void gc_mutator_set_roots(struct mutator *mut,
+void gc_mutator_set_roots(struct gc_mutator *mut,
                           struct gc_mutator_roots *roots) {
   mut->roots = roots;
 }
-void gc_heap_set_roots(struct heap *heap, struct gc_heap_roots *roots) {
+void gc_heap_set_roots(struct gc_heap *heap, struct gc_heap_roots *roots) {
   heap->roots = roots;
 }
 
 static void trace_and_enqueue_locally(struct gc_edge edge, void *data) {
-  struct mutator *mut = data;
+  struct gc_mutator *mut = data;
   if (trace_edge(mutator_heap(mut), edge))
     mutator_mark_buf_push(&mut->mark_buf,
                           gc_ref_heap_object(gc_edge_ref(edge)));
 }
 
 static void trace_and_enqueue_globally(struct gc_edge edge, void *data) {
-  struct heap *heap = data;
+  struct gc_heap *heap = data;
   if (trace_edge(heap, edge))
     tracer_enqueue_root(&heap->tracer,
                         gc_ref_heap_object(gc_edge_ref(edge)));
@@ -929,43 +929,43 @@ static void trace_and_enqueue_globally(struct gc_edge edge, void *data) {
 
 // Mark the roots of a mutator that is stopping for GC.  We can't
 // enqueue them directly, so we send them to the controller in a buffer.
-static void mark_stopping_mutator_roots(struct mutator *mut) {
+static void mark_stopping_mutator_roots(struct gc_mutator *mut) {
   GC_ASSERT(mutator_should_mark_while_stopping(mut));
   gc_trace_mutator_roots(mut->roots, trace_and_enqueue_locally, mut);
 }
 
 // Precondition: the caller holds the heap lock.
-static void mark_mutator_roots_with_lock(struct mutator *mut) {
+static void mark_mutator_roots_with_lock(struct gc_mutator *mut) {
   gc_trace_mutator_roots(mut->roots, trace_and_enqueue_globally,
                          mutator_heap(mut));
 }
 
-static void trace_mutator_roots_with_lock(struct mutator *mut) {
+static void trace_mutator_roots_with_lock(struct gc_mutator *mut) {
   mark_mutator_roots_with_lock(mut);
 }
 
-static void trace_mutator_roots_with_lock_before_stop(struct mutator *mut) {
+static void trace_mutator_roots_with_lock_before_stop(struct gc_mutator *mut) {
   if (mutator_should_mark_while_stopping(mut))
     mark_mutator_roots_with_lock(mut);
   else
     enqueue_mutator_for_tracing(mut);
 }
 
-static void release_stopping_mutator_roots(struct mutator *mut) {
+static void release_stopping_mutator_roots(struct gc_mutator *mut) {
   mutator_mark_buf_release(&mut->mark_buf);
 }
 
-static void wait_for_mutators_to_stop(struct heap *heap) {
+static void wait_for_mutators_to_stop(struct gc_heap *heap) {
   heap->active_mutator_count--;
   while (heap->active_mutator_count)
     pthread_cond_wait(&heap->collector_cond, &heap->lock);
 }
 
-static void finish_sweeping(struct mutator *mut);
-static void finish_sweeping_in_block(struct mutator *mut);
+static void finish_sweeping(struct gc_mutator *mut);
+static void finish_sweeping_in_block(struct gc_mutator *mut);
 
-static void trace_mutator_roots_after_stop(struct heap *heap) {
-  struct mutator *mut = atomic_load(&heap->mutator_trace_list);
+static void trace_mutator_roots_after_stop(struct gc_heap *heap) {
+  struct gc_mutator *mut = atomic_load(&heap->mutator_trace_list);
   int active_mutators_already_marked = heap_should_mark_while_stopping(heap);
   while (mut) {
     if (active_mutators_already_marked)
@@ -973,24 +973,24 @@ static void trace_mutator_roots_after_stop(struct heap *heap) {
                            mut->mark_buf.objects, mut->mark_buf.size);
     else
       trace_mutator_roots_with_lock(mut);
-    struct mutator *next = mut->next;
+    struct gc_mutator *next = mut->next;
     mut->next = NULL;
     mut = next;
   }
   atomic_store(&heap->mutator_trace_list, NULL);
 
-  for (struct mutator *mut = heap->deactivated_mutators; mut; mut = mut->next) {
+  for (struct gc_mutator *mut = heap->deactivated_mutators; mut; mut = mut->next) {
     finish_sweeping_in_block(mut);
     trace_mutator_roots_with_lock(mut);
   }
 }
 
-static void trace_global_roots(struct heap *heap) {
+static void trace_global_roots(struct gc_heap *heap) {
   gc_trace_heap_roots(heap->roots, trace_and_enqueue_globally, heap);
 }
 
 static inline int
-heap_object_is_young(struct heap *heap, struct gcobj *obj) {
+heap_object_is_young(struct gc_heap *heap, struct gcobj *obj) {
   if (GC_UNLIKELY(!mark_space_contains(heap_mark_space(heap), obj))) {
     // No lospace nursery, for the moment.
     return 0;
@@ -1023,7 +1023,7 @@ static uint64_t broadcast_byte(uint8_t byte) {
 // byte doesn't hold any roots, if all stores were to nursery objects.
 STATIC_ASSERT_EQ(GRANULES_PER_REMSET_BYTE % 8, 0);
 static void mark_space_trace_card(struct mark_space *space,
-                                  struct heap *heap, struct slab *slab,
+                                  struct gc_heap *heap, struct slab *slab,
                                   size_t card) {
   uintptr_t first_addr_in_slab = (uintptr_t) &slab->blocks[0];
   size_t granule_base = card * GRANULES_PER_REMSET_BYTE;
@@ -1045,7 +1045,7 @@ static void mark_space_trace_card(struct mark_space *space,
 }
 
 static void mark_space_trace_remembered_set(struct mark_space *space,
-                                            struct heap *heap) {
+                                            struct gc_heap *heap) {
   GC_ASSERT(!space->evacuating);
   for (size_t s = 0; s < space->nslabs; s++) {
     struct slab *slab = &space->slabs[s];
@@ -1072,7 +1072,7 @@ static void mark_space_clear_remembered_set(struct mark_space *space) {
   }
 }
 
-static void trace_generational_roots(struct heap *heap) {
+static void trace_generational_roots(struct gc_heap *heap) {
   // TODO: Add lospace nursery.
   if (atomic_load(&heap->gc_kind) & GC_KIND_FLAG_MINOR) {
     mark_space_trace_remembered_set(heap_mark_space(heap), heap);
@@ -1081,8 +1081,8 @@ static void trace_generational_roots(struct heap *heap) {
   }
 }
 
-static void pause_mutator_for_collection(struct heap *heap) GC_NEVER_INLINE;
-static void pause_mutator_for_collection(struct heap *heap) {
+static void pause_mutator_for_collection(struct gc_heap *heap) GC_NEVER_INLINE;
+static void pause_mutator_for_collection(struct gc_heap *heap) {
   GC_ASSERT(mutators_are_stopping(heap));
   GC_ASSERT(heap->active_mutator_count);
   heap->active_mutator_count--;
@@ -1104,9 +1104,9 @@ static void pause_mutator_for_collection(struct heap *heap) {
   heap->active_mutator_count++;
 }
 
-static void pause_mutator_for_collection_with_lock(struct mutator *mut) GC_NEVER_INLINE;
-static void pause_mutator_for_collection_with_lock(struct mutator *mut) {
-  struct heap *heap = mutator_heap(mut);
+static void pause_mutator_for_collection_with_lock(struct gc_mutator *mut) GC_NEVER_INLINE;
+static void pause_mutator_for_collection_with_lock(struct gc_mutator *mut) {
+  struct gc_heap *heap = mutator_heap(mut);
   GC_ASSERT(mutators_are_stopping(heap));
   finish_sweeping_in_block(mut);
   if (mutator_should_mark_while_stopping(mut))
@@ -1117,9 +1117,9 @@ static void pause_mutator_for_collection_with_lock(struct mutator *mut) {
   pause_mutator_for_collection(heap);
 }
 
-static void pause_mutator_for_collection_without_lock(struct mutator *mut) GC_NEVER_INLINE;
-static void pause_mutator_for_collection_without_lock(struct mutator *mut) {
-  struct heap *heap = mutator_heap(mut);
+static void pause_mutator_for_collection_without_lock(struct gc_mutator *mut) GC_NEVER_INLINE;
+static void pause_mutator_for_collection_without_lock(struct gc_mutator *mut) {
+  struct gc_heap *heap = mutator_heap(mut);
   GC_ASSERT(mutators_are_stopping(heap));
   finish_sweeping(mut);
   if (mutator_should_mark_while_stopping(mut))
@@ -1131,7 +1131,7 @@ static void pause_mutator_for_collection_without_lock(struct mutator *mut) {
   release_stopping_mutator_roots(mut);
 }
 
-static inline void maybe_pause_mutator_for_collection(struct mutator *mut) {
+static inline void maybe_pause_mutator_for_collection(struct gc_mutator *mut) {
   while (mutators_are_stopping(mutator_heap(mut)))
     pause_mutator_for_collection_without_lock(mut);
 }
@@ -1155,11 +1155,11 @@ static void reset_statistics(struct mark_space *space) {
   space->fragmentation_granules_since_last_collection = 0;
 }
 
-static int maybe_grow_heap(struct heap *heap) {
+static int maybe_grow_heap(struct gc_heap *heap) {
   return 0;
 }
 
-static double heap_last_gc_yield(struct heap *heap) {
+static double heap_last_gc_yield(struct gc_heap *heap) {
   struct mark_space *mark_space = heap_mark_space(heap);
   size_t mark_space_yield = mark_space->granules_freed_by_last_collection;
   mark_space_yield <<= GRANULE_SIZE_LOG_2;
@@ -1180,7 +1180,7 @@ static double heap_last_gc_yield(struct heap *heap) {
   return yield / heap->size;
 }
 
-static double heap_fragmentation(struct heap *heap) {
+static double heap_fragmentation(struct gc_heap *heap) {
   struct mark_space *mark_space = heap_mark_space(heap);
   size_t fragmentation_granules =
     mark_space->fragmentation_granules_since_last_collection;
@@ -1189,7 +1189,7 @@ static double heap_fragmentation(struct heap *heap) {
   return ((double)fragmentation_granules) / heap_granules;
 }
 
-static void detect_out_of_memory(struct heap *heap) {
+static void detect_out_of_memory(struct gc_heap *heap) {
   struct mark_space *mark_space = heap_mark_space(heap);
   struct large_object_space *lospace = heap_large_object_space(heap);
 
@@ -1216,7 +1216,7 @@ static void detect_out_of_memory(struct heap *heap) {
   GC_CRASH();
 }
 
-static double clamp_major_gc_yield_threshold(struct heap *heap,
+static double clamp_major_gc_yield_threshold(struct gc_heap *heap,
                                              double threshold) {
   if (threshold < heap->minimum_major_gc_yield_threshold)
     threshold = heap->minimum_major_gc_yield_threshold;
@@ -1226,7 +1226,7 @@ static double clamp_major_gc_yield_threshold(struct heap *heap,
   return threshold;
 }
 
-static enum gc_kind determine_collection_kind(struct heap *heap) {
+static enum gc_kind determine_collection_kind(struct gc_heap *heap) {
   struct mark_space *mark_space = heap_mark_space(heap);
   enum gc_kind previous_gc_kind = atomic_load(&heap->gc_kind);
   enum gc_kind gc_kind;
@@ -1305,7 +1305,7 @@ static void release_evacuation_target_blocks(struct mark_space *space) {
                               reserve);
 }
 
-static void prepare_for_evacuation(struct heap *heap) {
+static void prepare_for_evacuation(struct gc_heap *heap) {
   struct mark_space *space = heap_mark_space(heap);
 
   if ((heap->gc_kind & GC_KIND_FLAG_EVACUATING) == 0) {
@@ -1397,13 +1397,13 @@ static void prepare_for_evacuation(struct heap *heap) {
   space->evacuating = 1;
 }
 
-static void trace_conservative_roots_after_stop(struct heap *heap) {
+static void trace_conservative_roots_after_stop(struct gc_heap *heap) {
   // FIXME: Visit conservative roots, if the collector is configured in
   // that way.  Mark them in place, preventing any subsequent
   // evacuation.
 }
 
-static void trace_precise_roots_after_stop(struct heap *heap) {
+static void trace_precise_roots_after_stop(struct gc_heap *heap) {
   trace_mutator_roots_after_stop(heap);
   trace_global_roots(heap);
   trace_generational_roots(heap);
@@ -1418,8 +1418,8 @@ static void mark_space_finish_gc(struct mark_space *space,
   release_evacuation_target_blocks(space);
 }
 
-static void collect(struct mutator *mut) {
-  struct heap *heap = mutator_heap(mut);
+static void collect(struct gc_mutator *mut) {
+  struct gc_heap *heap = mutator_heap(mut);
   struct mark_space *space = heap_mark_space(heap);
   struct large_object_space *lospace = heap_large_object_space(heap);
   if (maybe_grow_heap(heap)) {
@@ -1524,7 +1524,7 @@ static uintptr_t mark_space_next_block_to_sweep(struct mark_space *space) {
   return block;
 }
 
-static void finish_block(struct mutator *mut) {
+static void finish_block(struct gc_mutator *mut) {
   GC_ASSERT(mut->block);
   struct block_summary *block = block_summary_for_addr(mut->block);
   struct mark_space *space = heap_mark_space(mutator_heap(mut));
@@ -1547,7 +1547,7 @@ static void finish_block(struct mutator *mut) {
 
 // Sweep some heap to reclaim free space, resetting mut->alloc and
 // mut->sweep.  Return the size of the hole in granules.
-static size_t next_hole_in_block(struct mutator *mut) {
+static size_t next_hole_in_block(struct gc_mutator *mut) {
   uintptr_t sweep = mut->sweep;
   if (sweep == 0)
     return 0;
@@ -1596,7 +1596,7 @@ static size_t next_hole_in_block(struct mutator *mut) {
   return 0;
 }
 
-static void finish_hole(struct mutator *mut) {
+static void finish_hole(struct gc_mutator *mut) {
   size_t granules = (mut->sweep - mut->alloc) / GRANULE_SIZE;
   if (granules) {
     struct block_summary *summary = block_summary_for_addr(mut->block);
@@ -1609,7 +1609,7 @@ static void finish_hole(struct mutator *mut) {
   // FIXME: add to fragmentation
 }
 
-static int maybe_release_swept_empty_block(struct mutator *mut) {
+static int maybe_release_swept_empty_block(struct gc_mutator *mut) {
   GC_ASSERT(mut->block);
   struct mark_space *space = heap_mark_space(mutator_heap(mut));
   uintptr_t block = mut->block;
@@ -1623,7 +1623,7 @@ static int maybe_release_swept_empty_block(struct mutator *mut) {
   return 1;
 }
 
-static size_t next_hole(struct mutator *mut) {
+static size_t next_hole(struct gc_mutator *mut) {
   finish_hole(mut);
   // As we sweep if we find that a block is empty, we return it to the
   // empties list.  Empties are precious.  But if we return 10 blocks in
@@ -1740,20 +1740,20 @@ static size_t next_hole(struct mutator *mut) {
   }
 }
 
-static void finish_sweeping_in_block(struct mutator *mut) {
+static void finish_sweeping_in_block(struct gc_mutator *mut) {
   while (next_hole_in_block(mut))
     finish_hole(mut);
 }
 
 // Another thread is triggering GC.  Before we stop, finish clearing the
 // dead mark bytes for the mutator's block, and release the block.
-static void finish_sweeping(struct mutator *mut) {
+static void finish_sweeping(struct gc_mutator *mut) {
   while (next_hole(mut))
     finish_hole(mut);
 }
 
-static void trigger_collection(struct mutator *mut) {
-  struct heap *heap = mutator_heap(mut);
+static void trigger_collection(struct gc_mutator *mut) {
+  struct gc_heap *heap = mutator_heap(mut);
   heap_lock(heap);
   if (mutators_are_stopping(heap))
     pause_mutator_for_collection_with_lock(mut);
@@ -1762,8 +1762,8 @@ static void trigger_collection(struct mutator *mut) {
   heap_unlock(heap);
 }
 
-void* gc_allocate_large(struct mutator *mut, size_t size) {
-  struct heap *heap = mutator_heap(mut);
+void* gc_allocate_large(struct gc_mutator *mut, size_t size) {
+  struct gc_heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);
 
   size_t npages = large_object_space_npages(space, size);
@@ -1787,7 +1787,7 @@ void* gc_allocate_large(struct mutator *mut, size_t size) {
   return ret;
 }
 
-void* gc_allocate_small(struct mutator *mut, size_t size) {
+void* gc_allocate_small(struct gc_mutator *mut, size_t size) {
   GC_ASSERT(size > 0); // allocating 0 bytes would be silly
   GC_ASSERT(size <= gc_allocator_large_threshold());
   size = align_up(size, GRANULE_SIZE);
@@ -1816,7 +1816,7 @@ void* gc_allocate_small(struct mutator *mut, size_t size) {
   return obj;
 }
 
-void* gc_allocate_pointerless(struct mutator *mut, size_t size) {
+void* gc_allocate_pointerless(struct gc_mutator *mut, size_t size) {
   return gc_allocate(mut, size);
 }
 
@@ -1907,7 +1907,7 @@ static struct slab* allocate_slabs(size_t nslabs) {
   return (struct slab*) aligned_base;
 }
 
-static int heap_init(struct heap *heap, struct options *options) {
+static int heap_init(struct gc_heap *heap, struct options *options) {
   // *heap is already initialized to 0.
 
   pthread_mutex_init(&heap->lock, NULL);
@@ -1928,7 +1928,7 @@ static int heap_init(struct heap *heap, struct options *options) {
   return 1;
 }
 
-static int mark_space_init(struct mark_space *space, struct heap *heap) {
+static int mark_space_init(struct mark_space *space, struct gc_heap *heap) {
   size_t size = align_up(heap->size, SLAB_SIZE);
   size_t nslabs = size / SLAB_SIZE;
   struct slab *slabs = allocate_slabs(nslabs);
@@ -1961,13 +1961,13 @@ static int mark_space_init(struct mark_space *space, struct heap *heap) {
 }
 
 int gc_init(int argc, struct gc_option argv[],
-                   struct heap **heap, struct mutator **mut) {
+            struct gc_heap **heap, struct gc_mutator **mut) {
   GC_ASSERT_EQ(gc_allocator_small_granule_size(), GRANULE_SIZE);
   GC_ASSERT_EQ(gc_allocator_large_threshold(), LARGE_OBJECT_THRESHOLD);
   GC_ASSERT_EQ(gc_allocator_allocation_pointer_offset(),
-               offsetof(struct mutator, alloc));
+               offsetof(struct gc_mutator, alloc));
   GC_ASSERT_EQ(gc_allocator_allocation_limit_offset(),
-               offsetof(struct mutator, sweep));
+               offsetof(struct gc_mutator, sweep));
   GC_ASSERT_EQ(gc_allocator_alloc_table_alignment(), SLAB_SIZE);
   GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(), METADATA_BYTE_YOUNG);
   GC_ASSERT_EQ(gc_allocator_alloc_table_end_pattern(), METADATA_BYTE_END);
@@ -1981,7 +1981,7 @@ int gc_init(int argc, struct gc_option argv[],
   if (!parse_options(argc, argv, &options))
     return 0;
 
-  *heap = calloc(1, sizeof(struct heap));
+  *heap = calloc(1, sizeof(struct gc_heap));
   if (!*heap) GC_CRASH();
 
   if (!heap_init(*heap, &options))
@@ -1997,28 +1997,28 @@ int gc_init(int argc, struct gc_option argv[],
   if (!large_object_space_init(heap_large_object_space(*heap), *heap))
     GC_CRASH();
 
-  *mut = calloc(1, sizeof(struct mutator));
+  *mut = calloc(1, sizeof(struct gc_mutator));
   if (!*mut) GC_CRASH();
   add_mutator(*heap, *mut);
   return 1;
 }
 
-struct mutator* gc_init_for_thread(uintptr_t *stack_base,
-                                          struct heap *heap) {
-  struct mutator *ret = calloc(1, sizeof(struct mutator));
+struct gc_mutator* gc_init_for_thread(uintptr_t *stack_base,
+                                      struct gc_heap *heap) {
+  struct gc_mutator *ret = calloc(1, sizeof(struct gc_mutator));
   if (!ret)
     GC_CRASH();
   add_mutator(heap, ret);
   return ret;
 }
 
-void gc_finish_for_thread(struct mutator *mut) {
+void gc_finish_for_thread(struct gc_mutator *mut) {
   remove_mutator(mutator_heap(mut), mut);
   mutator_mark_buf_destroy(&mut->mark_buf);
   free(mut);
 }
 
-static void deactivate_mutator(struct heap *heap, struct mutator *mut) {
+static void deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mut->next == NULL);
   heap_lock(heap);
   mut->next = heap->deactivated_mutators;
@@ -2029,11 +2029,11 @@ static void deactivate_mutator(struct heap *heap, struct mutator *mut) {
   heap_unlock(heap);
 }
 
-static void reactivate_mutator(struct heap *heap, struct mutator *mut) {
+static void reactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   heap_lock(heap);
   while (mutators_are_stopping(heap))
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
-  struct mutator **prev = &heap->deactivated_mutators;
+  struct gc_mutator **prev = &heap->deactivated_mutators;
   while (*prev != mut)
     prev = &(*prev)->next;
   *prev = mut->next;
@@ -2042,17 +2042,17 @@ static void reactivate_mutator(struct heap *heap, struct mutator *mut) {
   heap_unlock(heap);
 }
 
-void* gc_call_without_gc(struct mutator *mut,
-                                void* (*f)(void*),
-                                void *data) {
-  struct heap *heap = mutator_heap(mut);
+void* gc_call_without_gc(struct gc_mutator *mut,
+                         void* (*f)(void*),
+                         void *data) {
+  struct gc_heap *heap = mutator_heap(mut);
   deactivate_mutator(heap, mut);
   void *ret = f(data);
   reactivate_mutator(heap, mut);
   return ret;
 }
 
-void gc_print_stats(struct heap *heap) {
+void gc_print_stats(struct gc_heap *heap) {
   printf("Completed %ld collections (%ld major)\n",
          heap->count, heap->count - heap->minor_count);
   printf("Heap size with overhead is %zd (%zu slabs)\n",

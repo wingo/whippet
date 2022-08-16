@@ -39,14 +39,14 @@
    up to 256 bytes.  */
 #define GC_INLINE_FREELIST_COUNT (256U / GC_INLINE_GRANULE_BYTES)
 
-struct heap {
+struct gc_heap {
   pthread_mutex_t lock;
   int multithreaded;
 };
 
-struct mutator {
+struct gc_mutator {
   void *freelists[GC_INLINE_FREELIST_COUNT];
-  struct heap *heap;
+  struct gc_heap *heap;
 };
 
 static inline size_t gc_inline_bytes_to_freelist_index(size_t bytes) {
@@ -91,18 +91,18 @@ allocate_small(void **freelist, size_t idx, enum gc_inline_kind kind) {
   return head;
 }
 
-void* gc_allocate_large(struct mutator *mut, size_t size) {
+void* gc_allocate_large(struct gc_mutator *mut, size_t size) {
   return GC_malloc(size);
 }
 
-void* gc_allocate_small(struct mutator *mut, size_t size) {
+void* gc_allocate_small(struct gc_mutator *mut, size_t size) {
   GC_ASSERT(size != 0);
   GC_ASSERT(size <= gc_allocator_large_threshold());
   size_t idx = gc_inline_bytes_to_freelist_index(size);
   return allocate_small(&mut->freelists[idx], idx, GC_INLINE_KIND_NORMAL);
 }
 
-void* gc_allocate_pointerless(struct mutator *mut,
+void* gc_allocate_pointerless(struct gc_mutator *mut,
                                             size_t size) {
   // Because the BDW API requires us to implement a custom marker so
   // that the pointerless freelist gets traced, even though it's in a
@@ -110,17 +110,17 @@ void* gc_allocate_pointerless(struct mutator *mut,
   return GC_malloc_atomic(size);
 }
 
-static inline void collect(struct mutator *mut) {
+static inline void collect(struct gc_mutator *mut) {
   GC_gcollect();
 }
 
-static inline struct mutator *add_mutator(struct heap *heap) {
-  struct mutator *ret = GC_malloc(sizeof(struct mutator));
+static inline struct gc_mutator *add_mutator(struct gc_heap *heap) {
+  struct gc_mutator *ret = GC_malloc(sizeof(struct gc_mutator));
   ret->heap = heap;
   return ret;
 }
 
-static inline struct heap *mutator_heap(struct mutator *mutator) {
+static inline struct gc_heap *mutator_heap(struct gc_mutator *mutator) {
   return mutator->heap;
 }
 
@@ -188,7 +188,7 @@ static int parse_options(int argc, struct gc_option argv[],
 }
 
 int gc_init(int argc, struct gc_option argv[],
-            struct heap **heap, struct mutator **mutator) {
+            struct gc_heap **heap, struct gc_mutator **mutator) {
   GC_ASSERT_EQ(gc_allocator_small_granule_size(), GC_INLINE_GRANULE_BYTES);
   GC_ASSERT_EQ(gc_allocator_large_threshold(),
                GC_INLINE_FREELIST_COUNT * GC_INLINE_GRANULE_BYTES);
@@ -212,14 +212,14 @@ int gc_init(int argc, struct gc_option argv[],
   if (options.fixed_heap_size > current_heap_size)
     GC_expand_hp(options.fixed_heap_size - current_heap_size);
   GC_allow_register_threads();
-  *heap = GC_malloc(sizeof(struct heap));
+  *heap = GC_malloc(sizeof(struct gc_heap));
   pthread_mutex_init(&(*heap)->lock, NULL);
   *mutator = add_mutator(*heap);
   return 1;
 }
 
-struct mutator* gc_init_for_thread(uintptr_t *stack_base,
-                                   struct heap *heap) {
+struct gc_mutator* gc_init_for_thread(uintptr_t *stack_base,
+                                   struct gc_heap *heap) {
   pthread_mutex_lock(&heap->lock);
   if (!heap->multithreaded) {
     GC_allow_register_threads();
@@ -231,23 +231,23 @@ struct mutator* gc_init_for_thread(uintptr_t *stack_base,
   GC_register_my_thread(&base);
   return add_mutator(heap);
 }
-void gc_finish_for_thread(struct mutator *mut) {
+void gc_finish_for_thread(struct gc_mutator *mut) {
   GC_unregister_my_thread();
 }
 
-void* gc_call_without_gc(struct mutator *mut,
+void* gc_call_without_gc(struct gc_mutator *mut,
                          void* (*f)(void*),
                          void *data) {
   return GC_do_blocking(f, data);
 }
 
-void gc_mutator_set_roots(struct mutator *mut,
+void gc_mutator_set_roots(struct gc_mutator *mut,
                           struct gc_mutator_roots *roots) {
 }
-void gc_heap_set_roots(struct heap *heap, struct gc_heap_roots *roots) {
+void gc_heap_set_roots(struct gc_heap *heap, struct gc_heap_roots *roots) {
 }
 
-void gc_print_stats(struct heap *heap) {
+void gc_print_stats(struct gc_heap *heap) {
   printf("Completed %ld collections\n", (long)GC_get_gc_no());
   printf("Heap size is %ld\n", (long)GC_get_heap_size());
 }

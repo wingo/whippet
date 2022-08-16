@@ -28,13 +28,13 @@ struct semi_space {
   size_t size;
   long count;
 };
-struct heap {
+struct gc_heap {
   struct semi_space semi_space;
   struct large_object_space large_object_space;
 };
 // One mutator per space, can just store the heap in the mutator.
-struct mutator {
-  struct heap heap;
+struct gc_mutator {
+  struct gc_heap heap;
   struct gc_mutator_roots *roots;
 };
 
@@ -43,16 +43,16 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
 
-static inline struct heap* mutator_heap(struct mutator *mut) {
+static inline struct gc_heap* mutator_heap(struct gc_mutator *mut) {
   return &mut->heap;
 }
-static inline struct semi_space* heap_semi_space(struct heap *heap) {
+static inline struct semi_space* heap_semi_space(struct gc_heap *heap) {
   return &heap->semi_space;
 }
-static inline struct large_object_space* heap_large_object_space(struct heap *heap) {
+static inline struct large_object_space* heap_large_object_space(struct gc_heap *heap) {
   return &heap->large_object_space;
 }
-static inline struct semi_space* mutator_semi_space(struct mutator *mut) {
+static inline struct semi_space* mutator_semi_space(struct gc_mutator *mut) {
   return heap_semi_space(mutator_heap(mut));
 }
 
@@ -60,8 +60,8 @@ static uintptr_t align_up(uintptr_t addr, size_t align) {
   return (addr + align - 1) & ~(align-1);
 }
 
-static void collect(struct mutator *mut) GC_NEVER_INLINE;
-static void collect_for_alloc(struct mutator *mut, size_t bytes) GC_NEVER_INLINE;
+static void collect(struct gc_mutator *mut) GC_NEVER_INLINE;
+static void collect_for_alloc(struct gc_mutator *mut, size_t bytes) GC_NEVER_INLINE;
 
 static void visit(struct gc_edge edge, void *visit_data);
 
@@ -111,7 +111,7 @@ static void* copy(struct semi_space *space, void *obj) {
   return new_obj;
 }
 
-static uintptr_t scan(struct heap *heap, uintptr_t grey) {
+static uintptr_t scan(struct gc_heap *heap, uintptr_t grey) {
   size_t size;
   gc_trace_object((void*)grey, visit, heap, &size);
   return grey + align_up(size, GC_ALIGNMENT);
@@ -122,12 +122,12 @@ static void* forward(struct semi_space *space, void *obj) {
   return forwarded ? (void*)forwarded : copy(space, obj);
 }  
 
-static void visit_semi_space(struct heap *heap, struct semi_space *space,
+static void visit_semi_space(struct gc_heap *heap, struct semi_space *space,
                              struct gc_edge edge, void *obj) {
   gc_edge_update(edge, gc_ref_from_heap_object(forward(space, obj)));
 }
 
-static void visit_large_object_space(struct heap *heap,
+static void visit_large_object_space(struct gc_heap *heap,
                                      struct large_object_space *space,
                                      void *obj) {
   if (large_object_space_copy(space, (uintptr_t)obj))
@@ -139,7 +139,7 @@ static int semi_space_contains(struct semi_space *space, void *obj) {
 }
 
 static void visit(struct gc_edge edge, void *visit_data) {
-  struct heap *heap = visit_data;
+  struct gc_heap *heap = visit_data;
   struct gc_ref ref = gc_edge_ref(edge);
   if (!gc_ref_is_heap_object(ref))
     return;
@@ -152,8 +152,8 @@ static void visit(struct gc_edge edge, void *visit_data) {
     GC_CRASH();
 }
 
-static void collect(struct mutator *mut) {
-  struct heap *heap = mutator_heap(mut);
+static void collect(struct gc_mutator *mut) {
+  struct gc_heap *heap = mutator_heap(mut);
   struct semi_space *semi = heap_semi_space(heap);
   struct large_object_space *large = heap_large_object_space(heap);
   // fprintf(stderr, "start collect #%ld:\n", space->count);
@@ -170,7 +170,7 @@ static void collect(struct mutator *mut) {
   // fprintf(stderr, "%zd bytes copied\n", (space->size>>1)-(space->limit-space->hp));
 }
 
-static void collect_for_alloc(struct mutator *mut, size_t bytes) {
+static void collect_for_alloc(struct gc_mutator *mut, size_t bytes) {
   collect(mut);
   struct semi_space *space = mutator_semi_space(mut);
   if (space->limit - space->hp < bytes) {
@@ -179,8 +179,8 @@ static void collect_for_alloc(struct mutator *mut, size_t bytes) {
   }
 }
 
-void* gc_allocate_large(struct mutator *mut, size_t size) {
-  struct heap *heap = mutator_heap(mut);
+void* gc_allocate_large(struct gc_mutator *mut, size_t size) {
+  struct gc_heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);
   struct semi_space *semi_space = heap_semi_space(heap);
 
@@ -205,7 +205,7 @@ void* gc_allocate_large(struct mutator *mut, size_t size) {
   return ret;
 }
 
-void* gc_allocate_small(struct mutator *mut, size_t size) {
+void* gc_allocate_small(struct gc_mutator *mut, size_t size) {
   struct semi_space *space = mutator_semi_space(mut);
   while (1) {
     uintptr_t addr = space->hp;
@@ -220,7 +220,7 @@ void* gc_allocate_small(struct mutator *mut, size_t size) {
     return (void *)addr;
   }
 }
-void* gc_allocate_pointerless(struct mutator *mut, size_t size) {
+void* gc_allocate_pointerless(struct gc_mutator *mut, size_t size) {
   return gc_allocate(mut, size);
 }
 
@@ -311,7 +311,7 @@ static int parse_options(int argc, struct gc_option argv[],
 }
 
 int gc_init(int argc, struct gc_option argv[],
-            struct heap **heap, struct mutator **mut) {
+            struct gc_heap **heap, struct gc_mutator **mut) {
   GC_ASSERT_EQ(gc_allocator_allocation_pointer_offset(),
                offsetof(struct semi_space, hp));
   GC_ASSERT_EQ(gc_allocator_allocation_limit_offset(),
@@ -321,7 +321,7 @@ int gc_init(int argc, struct gc_option argv[],
   if (!parse_options(argc, argv, &options))
     return 0;
 
-  *mut = calloc(1, sizeof(struct mutator));
+  *mut = calloc(1, sizeof(struct gc_mutator));
   if (!*mut) GC_CRASH();
   *heap = mutator_heap(*mut);
 
@@ -336,30 +336,30 @@ int gc_init(int argc, struct gc_option argv[],
   return 1;
 }
 
-void gc_mutator_set_roots(struct mutator *mut,
+void gc_mutator_set_roots(struct gc_mutator *mut,
                           struct gc_mutator_roots *roots) {
   mut->roots = roots;
 }
-void gc_heap_set_roots(struct heap *heap, struct gc_heap_roots *roots) {
+void gc_heap_set_roots(struct gc_heap *heap, struct gc_heap_roots *roots) {
   GC_CRASH();
 }
 
-struct mutator* gc_init_for_thread(uintptr_t *stack_base,
-                                   struct heap *heap) {
+struct gc_mutator* gc_init_for_thread(uintptr_t *stack_base,
+                                   struct gc_heap *heap) {
   fprintf(stderr,
           "Semispace copying collector not appropriate for multithreaded use.\n");
   GC_CRASH();
 }
-void gc_finish_for_thread(struct mutator *space) {
+void gc_finish_for_thread(struct gc_mutator *space) {
 }
 
-void* gc_call_without_gc(struct mutator *mut, void* (*f)(void*),
+void* gc_call_without_gc(struct gc_mutator *mut, void* (*f)(void*),
                          void *data) {
   // Can't be threads, then there won't be collection.
   return f(data);
 }
 
-void gc_print_stats(struct heap *heap) {
+void gc_print_stats(struct gc_heap *heap) {
   struct semi_space *space = heap_semi_space(heap);
   printf("Completed %ld collections\n", space->count);
   printf("Heap size is %zd\n", space->size);

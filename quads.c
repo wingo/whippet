@@ -15,7 +15,7 @@
 
 typedef HANDLE_TO(Quad) QuadHandle;
 
-static Quad* allocate_quad(struct mutator *mut) {
+static Quad* allocate_quad(struct gc_mutator *mut) {
   // memset to 0 by the collector.
   return gc_allocate_with_kind(mut, ALLOC_KIND_QUAD, sizeof (Quad));
 }
@@ -30,7 +30,7 @@ static unsigned long current_time(void)
 }
 
 struct thread {
-  struct mutator *mut;
+  struct gc_mutator *mut;
   struct gc_mutator_roots roots;
   size_t counter;
 };
@@ -134,8 +134,8 @@ int main(int argc, char *argv[]) {
 
   struct gc_option options[] = { { GC_OPTION_FIXED_HEAP_SIZE, heap_size },
                                  { GC_OPTION_PARALLELISM, parallelism } };
-  struct heap *heap;
-  struct mutator *mut;
+  struct gc_heap *heap;
+  struct gc_mutator *mut;
   if (!gc_init(sizeof options / sizeof options[0], options, &heap, &mut)) {
     fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
             heap_size);

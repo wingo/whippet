@@ -12,9 +12,8 @@
 #include <stdint.h>
 #include <string.h>
 
-// FIXME: prefix with gc_
-struct heap;
-struct mutator;
+struct gc_heap;
+struct gc_mutator;
 
 enum {
   GC_OPTION_FIXED_HEAP_SIZE,
@@ -26,10 +25,6 @@ struct gc_option {
   double value;
 };
 
-struct gc_mutator {
-  void *user_data;
-};
-
 // FIXME: Conflict with bdw-gc GC_API.  Switch prefix?
 #ifndef GC_API_
 #define GC_API_ __attribute__((visibility("hidden")))
@@ -37,20 +32,20 @@ struct gc_mutator {
 
 GC_API_ int gc_option_from_string(const char *str);
 GC_API_ int gc_init(int argc, struct gc_option argv[],
-                    struct heap **heap, struct mutator **mutator);
+                    struct gc_heap **heap, struct gc_mutator **mutator);
 
 struct gc_mutator_roots;
 struct gc_heap_roots;
-GC_API_ void gc_mutator_set_roots(struct mutator *mut,
+GC_API_ void gc_mutator_set_roots(struct gc_mutator *mut,
                                   struct gc_mutator_roots *roots);
-GC_API_ void gc_heap_set_roots(struct heap *heap, struct gc_heap_roots *roots);
+GC_API_ void gc_heap_set_roots(struct gc_heap *heap, struct gc_heap_roots *roots);
 
-GC_API_ struct mutator* gc_init_for_thread(uintptr_t *stack_base,
-                                           struct heap *heap);
-GC_API_ void gc_finish_for_thread(struct mutator *mut);
-GC_API_ void* gc_call_without_gc(struct mutator *mut, void* (*f)(void*),
+GC_API_ struct gc_mutator* gc_init_for_thread(uintptr_t *stack_base,
+                                           struct gc_heap *heap);
+GC_API_ void gc_finish_for_thread(struct gc_mutator *mut);
+GC_API_ void* gc_call_without_gc(struct gc_mutator *mut, void* (*f)(void*),
                                  void *data) GC_NEVER_INLINE;
-GC_API_ void gc_print_stats(struct heap *heap);
+GC_API_ void gc_print_stats(struct gc_heap *heap);
 
 static inline void gc_clear_fresh_allocation(struct gc_ref obj,
                                              size_t size) GC_ALWAYS_INLINE;
@@ -60,10 +55,10 @@ static inline void gc_clear_fresh_allocation(struct gc_ref obj,
   memset(gc_ref_heap_object(obj), 0, size);
 }
 
-static inline void gc_update_alloc_table(struct mutator *mut,
+static inline void gc_update_alloc_table(struct gc_mutator *mut,
                                          struct gc_ref obj,
                                          size_t size) GC_ALWAYS_INLINE;
-static inline void gc_update_alloc_table(struct mutator *mut,
+static inline void gc_update_alloc_table(struct gc_mutator *mut,
                                          struct gc_ref obj,
                                          size_t size) {
   size_t alignment = gc_allocator_alloc_table_alignment();
@@ -92,12 +87,12 @@ static inline void gc_update_alloc_table(struct mutator *mut,
   }
 }
 
-GC_API_ void* gc_allocate_small(struct mutator *mut, size_t bytes) GC_NEVER_INLINE;
-GC_API_ void* gc_allocate_large(struct mutator *mut, size_t bytes) GC_NEVER_INLINE;
+GC_API_ void* gc_allocate_small(struct gc_mutator *mut, size_t bytes) GC_NEVER_INLINE;
+GC_API_ void* gc_allocate_large(struct gc_mutator *mut, size_t bytes) GC_NEVER_INLINE;
 
 static inline void*
-gc_allocate_bump_pointer(struct mutator *mut, size_t size) GC_ALWAYS_INLINE;
-static inline void* gc_allocate_bump_pointer(struct mutator *mut, size_t size) {
+gc_allocate_bump_pointer(struct gc_mutator *mut, size_t size) GC_ALWAYS_INLINE;
+static inline void* gc_allocate_bump_pointer(struct gc_mutator *mut, size_t size) {
   GC_ASSERT(size <= gc_allocator_large_threshold());
 
   size_t granule_size = gc_allocator_small_granule_size();
@@ -124,9 +119,9 @@ static inline void* gc_allocate_bump_pointer(struct mutator *mut, size_t size) {
   return (void*)hp;
 }
 
-static inline void* gc_allocate_freelist(struct mutator *mut,
+static inline void* gc_allocate_freelist(struct gc_mutator *mut,
                                          size_t size) GC_ALWAYS_INLINE;
-static inline void* gc_allocate_freelist(struct mutator *mut, size_t size) {
+static inline void* gc_allocate_freelist(struct gc_mutator *mut, size_t size) {
   GC_ASSERT(size <= gc_allocator_large_threshold());
 
   size_t freelist_offset = gc_allocator_freelist_offset(size);
@@ -145,8 +140,8 @@ static inline void* gc_allocate_freelist(struct mutator *mut, size_t size) {
   return head;
 }
 
-static inline void* gc_allocate(struct mutator *mut, size_t bytes) GC_ALWAYS_INLINE;
-static inline void* gc_allocate(struct mutator *mut, size_t size) {
+static inline void* gc_allocate(struct gc_mutator *mut, size_t bytes) GC_ALWAYS_INLINE;
+static inline void* gc_allocate(struct gc_mutator *mut, size_t size) {
   GC_ASSERT(size != 0);
   if (size > gc_allocator_large_threshold())
     return gc_allocate_large(mut, size);
@@ -164,7 +159,7 @@ static inline void* gc_allocate(struct mutator *mut, size_t size) {
 }
 
 // FIXME: remove :P
-GC_API_ void* gc_allocate_pointerless(struct mutator *mut, size_t bytes);
+GC_API_ void* gc_allocate_pointerless(struct gc_mutator *mut, size_t bytes);
 
 static inline void gc_small_write_barrier(struct gc_ref obj, struct gc_edge edge,
                                           struct gc_ref new_val) GC_ALWAYS_INLINE;

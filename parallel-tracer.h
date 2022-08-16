@@ -291,9 +291,9 @@ enum trace_worker_state {
   TRACE_WORKER_DEAD
 };
 
-struct heap;
+struct gc_heap;
 struct trace_worker {
-  struct heap *heap;
+  struct gc_heap *heap;
   size_t id;
   size_t steal_id;
   pthread_t thread;
@@ -318,15 +318,15 @@ struct tracer {
 struct local_tracer {
   struct trace_worker *worker;
   struct trace_deque *share_deque;
-  struct heap *heap;
+  struct gc_heap *heap;
   struct local_trace_queue local;
 };
 
 struct context;
-static inline struct tracer* heap_tracer(struct heap *heap);
+static inline struct tracer* heap_tracer(struct gc_heap *heap);
 
 static int
-trace_worker_init(struct trace_worker *worker, struct heap *heap,
+trace_worker_init(struct trace_worker *worker, struct gc_heap *heap,
                  struct tracer *tracer, size_t id) {
   worker->heap = heap;
   worker->id = id;
@@ -414,7 +414,7 @@ trace_worker_request_stop(struct trace_worker *worker) {
 }  
 
 static int
-tracer_init(struct heap *heap, size_t parallelism) {
+tracer_init(struct gc_heap *heap, size_t parallelism) {
   struct tracer *tracer = heap_tracer(heap);
   atomic_init(&tracer->active_tracers, 0);
   atomic_init(&tracer->running_tracers, 0);
@@ -436,12 +436,12 @@ tracer_init(struct heap *heap, size_t parallelism) {
   return tracer->worker_count > 0;
 }
 
-static void tracer_prepare(struct heap *heap) {
+static void tracer_prepare(struct gc_heap *heap) {
   struct tracer *tracer = heap_tracer(heap);
   for (size_t i = 0; i < tracer->worker_count; i++)
     tracer->workers[i].steal_id = 0;
 }
-static void tracer_release(struct heap *heap) {
+static void tracer_release(struct gc_heap *heap) {
   struct tracer *tracer = heap_tracer(heap);
   for (size_t i = 0; i < tracer->worker_count; i++)
     trace_deque_release(&tracer->workers[i].deque);
@@ -450,7 +450,7 @@ static void tracer_release(struct heap *heap) {
 struct gcobj;
 static inline void tracer_visit(struct gc_edge edge, void *trace_data) GC_ALWAYS_INLINE;
 static inline void trace_one(struct gcobj *obj, void *trace_data) GC_ALWAYS_INLINE;
-static inline int trace_edge(struct heap *heap,
+static inline int trace_edge(struct gc_heap *heap,
                              struct gc_edge edge) GC_ALWAYS_INLINE;
 
 static inline void
@@ -601,7 +601,7 @@ tracer_enqueue_roots(struct tracer *tracer, struct gcobj **objv,
 }
 
 static inline void
-tracer_trace(struct heap *heap) {
+tracer_trace(struct gc_heap *heap) {
   struct tracer *tracer = heap_tracer(heap);
 
   pthread_mutex_lock(&tracer->lock);

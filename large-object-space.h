@@ -18,7 +18,7 @@
 // objects are in which space.  That way we slot into the abstraction of a
 // copying collector while not actually copying data.
 
-struct heap;
+struct gc_heap;
 struct gcobj;
 
 struct large_object_space {
@@ -39,7 +39,7 @@ struct large_object_space {
 };
 
 static int large_object_space_init(struct large_object_space *space,
-                                   struct heap *heap) {
+                                   struct gc_heap *heap) {
   pthread_mutex_init(&space->lock, NULL);
   space->page_size = getpagesize();
   space->page_size_log2 = __builtin_ctz(space->page_size);
