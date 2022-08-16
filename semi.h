@@ -5,7 +5,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "semi-inline.h"
+#include "semi-attrs.h"
 #include "large-object-space.h"
 #include "precise-roots.h"
 

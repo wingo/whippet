@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "bdw-inline.h"
+#include "bdw-attrs.h"
 #include "conservative-roots.h"
 
 // When pthreads are used, let `libgc' know about it and redirect

@@ -1,8 +1,8 @@
-#ifndef WHIPPET_INLINE_H
-#define WHIPPET_INLINE_H
+#ifndef WHIPPET_ATTRS_H
+#define WHIPPET_ATTRS_H
 
 #include "gc-config.h"
-#include "gc-api.h"
+#include "gc-attrs.h"
 
 static inline enum gc_allocator_kind gc_allocator_kind(void) {
   return GC_ALLOCATOR_INLINE_BUMP_POINTER;
@@ -53,4 +53,4 @@ static inline size_t gc_small_write_barrier_card_size(void) {
   return 256;
 }
 
-#endif // WHIPPET_INLINE_H
+#endif // WHIPPET_ATTRS_H

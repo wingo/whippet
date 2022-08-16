@@ -3,6 +3,7 @@
 
 #include "gc-config.h"
 #include "gc-assert.h"
+#include "gc-attrs.h"
 #include "gc-inline.h"
 #include "gc-ref.h"
 #include "gc-edge.h"
@@ -50,29 +51,6 @@ GC_API_ void gc_finish_for_thread(struct mutator *mut);
 GC_API_ void* gc_call_without_gc(struct mutator *mut, void* (*f)(void*),
                                  void *data) GC_NEVER_INLINE;
 GC_API_ void gc_print_stats(struct heap *heap);
-
-enum gc_allocator_kind {
-  GC_ALLOCATOR_INLINE_BUMP_POINTER,
-  GC_ALLOCATOR_INLINE_FREELIST,
-  GC_ALLOCATOR_INLINE_NONE
-};
-
-static inline enum gc_allocator_kind gc_allocator_kind(void) GC_ALWAYS_INLINE;
-
-static inline size_t gc_allocator_large_threshold(void) GC_ALWAYS_INLINE;
-
-static inline size_t gc_allocator_small_granule_size(void) GC_ALWAYS_INLINE;
-
-static inline size_t gc_allocator_allocation_pointer_offset(void) GC_ALWAYS_INLINE;
-static inline size_t gc_allocator_allocation_limit_offset(void) GC_ALWAYS_INLINE;
-
-static inline size_t gc_allocator_freelist_offset(size_t size) GC_ALWAYS_INLINE;
-
-static inline size_t gc_allocator_alloc_table_alignment(void) GC_ALWAYS_INLINE;
-static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) GC_ALWAYS_INLINE;
-static inline uint8_t gc_allocator_alloc_table_end_pattern(void) GC_ALWAYS_INLINE;
-
-static inline int gc_allocator_needs_clear(void) GC_ALWAYS_INLINE;
 
 static inline void gc_clear_fresh_allocation(struct gc_ref obj,
                                              size_t size) GC_ALWAYS_INLINE;
@@ -187,15 +165,6 @@ static inline void* gc_allocate(struct mutator *mut, size_t size) {
 
 // FIXME: remove :P
 static inline void* gc_allocate_pointerless(struct mutator *mut, size_t bytes);
-
-enum gc_write_barrier_kind {
-  GC_WRITE_BARRIER_NONE,
-  GC_WRITE_BARRIER_CARD
-};
-
-static inline enum gc_write_barrier_kind gc_small_write_barrier_kind(void);
-static inline size_t gc_small_write_barrier_card_table_alignment(void);
-static inline size_t gc_small_write_barrier_card_size(void);
 
 static inline void gc_small_write_barrier(struct gc_ref obj, struct gc_edge edge,
                                           struct gc_ref new_val) GC_ALWAYS_INLINE;

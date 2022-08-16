@@ -25,7 +25,7 @@
 #include "serial-tracer.h"
 #endif
 #include "spin.h"
-#include "whippet-inline.h"
+#include "whippet-attrs.h"
 
 #define GRANULE_SIZE 16
 #define GRANULE_SIZE_LOG_2 4
