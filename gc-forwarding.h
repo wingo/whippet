@@ -2,6 +2,7 @@
 #define GC_FORWARDING_H
 
 #include <stdint.h>
+#include "gc-ref.h"
 
 enum gc_forwarding_state {
   GC_FORWARDING_STATE_FORWARDED,
@@ -12,7 +13,7 @@ enum gc_forwarding_state {
 };
 
 struct gc_atomic_forward {
-  void *object;
+  struct gc_ref ref;
   uintptr_t data;
   enum gc_forwarding_state state;
 };

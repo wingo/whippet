@@ -139,7 +139,7 @@ static void tracer_release(struct gc_heap *heap) {
 
 struct gcobj;
 static inline void tracer_visit(struct gc_edge edge, void *trace_data) GC_ALWAYS_INLINE;
-static inline void trace_one(struct gcobj *obj, void *trace_data) GC_ALWAYS_INLINE;
+static inline void trace_one(struct gc_ref ref, void *trace_data) GC_ALWAYS_INLINE;
 static inline int trace_edge(struct gc_heap *heap,
                              struct gc_edge edge) GC_ALWAYS_INLINE;
 
@@ -163,7 +163,7 @@ static inline void
 tracer_trace(struct gc_heap *heap) {
   struct gcobj *obj;
   while ((obj = trace_queue_pop(&heap_tracer(heap)->queue)))
-    trace_one(obj, heap);
+    trace_one(gc_ref_from_heap_object(obj), heap);
 }
 
 #endif // SERIAL_TRACER_H

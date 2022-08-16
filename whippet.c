@@ -182,8 +182,6 @@ static struct slab *object_slab(void *obj) {
   return (struct slab*) base;
 }
 
-static int heap_object_is_large(struct gcobj *obj);
-
 static uint8_t *object_metadata_byte(void *obj) {
   uintptr_t addr = (uintptr_t) obj;
   uintptr_t base = addr & ~(SLAB_SIZE - 1);
@@ -193,14 +191,6 @@ static uint8_t *object_metadata_byte(void *obj) {
 
 #define GRANULES_PER_BLOCK (BLOCK_SIZE / GRANULE_SIZE)
 #define GRANULES_PER_REMSET_BYTE (GRANULES_PER_BLOCK / REMSET_BYTES_PER_BLOCK)
-static uint8_t *object_remset_byte(void *obj) {
-  GC_ASSERT(!heap_object_is_large(obj));
-  uintptr_t addr = (uintptr_t) obj;
-  uintptr_t base = addr & ~(SLAB_SIZE - 1);
-  uintptr_t granule = (addr & (SLAB_SIZE - 1)) >> GRANULE_SIZE_LOG_2;
-  uintptr_t remset_byte = granule / GRANULES_PER_REMSET_BYTE;
-  return (uint8_t*) (base + remset_byte);
-}
 
 static struct block_summary* block_summary_for_addr(uintptr_t addr) {
   uintptr_t base = addr & ~(SLAB_SIZE - 1);
@@ -376,12 +366,6 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
 
 static void collect(struct gc_mutator *mut) GC_NEVER_INLINE;
 
-static int heap_object_is_large(struct gcobj *obj) {
-  size_t size;
-  gc_trace_object(obj, NULL, NULL, &size);
-  return size > LARGE_OBJECT_THRESHOLD;
-}
-
 static inline uint8_t* mark_byte(struct mark_space *space, struct gcobj *obj) {
   return object_metadata_byte(obj);
 }
@@ -475,7 +459,7 @@ static void finish_evacuation_allocator(struct evacuation_allocator *alloc,
     push_block(empties, pop_block(targets));
 }
 
-static struct gcobj *evacuation_allocate(struct mark_space *space,
+static struct gc_ref evacuation_allocate(struct mark_space *space,
                                          size_t granules) {
   // All collector threads compete to allocate from what is logically a
   // single bump-pointer arena, which is actually composed of a linked
@@ -490,7 +474,7 @@ static struct gcobj *evacuation_allocate(struct mark_space *space,
   do {
     if (prev >= alloc->limit)
       // No more space.
-      return NULL;
+      return gc_ref_null();
     next = prev + bytes;
     if ((prev ^ next) & ~block_mask)
       // Allocation straddles a block boundary; advance so it starts a
@@ -522,7 +506,7 @@ static struct gcobj *evacuation_allocate(struct mark_space *space,
     if (base >= alloc->limit) {
       // Ran out of blocks!
       GC_ASSERT(!block);
-      return NULL;
+      return gc_ref_null();
     }
     GC_ASSERT(block);
     // This store can race with other allocators, but that's OK as long
@@ -534,24 +518,23 @@ static struct gcobj *evacuation_allocate(struct mark_space *space,
   }
 
   uintptr_t addr = block + (next & block_mask) - bytes;
-  return (struct gcobj*) addr;
+  return gc_ref(addr);
 }
 
 static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
                                                      struct gc_edge edge,
                                                      struct gc_ref old_ref) {
-  struct gcobj *obj = gc_ref_heap_object(old_ref);
-  uint8_t *metadata = object_metadata_byte(obj);
+  uint8_t *metadata = object_metadata_byte(gc_ref_heap_object(old_ref));
   uint8_t byte = *metadata;
   if (byte & space->marked_mask)
     return 0;
   if (space->evacuating &&
-      block_summary_has_flag(block_summary_for_addr((uintptr_t)obj),
+      block_summary_has_flag(block_summary_for_addr(gc_ref_value(old_ref)),
                              BLOCK_EVACUATE) &&
       ((byte & METADATA_BYTE_PINNED) == 0)) {
     // This is an evacuating collection, and we are attempting to
     // evacuate this block, and this particular object isn't pinned.
-    struct gc_atomic_forward fwd = gc_atomic_forward_begin(obj);
+    struct gc_atomic_forward fwd = gc_atomic_forward_begin(old_ref);
 
     if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
       gc_atomic_forward_acquire(&fwd);
@@ -564,19 +547,19 @@ static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
     case GC_FORWARDING_STATE_ACQUIRED: {
       // We claimed the object successfully; evacuating is up to us.
       size_t object_granules = mark_space_live_object_granules(metadata);
-      struct gcobj *new_obj = evacuation_allocate(space, object_granules);
-      if (new_obj) {
+      struct gc_ref new_ref = evacuation_allocate(space, object_granules);
+      if (gc_ref_is_heap_object(new_ref)) {
         // Copy object contents before committing, as we don't know what
         // part of the object (if any) will be overwritten by the
         // commit.
-        memcpy(new_obj, obj, object_granules * GRANULE_SIZE);
-        gc_atomic_forward_commit(&fwd, (uintptr_t)new_obj);
+        memcpy(gc_ref_heap_object(new_ref), gc_ref_heap_object(old_ref),
+               object_granules * GRANULE_SIZE);
+        gc_atomic_forward_commit(&fwd, new_ref);
         // Now update extent metadata, and indicate to the caller that
         // the object's fields need to be traced.
-        uint8_t *new_metadata = object_metadata_byte(new_obj);
+        uint8_t *new_metadata = object_metadata_byte(gc_ref_heap_object(new_ref));
         memcpy(new_metadata + 1, metadata + 1, object_granules - 1);
-        gc_edge_update(edge, gc_ref_from_heap_object(new_obj));
-        obj = new_obj;
+        gc_edge_update(edge, new_ref);
         metadata = new_metadata;
         // Fall through to set mark bits.
       } else {
@@ -616,36 +599,35 @@ static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
 }
 
 static inline int mark_space_contains(struct mark_space *space,
-                                      struct gcobj *obj) {
-  uintptr_t addr = (uintptr_t)obj;
+                                      struct gc_ref ref) {
+  uintptr_t addr = gc_ref_value(ref);
   return addr - space->low_addr < space->extent;
 }
 
 static inline int large_object_space_mark_object(struct large_object_space *space,
-                                                 struct gcobj *obj) {
-  return large_object_space_copy(space, (uintptr_t)obj);
+                                                 struct gc_ref ref) {
+  return large_object_space_copy(space, ref);
 }
 
 static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge) {
   struct gc_ref ref = gc_edge_ref(edge);
   if (!gc_ref_is_heap_object(ref))
     return 0;
-  struct gcobj *obj = gc_ref_heap_object(ref);
-  if (GC_LIKELY(mark_space_contains(heap_mark_space(heap), obj))) {
+  if (GC_LIKELY(mark_space_contains(heap_mark_space(heap), ref))) {
     if (heap_mark_space(heap)->evacuating)
       return mark_space_evacuate_or_mark_object(heap_mark_space(heap), edge,
                                                 ref);
     return mark_space_mark_object(heap_mark_space(heap), ref);
   }
-  else if (large_object_space_contains(heap_large_object_space(heap), obj))
+  else if (large_object_space_contains(heap_large_object_space(heap), ref))
     return large_object_space_mark_object(heap_large_object_space(heap),
-                                          obj);
+                                          ref);
   else
     GC_CRASH();
 }
 
-static inline void trace_one(struct gcobj *obj, void *mark_data) {
-  gc_trace_object(obj, tracer_visit, mark_data, NULL);
+static inline void trace_one(struct gc_ref ref, void *mark_data) {
+  gc_trace_object(ref, tracer_visit, mark_data, NULL);
 }
 
 static int heap_has_multiple_mutators(struct gc_heap *heap) {
@@ -987,16 +969,6 @@ static void trace_mutator_roots_after_stop(struct gc_heap *heap) {
 
 static void trace_global_roots(struct gc_heap *heap) {
   gc_trace_heap_roots(heap->roots, trace_and_enqueue_globally, heap);
-}
-
-static inline int
-heap_object_is_young(struct gc_heap *heap, struct gcobj *obj) {
-  if (GC_UNLIKELY(!mark_space_contains(heap_mark_space(heap), obj))) {
-    // No lospace nursery, for the moment.
-    return 0;
-  }
-  GC_ASSERT(!heap_object_is_large(obj));
-  return (*object_metadata_byte(obj)) & METADATA_BYTE_YOUNG;
 }
 
 static inline uint64_t load_eight_aligned_bytes(uint8_t *mark) {

@@ -12,7 +12,7 @@ struct gc_mutator_roots;
 struct gc_heap_roots;
 struct gc_atomic_forward;
 
-GC_EMBEDDER_API inline void gc_trace_object(void *object,
+GC_EMBEDDER_API inline void gc_trace_object(struct gc_ref ref,
                                             void (*trace_edge)(struct gc_edge edge,
                                                                void *trace_data),
                                             void *trace_data,
@@ -26,15 +26,16 @@ GC_EMBEDDER_API inline void gc_trace_heap_roots(struct gc_heap_roots *roots,
                                                                    void *trace_data),
                                                 void *trace_data);
 
-GC_EMBEDDER_API inline uintptr_t gc_object_forwarded_nonatomic(void *object);
-GC_EMBEDDER_API inline void gc_object_forward_nonatomic(void *object, uintptr_t new_addr);
+GC_EMBEDDER_API inline uintptr_t gc_object_forwarded_nonatomic(struct gc_ref ref);
+GC_EMBEDDER_API inline void gc_object_forward_nonatomic(struct gc_ref ref,
+                                                        struct gc_ref new_ref);
 
-GC_EMBEDDER_API inline struct gc_atomic_forward gc_atomic_forward_begin(void *obj);
+GC_EMBEDDER_API inline struct gc_atomic_forward gc_atomic_forward_begin(struct gc_ref ref);
 GC_EMBEDDER_API inline void gc_atomic_forward_acquire(struct gc_atomic_forward *);
 GC_EMBEDDER_API inline int gc_atomic_forward_retry_busy(struct gc_atomic_forward *);
 GC_EMBEDDER_API inline void gc_atomic_forward_abort(struct gc_atomic_forward *);
 GC_EMBEDDER_API inline void gc_atomic_forward_commit(struct gc_atomic_forward *,
-                                                     uintptr_t new_addr);
+                                                     struct gc_ref new_ref);
 GC_EMBEDDER_API inline uintptr_t gc_atomic_forward_address(struct gc_atomic_forward *);
 
 

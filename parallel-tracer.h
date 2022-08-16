@@ -449,7 +449,7 @@ static void tracer_release(struct gc_heap *heap) {
 
 struct gcobj;
 static inline void tracer_visit(struct gc_edge edge, void *trace_data) GC_ALWAYS_INLINE;
-static inline void trace_one(struct gcobj *obj, void *trace_data) GC_ALWAYS_INLINE;
+static inline void trace_one(struct gc_ref ref, void *trace_data) GC_ALWAYS_INLINE;
 static inline int trace_edge(struct gc_heap *heap,
                              struct gc_edge edge) GC_ALWAYS_INLINE;
 
@@ -571,7 +571,7 @@ trace_worker_trace(struct trace_worker *worker) {
   size_t n = 0;
   DEBUG("tracer #%zu: running trace loop\n", worker->id);
   while (1) {
-    struct gcobj * obj;
+    void *obj;
     if (!local_trace_queue_empty(&trace.local)) {
       obj = local_trace_queue_pop(&trace.local);
     } else {
@@ -579,7 +579,7 @@ trace_worker_trace(struct trace_worker *worker) {
       if (!obj)
         break;
     }
-    trace_one(obj, &trace);
+    trace_one(gc_ref_from_heap_object(obj), &trace);
     n++;
   }
   DEBUG("tracer #%zu: done tracing, %zu objects traced\n", worker->id, n);

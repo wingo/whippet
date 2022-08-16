@@ -9,6 +9,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "gc-ref.h"
 #include "address-map.h"
 #include "address-set.h"
 
@@ -19,7 +20,6 @@
 // copying collector while not actually copying data.
 
 struct gc_heap;
-struct gcobj;
 
 struct large_object_space {
   pthread_mutex_t lock;
@@ -71,8 +71,9 @@ static void large_object_space_start_gc(struct large_object_space *space,
 }
 
 static int large_object_space_copy(struct large_object_space *space,
-                                   uintptr_t addr) {
+                                   struct gc_ref ref) {
   int copied = 0;
+  uintptr_t addr = gc_ref_value(ref);
   pthread_mutex_lock(&space->lock);
   if (!address_set_contains(&space->from_space, addr))
     // Already copied; object is grey or white.
@@ -145,12 +146,11 @@ static void large_object_space_finish_gc(struct large_object_space *space,
 }
 
 static inline int large_object_space_contains(struct large_object_space *space,
-                                              struct gcobj *ptr) {
-  int ret;
+                                              struct gc_ref ref) {
   pthread_mutex_lock(&space->lock);
   // ptr might be in fromspace or tospace.  Just check the object_pages table, which
   // contains both, as well as object_pages for free blocks.
-  ret = address_map_contains(&space->object_pages, (uintptr_t)ptr);
+  int ret = address_map_contains(&space->object_pages, gc_ref_value(ref));
   pthread_mutex_unlock(&space->lock);
   return ret;
 }

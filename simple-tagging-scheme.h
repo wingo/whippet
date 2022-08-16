@@ -21,8 +21,8 @@ static inline uintptr_t tag_live(uint8_t alloc_kind) {
     | gcobj_not_forwarded_bit;
 }
 
-static inline uintptr_t* tag_word(void *object) {
-  struct gc_header *header = object;
+static inline uintptr_t* tag_word(struct gc_ref ref) {
+  struct gc_header *header = gc_ref_heap_object(ref);
   return &header->tag;
 }
 
