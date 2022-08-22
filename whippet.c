@@ -40,22 +40,24 @@ STATIC_ASSERT_EQ(MEDIUM_OBJECT_THRESHOLD,
 STATIC_ASSERT_EQ(LARGE_OBJECT_THRESHOLD,
                  LARGE_OBJECT_GRANULE_THRESHOLD * GRANULE_SIZE);
 
-// Each granule has one metadata byte stored in a side table, used for
-// mark bits but also for other per-object metadata.  Already we were
-// using a byte instead of a bit to facilitate parallel marking.
-// (Parallel markers are allowed to race.)  Turns out we can put a
-// pinned bit there too, for objects that can't be moved (perhaps
-// because they have been passed to unmanaged C code).  (Objects can
-// also be temporarily pinned if they are referenced by a conservative
-// root, but that doesn't need a separate bit; we can just use the mark
-// bit.)
+// Each granule has one mark byte stored in a side table.  A granule's
+// mark state is a whole byte instead of a bit to facilitate parallel
+// marking.  (Parallel markers are allowed to race.)  We also use this
+// byte to compute object extent, via a bit flag indicating
+// end-of-object.
 //
-// Getting back to mark bits -- because we want to allow for
-// conservative roots, we need to know whether an address indicates an
-// object or not.  That means that when an object is allocated, it has
-// to set a bit, somewhere.  In our case we use the metadata byte, and
-// set the "young" bit.  In future we could use this for generational
-// GC, with the sticky mark bit strategy.
+// Because we want to allow for conservative roots, we need to know
+// whether an address indicates an object or not.  That means that when
+// an object is allocated, it has to set a bit, somewhere.  We use the
+// metadata byte for this purpose, setting the "young" bit.
+//
+// The "young" bit's name might make you think about generational
+// collection, and indeed all objects collected in a minor collection
+// will have this bit set.  However, whippet never needs to check for
+// the young bit; if it weren't for the need to identify conservative
+// roots, we wouldn't need a young bit at all.  Perhaps in an
+// all-precise system, we would be able to avoid the overhead of
+// initializing mark byte upon each fresh allocation.
 //
 // When an object becomes dead after a GC, it will still have a bit set
 // -- maybe the young bit, or maybe a survivor bit.  The sweeper has to
@@ -75,9 +77,9 @@ enum metadata_byte {
   METADATA_BYTE_MARK_1 = 4,
   METADATA_BYTE_MARK_2 = 8,
   METADATA_BYTE_END = 16,
-  METADATA_BYTE_PINNED = 32,
-  METADATA_BYTE_UNUSED_1 = 64,
-  METADATA_BYTE_UNUSED_2 = 128
+  METADATA_BYTE_UNUSED_1 = 32,
+  METADATA_BYTE_UNUSED_2 = 64,
+  METADATA_BYTE_UNUSED_3 = 128
 };
 
 static uint8_t rotate_dead_survivor_marked(uint8_t mask) {
@@ -310,7 +312,6 @@ struct gc_heap {
   int collecting;
   enum gc_kind gc_kind;
   int multithreaded;
-  int allow_pinning;
   size_t active_mutator_count;
   size_t mutator_count;
   struct gc_heap_roots *roots;
@@ -526,10 +527,10 @@ static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
     return 0;
   if (space->evacuating &&
       block_summary_has_flag(block_summary_for_addr(gc_ref_value(old_ref)),
-                             BLOCK_EVACUATE) &&
-      ((byte & METADATA_BYTE_PINNED) == 0)) {
+                             BLOCK_EVACUATE)) {
     // This is an evacuating collection, and we are attempting to
-    // evacuate this block, and this particular object isn't pinned.
+    // evacuate this block, and we are tracing this particular object
+    // for what appears to be the first time.
     struct gc_atomic_forward fwd = gc_atomic_forward_begin(old_ref);
 
     if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
@@ -613,6 +614,20 @@ static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge) {
     if (heap_mark_space(heap)->evacuating)
       return mark_space_evacuate_or_mark_object(heap_mark_space(heap), edge,
                                                 ref);
+    return mark_space_mark_object(heap_mark_space(heap), ref);
+  }
+  else if (large_object_space_contains(heap_large_object_space(heap), ref))
+    return large_object_space_mark_object(heap_large_object_space(heap),
+                                          ref);
+  else
+    GC_CRASH();
+}
+
+static inline int trace_ref(struct gc_heap *heap, struct gc_ref ref) {
+  if (!gc_ref_is_heap_object(ref))
+    return 0;
+  if (GC_LIKELY(mark_space_contains(heap_mark_space(heap), ref))) {
+    GC_ASSERT(!heap_mark_space(heap)->evacuating);
     return mark_space_mark_object(heap_mark_space(heap), ref);
   }
   else if (large_object_space_contains(heap_large_object_space(heap), ref))
@@ -856,27 +871,20 @@ static void enqueue_mutator_for_tracing(struct gc_mutator *mut) {
 }
 
 static int heap_should_mark_while_stopping(struct gc_heap *heap) {
-  if (heap->allow_pinning) {
-    // The metadata byte is mostly used for marking and object extent.
-    // For marking, we allow updates to race, because the state
-    // transition space is limited.  However during ragged stop there is
-    // the possibility of races between the marker and updates from the
-    // mutator to the pinned bit in the metadata byte.
-    //
-    // Losing the pinned bit would be bad.  Perhaps this means we should
-    // store the pinned bit elsewhere.  Or, perhaps for this reason (and
-    // in all cases?)  markers should use proper synchronization to
-    // update metadata mark bits instead of racing.  But for now it is
-    // sufficient to simply avoid ragged stops if we allow pins.
+  // Generally speaking, we allow mutators to mark their own stacks
+  // before pausing.  This is a limited form of concurrent marking, as
+  // other mutators might be running, not having received the signal to
+  // stop yet.  In a compacting collection, this results in pinned
+  // roots, because we haven't started evacuating yet and instead mark
+  // in place; avoid this pinning only if we're trying to reclaim free
+  // blocks.
+  GC_ASSERT(!heap_mark_space(heap)->evacuating);
+  if ((atomic_load(&heap->gc_kind) & GC_KIND_FLAG_EVACUATING)
+      && atomic_load_explicit(&heap_mark_space(heap)->pending_unavailable_bytes,
+                              memory_order_acquire) > 0)
     return 0;
-  }
-  // If we are marking in place, we allow mutators to mark their own
-  // stacks before pausing.  This is a limited form of concurrent
-  // marking, as other mutators might be running, not having received
-  // the signal to stop yet.  We can't do this for a compacting
-  // collection, however, as that would become concurrent evacuation,
-  // which is a different kettle of fish.
-  return (atomic_load(&heap->gc_kind) & GC_KIND_FLAG_EVACUATING) == 0;
+
+  return 1;
 }
 
 static int mutator_should_mark_while_stopping(struct gc_mutator *mut) {
@@ -897,32 +905,52 @@ static void trace_and_enqueue_locally(struct gc_edge edge, void *data) {
     mutator_mark_buf_push(&mut->mark_buf, gc_edge_ref(edge));
 }
 
+static void trace_ref_and_enqueue_locally(struct gc_ref ref, void *data) {
+  struct gc_mutator *mut = data;
+  if (trace_ref(mutator_heap(mut), ref))
+    mutator_mark_buf_push(&mut->mark_buf, ref);
+}
+
 static void trace_and_enqueue_globally(struct gc_edge edge, void *data) {
   struct gc_heap *heap = data;
   if (trace_edge(heap, edge))
     tracer_enqueue_root(&heap->tracer, gc_edge_ref(edge));
 }
 
-// Mark the roots of a mutator that is stopping for GC.  We can't
-// enqueue them directly, so we send them to the controller in a buffer.
-static void mark_stopping_mutator_roots(struct gc_mutator *mut) {
-  GC_ASSERT(mutator_should_mark_while_stopping(mut));
-  gc_trace_mutator_roots(mut->roots, trace_and_enqueue_locally, mut);
+static void trace_ref_and_enqueue_globally(struct gc_ref ref, void *data) {
+  struct gc_heap *heap = data;
+  if (trace_ref(heap, ref))
+    tracer_enqueue_root(&heap->tracer, ref);
 }
 
-// Precondition: the caller holds the heap lock.
-static void mark_mutator_roots_with_lock(struct gc_mutator *mut) {
-  gc_trace_mutator_roots(mut->roots, trace_and_enqueue_globally,
-                         mutator_heap(mut));
+// Mark the roots of a mutator that is stopping for GC.  We can't
+// enqueue them directly, so we send them to the controller in a buffer.
+static void trace_stopping_mutator_roots(struct gc_mutator *mut) {
+  GC_ASSERT(mutator_should_mark_while_stopping(mut));
+  gc_trace_conservative_mutator_roots(mut->roots, trace_ref_and_enqueue_locally,
+                                      mut);
+  gc_trace_precise_mutator_roots(mut->roots, trace_and_enqueue_locally, mut);
+}
+
+static void trace_precise_mutator_roots_with_lock(struct gc_mutator *mut) {
+  gc_trace_precise_mutator_roots(mut->roots, trace_and_enqueue_globally,
+                                 mutator_heap(mut));
+}
+
+static void trace_conservative_mutator_roots_with_lock(struct gc_mutator *mut) {
+  gc_trace_conservative_mutator_roots(mut->roots,
+                                      trace_ref_and_enqueue_globally,
+                                      mutator_heap(mut));
 }
 
 static void trace_mutator_roots_with_lock(struct gc_mutator *mut) {
-  mark_mutator_roots_with_lock(mut);
+  trace_conservative_mutator_roots_with_lock(mut);
+  trace_precise_mutator_roots_with_lock(mut);
 }
 
 static void trace_mutator_roots_with_lock_before_stop(struct gc_mutator *mut) {
   if (mutator_should_mark_while_stopping(mut))
-    mark_mutator_roots_with_lock(mut);
+    trace_mutator_roots_with_lock(mut);
   else
     enqueue_mutator_for_tracing(mut);
 }
@@ -940,15 +968,33 @@ static void wait_for_mutators_to_stop(struct gc_heap *heap) {
 static void finish_sweeping(struct gc_mutator *mut);
 static void finish_sweeping_in_block(struct gc_mutator *mut);
 
-static void trace_mutator_roots_after_stop(struct gc_heap *heap) {
+static void trace_conservative_mutator_roots_after_stop(struct gc_heap *heap) {
+  int active_mutators_already_marked = heap_should_mark_while_stopping(heap);
+  if (!active_mutators_already_marked) {
+    for (struct gc_mutator *mut = atomic_load(&heap->mutator_trace_list);
+         mut;
+         mut = mut->next)
+      trace_conservative_mutator_roots_with_lock(mut);
+  }
+
+  for (struct gc_mutator *mut = heap->deactivated_mutators;
+       mut;
+       mut = mut->next)
+    trace_conservative_mutator_roots_with_lock(mut);
+}
+
+static void trace_precise_mutator_roots_after_stop(struct gc_heap *heap) {
   struct gc_mutator *mut = atomic_load(&heap->mutator_trace_list);
   int active_mutators_already_marked = heap_should_mark_while_stopping(heap);
   while (mut) {
+    // Also collect any already-marked grey objects and put them on the
+    // global trace queue.
     if (active_mutators_already_marked)
       tracer_enqueue_roots(&heap->tracer, mut->mark_buf.objects,
                            mut->mark_buf.size);
     else
-      trace_mutator_roots_with_lock(mut);
+      trace_precise_mutator_roots_with_lock(mut);
+    // Also unlink mutator_trace_list chain.
     struct gc_mutator *next = mut->next;
     mut->next = NULL;
     mut = next;
@@ -957,12 +1003,16 @@ static void trace_mutator_roots_after_stop(struct gc_heap *heap) {
 
   for (struct gc_mutator *mut = heap->deactivated_mutators; mut; mut = mut->next) {
     finish_sweeping_in_block(mut);
-    trace_mutator_roots_with_lock(mut);
+    trace_precise_mutator_roots_with_lock(mut);
   }
 }
 
-static void trace_global_roots(struct gc_heap *heap) {
-  gc_trace_heap_roots(heap->roots, trace_and_enqueue_globally, heap);
+static void trace_precise_global_roots(struct gc_heap *heap) {
+  gc_trace_precise_heap_roots(heap->roots, trace_and_enqueue_globally, heap);
+}
+
+static void trace_conservative_global_roots(struct gc_heap *heap) {
+  gc_trace_conservative_heap_roots(heap->roots, trace_ref_and_enqueue_globally, heap);
 }
 
 static inline uint64_t load_eight_aligned_bytes(uint8_t *mark) {
@@ -1076,7 +1126,7 @@ static void pause_mutator_for_collection_with_lock(struct gc_mutator *mut) {
   finish_sweeping_in_block(mut);
   if (mutator_should_mark_while_stopping(mut))
     // No need to collect results in mark buf; we can enqueue roots directly.
-    mark_mutator_roots_with_lock(mut);
+    trace_mutator_roots_with_lock(mut);
   else
     enqueue_mutator_for_tracing(mut);
   pause_mutator_for_collection(heap);
@@ -1088,7 +1138,7 @@ static void pause_mutator_for_collection_without_lock(struct gc_mutator *mut) {
   GC_ASSERT(mutators_are_stopping(heap));
   finish_sweeping(mut);
   if (mutator_should_mark_while_stopping(mut))
-    mark_stopping_mutator_roots(mut);
+    trace_stopping_mutator_roots(mut);
   enqueue_mutator_for_tracing(mut);
   heap_lock(heap);
   pause_mutator_for_collection(heap);
@@ -1244,6 +1294,12 @@ static enum gc_kind determine_collection_kind(struct gc_heap *heap) {
     gc_kind = GC_KIND_MINOR_IN_PLACE;
   }
 
+  if (gc_has_conservative_intraheap_edges() &&
+      (gc_kind & GC_KIND_FLAG_EVACUATING)) {
+    DEBUG("welp.  conservative heap scanning, no evacuation for you\n");
+    gc_kind = GC_KIND_MAJOR_IN_PLACE;
+  }
+
   // If this is the first in a series of minor collections, reset the
   // threshold at which we should do a major GC.
   if ((gc_kind & GC_KIND_FLAG_MINOR) &&
@@ -1363,14 +1419,21 @@ static void prepare_for_evacuation(struct gc_heap *heap) {
 }
 
 static void trace_conservative_roots_after_stop(struct gc_heap *heap) {
-  // FIXME: Visit conservative roots, if the collector is configured in
-  // that way.  Mark them in place, preventing any subsequent
-  // evacuation.
+  GC_ASSERT(!heap_mark_space(heap)->evacuating);
+  GC_ASSERT(gc_has_conservative_roots());
+  trace_conservative_mutator_roots_after_stop(heap);
+  trace_conservative_global_roots(heap);
+}
+
+static void trace_pinned_roots_after_stop(struct gc_heap *heap) {
+  GC_ASSERT(!heap_mark_space(heap)->evacuating);
+  if (gc_has_conservative_roots())
+    trace_conservative_roots_after_stop(heap);
 }
 
 static void trace_precise_roots_after_stop(struct gc_heap *heap) {
-  trace_mutator_roots_after_stop(heap);
-  trace_global_roots(heap);
+  trace_precise_mutator_roots_after_stop(heap);
+  trace_precise_global_roots(heap);
   trace_generational_roots(heap);
 }
 
@@ -1404,7 +1467,7 @@ static void collect(struct gc_mutator *mut) {
   double fragmentation = heap_fragmentation(heap);
   fprintf(stderr, "last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
   detect_out_of_memory(heap);
-  trace_conservative_roots_after_stop(heap);
+  trace_pinned_roots_after_stop(heap);
   prepare_for_evacuation(heap);
   trace_precise_roots_after_stop(heap);
   tracer_trace(heap);
