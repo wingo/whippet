@@ -311,7 +311,8 @@ static int parse_options(int argc, struct gc_option argv[],
 }
 
 int gc_init(int argc, struct gc_option argv[],
-            struct gc_heap **heap, struct gc_mutator **mut) {
+            struct gc_stack_addr *stack_base, struct gc_heap **heap,
+            struct gc_mutator **mut) {
   GC_ASSERT_EQ(gc_allocator_allocation_pointer_offset(),
                offsetof(struct semi_space, hp));
   GC_ASSERT_EQ(gc_allocator_allocation_limit_offset(),
@@ -331,6 +332,7 @@ int gc_init(int argc, struct gc_option argv[],
   if (!large_object_space_init(heap_large_object_space(*heap), *heap))
     return 0;
   
+  // Ignore stack base, as we are precise.
   (*mut)->roots = NULL;
 
   return 1;
@@ -344,8 +346,8 @@ void gc_heap_set_roots(struct gc_heap *heap, struct gc_heap_roots *roots) {
   GC_CRASH();
 }
 
-struct gc_mutator* gc_init_for_thread(uintptr_t *stack_base,
-                                   struct gc_heap *heap) {
+struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *base,
+                                      struct gc_heap *heap) {
   fprintf(stderr,
           "Semispace copying collector not appropriate for multithreaded use.\n");
   GC_CRASH();

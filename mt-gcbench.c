@@ -257,61 +257,49 @@ static void time_construction(struct thread *t, int depth) {
   POP_HANDLE(t);
 }
 
-static void* call_with_stack_base(void* (*)(uintptr_t*, void*), void*) GC_NEVER_INLINE;
-static void* call_with_stack_base_inner(void* (*)(uintptr_t*, void*), uintptr_t*, void*) GC_NEVER_INLINE;
-static void* call_with_stack_base_inner(void* (*f)(uintptr_t *stack_base, void *arg),
-                                        uintptr_t *stack_base, void *arg) {
-  return f(stack_base, arg);
-}
-static void* call_with_stack_base(void* (*f)(uintptr_t *stack_base, void *arg),
-                                  void *arg) {
-  uintptr_t x;
-  return call_with_stack_base_inner(f, &x, arg);
-}
-
 struct call_with_gc_data {
-  void* (*f)(struct gc_mutator *);
+  void* (*f)(struct thread *);
   struct gc_heap *heap;
 };
-static void* call_with_gc_inner(uintptr_t *stack_base, void *arg) {
+static void* call_with_gc_inner(struct gc_stack_addr *addr, void *arg) {
   struct call_with_gc_data *data = arg;
-  struct gc_mutator *mut = gc_init_for_thread(stack_base, data->heap);
-  void *ret = data->f(mut);
+  struct gc_mutator *mut = gc_init_for_thread(addr, data->heap);
+  struct thread t = { mut, };
+  gc_mutator_set_roots(mut, &t.roots);
+  void *ret = data->f(&t);
   gc_finish_for_thread(mut);
   return ret;
 }
-static void* call_with_gc(void* (*f)(struct gc_mutator *),
+static void* call_with_gc(void* (*f)(struct thread *),
                           struct gc_heap *heap) {
   struct call_with_gc_data data = { f, heap };
-  return call_with_stack_base(call_with_gc_inner, &data);
+  return gc_call_with_stack_addr(call_with_gc_inner, &data);
 }
 
-static void* run_one_test(struct gc_mutator *mut) {
+static void* run_one_test(struct thread *t) {
   NodeHandle long_lived_tree = { NULL };
   NodeHandle temp_tree = { NULL };
   DoubleArrayHandle array = { NULL };
-  struct thread t = { mut, };
-  gc_mutator_set_roots(mut, &t.roots);
 
-  PUSH_HANDLE(&t, long_lived_tree);
-  PUSH_HANDLE(&t, temp_tree);
-  PUSH_HANDLE(&t, array);
+  PUSH_HANDLE(t, long_lived_tree);
+  PUSH_HANDLE(t, temp_tree);
+  PUSH_HANDLE(t, array);
 
   // Create a long lived object
   printf(" Creating a long-lived binary tree of depth %d\n",
          long_lived_tree_depth);
-  HANDLE_SET(long_lived_tree, allocate_node(mut));
-  populate(&t, long_lived_tree_depth, HANDLE_REF(long_lived_tree));
+  HANDLE_SET(long_lived_tree, allocate_node(t->mut));
+  populate(t, long_lived_tree_depth, HANDLE_REF(long_lived_tree));
 
   // Create long-lived array, filling half of it
   printf(" Creating a long-lived array of %d doubles\n", array_size);
-  HANDLE_SET(array, allocate_double_array(mut, array_size));
+  HANDLE_SET(array, allocate_double_array(t->mut, array_size));
   for (int i = 0; i < array_size/2; ++i) {
     HANDLE_REF(array)->values[i] = 1.0/i;
   }
 
   for (int d = min_tree_depth; d <= max_tree_depth; d += 2) {
-    time_construction(&t, d);
+    time_construction(t, d);
   }
 
   validate_tree(HANDLE_REF(long_lived_tree), long_lived_tree_depth);
@@ -322,10 +310,9 @@ static void* run_one_test(struct gc_mutator *mut) {
       || HANDLE_REF(array)->values[1000] != 1.0/1000)
     fprintf(stderr, "Failed\n");
 
-  POP_HANDLE(&t);
-  POP_HANDLE(&t);
-  POP_HANDLE(&t);
-  gc_mutator_set_roots(mut, NULL);
+  POP_HANDLE(t);
+  POP_HANDLE(t);
+  POP_HANDLE(t);
   return NULL;
 }
 
@@ -377,11 +364,14 @@ int main(int argc, char *argv[]) {
                                  { GC_OPTION_PARALLELISM, parallelism } };
   struct gc_heap *heap;
   struct gc_mutator *mut;
-  if (!gc_init(sizeof options / sizeof options[0], options, &heap, &mut)) {
+  if (!gc_init(sizeof options / sizeof options[0], options, NULL, &heap,
+               &mut)) {
     fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
             heap_size);
     return 1;
   }
+  struct thread main_thread = { mut, };
+  gc_mutator_set_roots(mut, &main_thread.roots);
 
   printf("Garbage Collector Test\n");
   printf(" Live storage will peak at %zd bytes.\n\n", heap_max_live);
@@ -398,7 +388,7 @@ int main(int argc, char *argv[]) {
       return 1;
     }
   }
-  run_one_test(mut);
+  run_one_test(&main_thread);
   for (size_t i = 1; i < nthreads; i++) {
     struct join_data data = { 0, threads[i] };
     gc_call_without_gc(mut, join_thread, &data);

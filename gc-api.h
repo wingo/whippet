@@ -7,6 +7,7 @@
 #include "gc-inline.h"
 #include "gc-ref.h"
 #include "gc-edge.h"
+#include "gc-visibility.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -27,21 +28,30 @@ struct gc_option {
 
 // FIXME: Conflict with bdw-gc GC_API.  Switch prefix?
 #ifndef GC_API_
-#define GC_API_ __attribute__((visibility("hidden")))
+#define GC_API_ GC_INTERNAL
 #endif
 
 GC_API_ int gc_option_from_string(const char *str);
+
+struct gc_stack_addr;
+GC_API_ void* gc_call_with_stack_addr(void* (*f)(struct gc_stack_addr *,
+                                                 void *),
+                                      void *data) GC_NEVER_INLINE;
+
 GC_API_ int gc_init(int argc, struct gc_option argv[],
-                    struct gc_heap **heap, struct gc_mutator **mutator);
+                    struct gc_stack_addr *base, struct gc_heap **heap,
+                    struct gc_mutator **mutator);
 
 struct gc_mutator_roots;
-struct gc_heap_roots;
 GC_API_ void gc_mutator_set_roots(struct gc_mutator *mut,
                                   struct gc_mutator_roots *roots);
-GC_API_ void gc_heap_set_roots(struct gc_heap *heap, struct gc_heap_roots *roots);
 
-GC_API_ struct gc_mutator* gc_init_for_thread(uintptr_t *stack_base,
-                                           struct gc_heap *heap);
+struct gc_heap_roots;
+GC_API_ void gc_heap_set_roots(struct gc_heap *heap,
+                               struct gc_heap_roots *roots);
+
+GC_API_ struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *base,
+                                              struct gc_heap *heap);
 GC_API_ void gc_finish_for_thread(struct gc_mutator *mut);
 GC_API_ void* gc_call_without_gc(struct gc_mutator *mut, void* (*f)(void*),
                                  void *data) GC_NEVER_INLINE;

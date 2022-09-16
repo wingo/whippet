@@ -188,7 +188,8 @@ static int parse_options(int argc, struct gc_option argv[],
 }
 
 int gc_init(int argc, struct gc_option argv[],
-            struct gc_heap **heap, struct gc_mutator **mutator) {
+            struct gc_stack_addr *stack_base, struct gc_heap **heap,
+            struct gc_mutator **mutator) {
   GC_ASSERT_EQ(gc_allocator_small_granule_size(), GC_INLINE_GRANULE_BYTES);
   GC_ASSERT_EQ(gc_allocator_large_threshold(),
                GC_INLINE_FREELIST_COUNT * GC_INLINE_GRANULE_BYTES);
@@ -201,6 +202,8 @@ int gc_init(int argc, struct gc_option argv[],
   // GC_free_space_divisor = 16;
   // GC_enable_incremental();
   
+  // Ignore stack base for main thread.
+
   GC_set_max_heap_size(options.fixed_heap_size);
   // Not part of 7.3, sigh.  Have to set an env var.
   // GC_set_markers_count(options.parallelism);
@@ -218,8 +221,8 @@ int gc_init(int argc, struct gc_option argv[],
   return 1;
 }
 
-struct gc_mutator* gc_init_for_thread(uintptr_t *stack_base,
-                                   struct gc_heap *heap) {
+struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *stack_base,
+                                      struct gc_heap *heap) {
   pthread_mutex_lock(&heap->lock);
   if (!heap->multithreaded) {
     GC_allow_register_threads();

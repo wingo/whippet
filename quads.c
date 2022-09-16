@@ -136,7 +136,8 @@ int main(int argc, char *argv[]) {
                                  { GC_OPTION_PARALLELISM, parallelism } };
   struct gc_heap *heap;
   struct gc_mutator *mut;
-  if (!gc_init(sizeof options / sizeof options[0], options, &heap, &mut)) {
+  if (!gc_init(sizeof options / sizeof options[0], options, NULL, &heap,
+               &mut)) {
     fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
             heap_size);
     return 1;

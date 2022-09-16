@@ -10,7 +10,10 @@
 #define GC_API_ 
 #include "gc-api.h"
 
+#define GC_IMPL 1
+
 #include "debug.h"
+#include "gc-align.h"
 #include "gc-inline.h"
 #include "large-object-space.h"
 #if GC_PARALLEL
@@ -177,13 +180,6 @@ struct slab {
   struct block blocks[NONMETA_BLOCKS_PER_SLAB];
 };
 STATIC_ASSERT_EQ(sizeof(struct slab), SLAB_SIZE);
-
-static inline uintptr_t align_down(uintptr_t addr, size_t align) {
-  return addr & ~(align - 1);
-}
-static inline uintptr_t align_up(uintptr_t addr, size_t align) {
-  return align_down(addr + align - 1, align);
-}
 
 static struct slab *object_slab(void *obj) {
   uintptr_t addr = (uintptr_t) obj;
@@ -1999,7 +1995,8 @@ static int mark_space_init(struct mark_space *space, struct gc_heap *heap) {
 }
 
 int gc_init(int argc, struct gc_option argv[],
-            struct gc_heap **heap, struct gc_mutator **mut) {
+            struct gc_stack_addr *stack_base, struct gc_heap **heap,
+            struct gc_mutator **mut) {
   GC_ASSERT_EQ(gc_allocator_small_granule_size(), GRANULE_SIZE);
   GC_ASSERT_EQ(gc_allocator_large_threshold(), LARGE_OBJECT_THRESHOLD);
   GC_ASSERT_EQ(gc_allocator_allocation_pointer_offset(),
@@ -2041,7 +2038,7 @@ int gc_init(int argc, struct gc_option argv[],
   return 1;
 }
 
-struct gc_mutator* gc_init_for_thread(uintptr_t *stack_base,
+struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *stack_base,
                                       struct gc_heap *heap) {
   struct gc_mutator *ret = calloc(1, sizeof(struct gc_mutator));
   if (!ret)
