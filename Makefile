@@ -6,10 +6,14 @@ CFLAGS=-Wall -O2 -g -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused -
 INCLUDES=-I.
 LDFLAGS=-lpthread -flto
 COMPILE=$(CC) $(CFLAGS) $(INCLUDES)
+PLATFORM=gnu-linux
 
 ALL_TESTS=$(foreach COLLECTOR,$(COLLECTORS),$(addprefix $(COLLECTOR)-,$(TESTS)))
 
 all: $(ALL_TESTS)
+
+gc-platform.o: gc-platform.h gc-platform-$(PLATFORM).c gc-visibility.h
+	$(COMPILE) -o $@ -c gc-platform-$(PLATFORM).c
 
 bdw-%-gc.o: semi.c %-embedder.h %.c
 	$(COMPILE) `pkg-config --cflags bdw-gc` -include $*-embedder.h -o $@ -c bdw.c
@@ -43,7 +47,7 @@ parallel-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.
 parallel-generational-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE=1 -include whippet-attrs.h -o $@ -c $*.c
 
-%: %.o %-gc.o
+%: %.o %-gc.o gc-platform.o
 	$(CC) $(LDFLAGS) $($*_LDFLAGS) -o $@ $^
 
 check: $(addprefix test-$(TARGET),$(TARGETS))
