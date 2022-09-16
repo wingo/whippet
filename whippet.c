@@ -178,14 +178,21 @@ struct slab {
 };
 STATIC_ASSERT_EQ(sizeof(struct slab), SLAB_SIZE);
 
+static inline uintptr_t align_down(uintptr_t addr, size_t align) {
+  return addr & ~(align - 1);
+}
+static inline uintptr_t align_up(uintptr_t addr, size_t align) {
+  return align_down(addr + align - 1, align);
+}
+
 static struct slab *object_slab(void *obj) {
   uintptr_t addr = (uintptr_t) obj;
-  uintptr_t base = addr & ~(SLAB_SIZE - 1);
+  uintptr_t base = align_down(addr, SLAB_SIZE);
   return (struct slab*) base;
 }
 
 static uint8_t *metadata_byte_for_addr(uintptr_t addr) {
-  uintptr_t base = addr & ~(SLAB_SIZE - 1);
+  uintptr_t base = align_down(addr, SLAB_SIZE);
   uintptr_t granule = (addr & (SLAB_SIZE - 1)) >> GRANULE_SIZE_LOG_2;
   return (uint8_t*) (base + granule);
 }
@@ -198,7 +205,7 @@ static uint8_t *metadata_byte_for_object(struct gc_ref ref) {
 #define GRANULES_PER_REMSET_BYTE (GRANULES_PER_BLOCK / REMSET_BYTES_PER_BLOCK)
 
 static struct block_summary* block_summary_for_addr(uintptr_t addr) {
-  uintptr_t base = addr & ~(SLAB_SIZE - 1);
+  uintptr_t base = align_down(addr, SLAB_SIZE);
   uintptr_t block = (addr & (SLAB_SIZE - 1)) / BLOCK_SIZE;
   return (struct block_summary*) (base + block * sizeof(struct block_summary));
 }
@@ -216,7 +223,7 @@ static void block_summary_clear_flag(struct block_summary *summary,
   summary->next_and_flags &= ~(uintptr_t)flag;
 }
 static uintptr_t block_summary_next(struct block_summary *summary) {
-  return summary->next_and_flags & ~(BLOCK_SIZE - 1);
+  return align_down(summary->next_and_flags, BLOCK_SIZE);
 }
 static void block_summary_set_next(struct block_summary *summary,
                                    uintptr_t next) {
@@ -253,10 +260,6 @@ static uintptr_t pop_block(struct block_list *list) {
   block_summary_set_next(summary, 0);
   atomic_fetch_sub_explicit(&list->count, 1, memory_order_acq_rel);
   return head;
-}
-
-static uintptr_t align_up(uintptr_t addr, size_t align) {
-  return (addr + align - 1) & ~(align-1);
 }
 
 static inline size_t size_to_granules(size_t size) {
@@ -391,7 +394,7 @@ static inline int mark_space_mark_object(struct mark_space *space,
 static uintptr_t make_evacuation_allocator_cursor(uintptr_t block,
                                                   size_t allocated) {
   GC_ASSERT(allocated < (BLOCK_SIZE - 1) * (uint64_t) BLOCK_SIZE);
-  return (block & ~(BLOCK_SIZE - 1)) | (allocated / BLOCK_SIZE);
+  return align_down(block, BLOCK_SIZE) | (allocated / BLOCK_SIZE);
 }
 
 static void prepare_evacuation_allocator(struct evacuation_allocator *alloc,
