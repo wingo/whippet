@@ -104,3 +104,9 @@ gc_atomic_forward_address(struct gc_atomic_forward *fwd) {
   GC_ASSERT(fwd->state == GC_FORWARDING_STATE_FORWARDED);
   return fwd->data;
 }
+
+static inline uintptr_t
+gc_conservative_ref_heap_address(struct gc_conservative_ref ref) {
+  // The specific spaces are responsible for checking alignment.
+  return gc_conservative_ref_value(ref);
+}

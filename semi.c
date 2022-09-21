@@ -161,7 +161,7 @@ static void collect(struct gc_mutator *mut) {
   flip(semi);
   uintptr_t grey = semi->hp;
   if (mut->roots)
-    gc_trace_precise_mutator_roots(mut->roots, visit, heap);
+    gc_trace_mutator_roots(mut->roots, visit, heap);
   // fprintf(stderr, "pushed %zd bytes in roots\n", space->hp - grey);
   while(grey < semi->hp)
     grey = scan(heap, gc_ref(grey));

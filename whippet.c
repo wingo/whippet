@@ -15,6 +15,7 @@
 #include "debug.h"
 #include "gc-align.h"
 #include "gc-inline.h"
+#include "gc-platform.h"
 #include "gc-stack.h"
 #include "large-object-space.h"
 #if GC_PARALLEL
@@ -597,15 +598,19 @@ static inline int mark_space_evacuate_or_mark_object(struct mark_space *space,
   return 1;
 }
 
-static inline int mark_space_contains(struct mark_space *space,
-                                      struct gc_ref ref) {
-  uintptr_t addr = gc_ref_value(ref);
+static inline int mark_space_contains_address(struct mark_space *space,
+                                              uintptr_t addr) {
   return addr - space->low_addr < space->extent;
 }
 
-static inline int large_object_space_mark_object(struct large_object_space *space,
-                                                 struct gc_ref ref) {
-  return large_object_space_copy(space, ref);
+static inline int mark_space_contains_conservative_ref(struct mark_space *space,
+                                                       struct gc_conservative_ref ref) {
+  return mark_space_contains_address(space, gc_conservative_ref_value(ref));
+}
+
+static inline int mark_space_contains(struct mark_space *space,
+                                      struct gc_ref ref) {
+  return mark_space_contains_address(space, gc_ref_value(ref));
 }
 
 static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge) {
@@ -625,18 +630,84 @@ static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge) {
     GC_CRASH();
 }
 
-static inline int trace_ref(struct gc_heap *heap, struct gc_ref ref) {
-  if (!gc_ref_is_heap_object(ref))
-    return 0;
-  if (GC_LIKELY(mark_space_contains(heap_mark_space(heap), ref))) {
-    GC_ASSERT(!heap_mark_space(heap)->evacuating);
-    return mark_space_mark_object(heap_mark_space(heap), ref);
+static inline struct gc_ref mark_space_mark_conservative_ref(struct mark_space *space,
+                                                             struct gc_conservative_ref ref,
+                                                             int possibly_interior) {
+  uintptr_t addr = gc_conservative_ref_value(ref);
+
+  if (possibly_interior) {
+    addr = align_down(addr, GRANULE_SIZE);
+  } else {
+    // Addr not an aligned granule?  Not an object.
+    uintptr_t displacement = addr & (GRANULE_SIZE - 1);
+    if (!gc_is_valid_conservative_ref_displacement(displacement))
+      return gc_ref_null();
+    addr -= displacement;
   }
-  else if (large_object_space_contains(heap_large_object_space(heap), ref))
-    return large_object_space_mark_object(heap_large_object_space(heap),
-                                          ref);
+
+  // Addr in meta block?  Not an object.
+  if ((addr & (SLAB_SIZE - 1)) < META_BLOCKS_PER_SLAB * BLOCK_SIZE)
+    return gc_ref_null();
+
+  // Addr in block that has been paged out?  Not an object.
+  struct block_summary *summary = block_summary_for_addr(addr);
+  if (block_summary_has_flag(summary, BLOCK_UNAVAILABLE))
+    return gc_ref_null();
+
+  uint8_t *loc = metadata_byte_for_addr(addr);
+  uint8_t byte = atomic_load_explicit(loc, memory_order_relaxed);
+
+  // Already marked object?  Nothing to do.
+  if (byte & space->marked_mask)
+    return gc_ref_null();
+
+  // Addr is the not start of an unmarked object?  Search backwards if
+  // we have interior pointers, otherwise not an object.
+  uint8_t object_start_mask = space->live_mask | METADATA_BYTE_YOUNG;
+  if (!(byte & object_start_mask)) {
+    if (!possibly_interior)
+      return gc_ref_null();
+
+    uintptr_t block_base = align_down(addr, BLOCK_SIZE);
+    uint8_t *loc_base = metadata_byte_for_addr(block_base);
+    do {
+      // Searched past block?  Not an object.
+      if (loc-- == loc_base)
+        return gc_ref_null();
+
+      byte = atomic_load_explicit(loc, memory_order_relaxed);
+
+      // Ran into the end of some other allocation?  Not an object, then.
+      if (byte & METADATA_BYTE_END)
+        return gc_ref_null();
+
+      // Continue until we find object start.
+    } while (!(byte & object_start_mask));
+
+    // Found object start, and object is unmarked; adjust addr.
+    addr = block_base + (loc - loc_base) * GRANULE_SIZE;
+  }
+
+  uint8_t mask = METADATA_BYTE_YOUNG | METADATA_BYTE_MARK_0
+    | METADATA_BYTE_MARK_1 | METADATA_BYTE_MARK_2;
+  atomic_store_explicit(loc, (byte & ~mask) | space->marked_mask,
+                        memory_order_relaxed);
+
+  return gc_ref(addr);
+}
+
+static inline struct gc_ref trace_conservative_ref(struct gc_heap *heap,
+                                                   struct gc_conservative_ref ref,
+                                                   int possibly_interior) {
+  if (!gc_conservative_ref_might_be_a_heap_object(ref, possibly_interior))
+    return gc_ref_null();
+
+  if (GC_LIKELY(mark_space_contains_conservative_ref(heap_mark_space(heap), ref)))
+    return mark_space_mark_conservative_ref(heap_mark_space(heap), ref,
+                                            possibly_interior);
   else
-    GC_CRASH();
+    return large_object_space_mark_conservative_ref(heap_large_object_space(heap),
+                                                    ref, possibly_interior);
 }
 
 static inline void trace_one(struct gc_ref ref, void *mark_data) {
@@ -894,10 +965,24 @@ static void trace_and_enqueue_locally(struct gc_edge edge, void *data) {
     mutator_mark_buf_push(&mut->mark_buf, gc_edge_ref(edge));
 }
 
-static void trace_ref_and_enqueue_locally(struct gc_ref ref, void *data) {
+static inline void do_trace_conservative_ref_and_enqueue_locally(struct gc_conservative_ref ref,
+                                                                 void *data,
+                                                                 int possibly_interior) {
   struct gc_mutator *mut = data;
-  if (trace_ref(mutator_heap(mut), ref))
-    mutator_mark_buf_push(&mut->mark_buf, ref);
+  struct gc_ref object = trace_conservative_ref(mutator_heap(mut), ref,
+                                                possibly_interior);
+  if (gc_ref_is_heap_object(object))
+    mutator_mark_buf_push(&mut->mark_buf, object);
+}
+
+static void trace_possibly_interior_conservative_ref_and_enqueue_locally
+    (struct gc_conservative_ref ref, void *data) {
+  return do_trace_conservative_ref_and_enqueue_locally(ref, data, 1);
+}
+
+static void trace_conservative_ref_and_enqueue_locally
+    (struct gc_conservative_ref ref, void *data) {
+  return do_trace_conservative_ref_and_enqueue_locally(ref, data, 0);
 }
 
 static void trace_and_enqueue_globally(struct gc_edge edge, void *data) {
@@ -906,40 +991,105 @@ static void trace_and_enqueue_globally(struct gc_edge edge, void *data) {
     tracer_enqueue_root(&heap->tracer, gc_edge_ref(edge));
 }
 
-static void trace_ref_and_enqueue_globally(struct gc_ref ref, void *data) {
+static inline void do_trace_conservative_ref_and_enqueue_globally(struct gc_conservative_ref ref,
+                                                                  void *data,
+                                                                  int possibly_interior) {
   struct gc_heap *heap = data;
-  if (trace_ref(heap, ref))
-    tracer_enqueue_root(&heap->tracer, ref);
+  struct gc_ref object = trace_conservative_ref(heap, ref, possibly_interior);
+  if (gc_ref_is_heap_object(object))
+    tracer_enqueue_root(&heap->tracer, object);
+}
+
+static void trace_possibly_interior_conservative_ref_and_enqueue_globally(struct gc_conservative_ref ref,
+                                                                          void *data) {
+  return do_trace_conservative_ref_and_enqueue_globally(ref, data, 1);
+}
+
+static void trace_conservative_ref_and_enqueue_globally(struct gc_conservative_ref ref,
+                                                        void *data) {
+  return do_trace_conservative_ref_and_enqueue_globally(ref, data, 0);
+}
+
+static inline struct gc_conservative_ref
+load_conservative_ref(uintptr_t addr) {
+  GC_ASSERT((addr & (sizeof(uintptr_t) - 1)) == 0);
+  uintptr_t val;
+  memcpy(&val, (char*)addr, sizeof(uintptr_t));
+  return gc_conservative_ref(val);
+}
+
+static inline void
+trace_conservative_edges(uintptr_t low,
+                         uintptr_t high,
+                         void (*trace)(struct gc_conservative_ref, void *),
+                         void *data) {
+  GC_ASSERT(low == align_down(low, sizeof(uintptr_t)));
+  GC_ASSERT(high == align_down(high, sizeof(uintptr_t)));
+  for (uintptr_t addr = low; addr < high; addr += sizeof(uintptr_t))
+    trace(load_conservative_ref(addr), data);
+}
+
+static void
+mark_and_globally_enqueue_mutator_conservative_roots(uintptr_t low,
+                                                     uintptr_t high,
+                                                     void *data) {
+  trace_conservative_edges(low, high,
+                           gc_mutator_conservative_roots_may_be_interior()
+                           ? trace_possibly_interior_conservative_ref_and_enqueue_globally
+                           : trace_conservative_ref_and_enqueue_globally,
+                           data);
+}
+
+static void
+mark_and_globally_enqueue_heap_conservative_roots(uintptr_t low,
+                                                  uintptr_t high,
+                                                  void *data) {
+  trace_conservative_edges(low, high,
+                           trace_conservative_ref_and_enqueue_globally,
+                           data);
+}
+
+static void
+mark_and_locally_enqueue_mutator_conservative_roots(uintptr_t low,
+                                                    uintptr_t high,
+                                                    void *data) {
+  trace_conservative_edges(low, high,
+                           gc_mutator_conservative_roots_may_be_interior()
+                           ? trace_possibly_interior_conservative_ref_and_enqueue_locally
+                           : trace_conservative_ref_and_enqueue_locally,
+                           data);
+}
+
+static inline void
+trace_mutator_conservative_roots(struct gc_mutator *mut,
+                                 void (*trace_range)(uintptr_t low,
+                                                     uintptr_t high,
+                                                     void *data),
+                                 void *data) {
+  if (gc_has_mutator_conservative_roots())
+    gc_stack_visit(&mut->stack, trace_range, data);
 }
 
 // Mark the roots of a mutator that is stopping for GC.  We can't
 // enqueue them directly, so we send them to the controller in a buffer.
 static void trace_stopping_mutator_roots(struct gc_mutator *mut) {
   GC_ASSERT(mutator_should_mark_while_stopping(mut));
-  /*
   trace_mutator_conservative_roots(mut,
-                                   mark_and_locally_enqueue_conservative_roots,
+                                   mark_and_locally_enqueue_mutator_conservative_roots,
                                    mut);
-  */
-  gc_trace_precise_mutator_roots(mut->roots, trace_and_enqueue_locally, mut);
-}
-
-static void trace_precise_mutator_roots_with_lock(struct gc_mutator *mut) {
-  gc_trace_precise_mutator_roots(mut->roots, trace_and_enqueue_globally,
-                                 mutator_heap(mut));
+  gc_trace_mutator_roots(mut->roots, trace_and_enqueue_locally, mut);
 }
 
 static void trace_mutator_conservative_roots_with_lock(struct gc_mutator *mut) {
-  /*
   trace_mutator_conservative_roots(mut,
-                                   mark_and_globally_enqueue_conservative_roots,
+                                   mark_and_globally_enqueue_mutator_conservative_roots,
                                    mutator_heap(mut));
-  */
 }
 
 static void trace_mutator_roots_with_lock(struct gc_mutator *mut) {
   trace_mutator_conservative_roots_with_lock(mut);
-  trace_precise_mutator_roots_with_lock(mut);
+  gc_trace_mutator_roots(mut->roots, trace_and_enqueue_globally,
+                         mutator_heap(mut));
 }
 
 static void trace_mutator_roots_with_lock_before_stop(struct gc_mutator *mut) {
@@ -965,12 +1115,11 @@ static void finish_sweeping_in_block(struct gc_mutator *mut);
 
 static void trace_mutator_conservative_roots_after_stop(struct gc_heap *heap) {
   int active_mutators_already_marked = heap_should_mark_while_stopping(heap);
-  if (!active_mutators_already_marked) {
+  if (!active_mutators_already_marked)
     for (struct gc_mutator *mut = atomic_load(&heap->mutator_trace_list);
          mut;
          mut = mut->next)
       trace_mutator_conservative_roots_with_lock(mut);
-  }
 
   for (struct gc_mutator *mut = heap->deactivated_mutators;
        mut;
@@ -978,7 +1127,7 @@ static void trace_mutator_conservative_roots_after_stop(struct gc_heap *heap) {
     trace_mutator_conservative_roots_with_lock(mut);
 }
 
-static void trace_precise_mutator_roots_after_stop(struct gc_heap *heap) {
+static void trace_mutator_roots_after_stop(struct gc_heap *heap) {
   struct gc_mutator *mut = atomic_load(&heap->mutator_trace_list);
   int active_mutators_already_marked = heap_should_mark_while_stopping(heap);
   while (mut) {
@@ -988,7 +1137,7 @@ static void trace_precise_mutator_roots_after_stop(struct gc_heap *heap) {
       tracer_enqueue_roots(&heap->tracer, mut->mark_buf.objects,
                            mut->mark_buf.size);
     else
-      trace_precise_mutator_roots_with_lock(mut);
+      trace_mutator_roots_with_lock(mut);
     // Also unlink mutator_trace_list chain.
     struct gc_mutator *next = mut->next;
     mut->next = NULL;
@@ -998,20 +1147,14 @@ static void trace_precise_mutator_roots_after_stop(struct gc_heap *heap) {
 
   for (struct gc_mutator *mut = heap->deactivated_mutators; mut; mut = mut->next) {
     finish_sweeping_in_block(mut);
-    trace_precise_mutator_roots_with_lock(mut);
+    trace_mutator_roots_with_lock(mut);
   }
 }
 
-static void trace_precise_global_roots(struct gc_heap *heap) {
-  gc_trace_precise_heap_roots(heap->roots, trace_and_enqueue_globally, heap);
-}
-
 static void trace_global_conservative_roots(struct gc_heap *heap) {
-  /*
   if (gc_has_global_conservative_roots())
     gc_platform_visit_global_conservative_roots
-      (mark_and_globally_enqueue_conservative_roots, heap);
-  */
+      (mark_and_globally_enqueue_heap_conservative_roots, heap);
 }
 
 static inline uint64_t load_eight_aligned_bytes(uint8_t *mark) {
@@ -1456,9 +1599,9 @@ static void trace_pinned_roots_after_stop(struct gc_heap *heap) {
   trace_conservative_roots_after_stop(heap);
 }
 
-static void trace_precise_roots_after_stop(struct gc_heap *heap) {
-  trace_precise_mutator_roots_after_stop(heap);
-  trace_precise_global_roots(heap);
+static void trace_roots_after_stop(struct gc_heap *heap) {
+  trace_mutator_roots_after_stop(heap);
+  gc_trace_heap_roots(heap->roots, trace_and_enqueue_globally, heap);
   trace_generational_roots(heap);
 }
 
@@ -1494,7 +1637,7 @@ static void collect(struct gc_mutator *mut) {
   detect_out_of_memory(heap);
   trace_pinned_roots_after_stop(heap);
   prepare_for_evacuation(heap);
-  trace_precise_roots_after_stop(heap);
+  trace_roots_after_stop(heap);
   tracer_trace(heap);
   tracer_release(heap);
   mark_space_finish_gc(space, gc_kind);

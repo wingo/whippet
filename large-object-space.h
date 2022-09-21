@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "gc-ref.h"
+#include "gc-conservative-ref.h"
 #include "address-map.h"
 #include "address-set.h"
 
@@ -90,6 +91,11 @@ done:
   return copied;
 }
 
+static int large_object_space_mark_object(struct large_object_space *space,
+                                          struct gc_ref ref) {
+  return large_object_space_copy(space, ref);
+}
+
 static void large_object_space_reclaim_one(uintptr_t addr, void *data) {
   struct large_object_space *space = data;
   size_t npages = address_map_lookup(&space->object_pages, addr, 0);
@@ -143,6 +149,38 @@ static void large_object_space_finish_gc(struct large_object_space *space,
     space->free_pages = free_pages;
   }
   pthread_mutex_unlock(&space->lock);
+}
+
+static inline struct gc_ref
+large_object_space_mark_conservative_ref(struct large_object_space *space,
+                                         struct gc_conservative_ref ref,
+                                         int possibly_interior) {
+  uintptr_t addr = gc_conservative_ref_value(ref);
+
+  if (possibly_interior) {
+    // FIXME: This only allows interior pointers within the first page.
+    // BDW-GC doesn't have all-interior-pointers on for intraheap edges
+    // or edges originating in static data but by default does allow
+    // them from stack edges; probably we should too.
+    addr &= ~(space->page_size - 1);
+  } else {
+    // Addr not aligned on page boundary?  Not a large object.
+    uintptr_t displacement = addr & (space->page_size - 1);
+    if (!gc_is_valid_conservative_ref_displacement(displacement))
+      return gc_ref_null();
+    addr -= displacement;
+  }
+
+  pthread_mutex_lock(&space->lock);
+  // ptr might be in fromspace or tospace.  Just check the object_pages table, which
+  // contains both, as well as object_pages for free blocks.
+  int found = address_map_contains(&space->object_pages, addr);
+  pthread_mutex_unlock(&space->lock);
+
+  if (found && large_object_space_copy(space, gc_ref(addr)))
+    return gc_ref(addr);
+
+  return gc_ref_null();
 }
 
 static inline int large_object_space_contains(struct large_object_space *space,
