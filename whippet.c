@@ -15,6 +15,7 @@
 #include "debug.h"
 #include "gc-align.h"
 #include "gc-inline.h"
+#include "gc-stack.h"
 #include "large-object-space.h"
 #if GC_PARALLEL
 #include "parallel-tracer.h"
@@ -27,7 +28,7 @@
 #if GC_PRECISE
 #include "precise-roots-embedder.h"
 #else
-#error whippet only currently implements precise collection
+#include "conservative-roots-embedder.h"
 #endif
 
 #define GRANULE_SIZE 16
@@ -340,6 +341,7 @@ struct gc_mutator {
   uintptr_t sweep;
   uintptr_t block;
   struct gc_heap *heap;
+  struct gc_stack stack;
   struct gc_mutator_roots *roots;
   struct gc_mutator_mark_buf mark_buf;
   // Three uses for this in-object linked-list pointer:
@@ -914,8 +916,11 @@ static void trace_ref_and_enqueue_globally(struct gc_ref ref, void *data) {
 // enqueue them directly, so we send them to the controller in a buffer.
 static void trace_stopping_mutator_roots(struct gc_mutator *mut) {
   GC_ASSERT(mutator_should_mark_while_stopping(mut));
-  gc_trace_conservative_mutator_roots(mut->roots, trace_ref_and_enqueue_locally,
-                                      mut);
+  /*
+  trace_mutator_conservative_roots(mut,
+                                   mark_and_locally_enqueue_conservative_roots,
+                                   mut);
+  */
   gc_trace_precise_mutator_roots(mut->roots, trace_and_enqueue_locally, mut);
 }
 
@@ -924,18 +929,21 @@ static void trace_precise_mutator_roots_with_lock(struct gc_mutator *mut) {
                                  mutator_heap(mut));
 }
 
-static void trace_conservative_mutator_roots_with_lock(struct gc_mutator *mut) {
-  gc_trace_conservative_mutator_roots(mut->roots,
-                                      trace_ref_and_enqueue_globally,
-                                      mutator_heap(mut));
+static void trace_mutator_conservative_roots_with_lock(struct gc_mutator *mut) {
+  /*
+  trace_mutator_conservative_roots(mut,
+                                   mark_and_globally_enqueue_conservative_roots,
+                                   mutator_heap(mut));
+  */
 }
 
 static void trace_mutator_roots_with_lock(struct gc_mutator *mut) {
-  trace_conservative_mutator_roots_with_lock(mut);
+  trace_mutator_conservative_roots_with_lock(mut);
   trace_precise_mutator_roots_with_lock(mut);
 }
 
 static void trace_mutator_roots_with_lock_before_stop(struct gc_mutator *mut) {
+  gc_stack_capture_hot(&mut->stack);
   if (mutator_should_mark_while_stopping(mut))
     trace_mutator_roots_with_lock(mut);
   else
@@ -955,19 +963,19 @@ static void wait_for_mutators_to_stop(struct gc_heap *heap) {
 static void finish_sweeping(struct gc_mutator *mut);
 static void finish_sweeping_in_block(struct gc_mutator *mut);
 
-static void trace_conservative_mutator_roots_after_stop(struct gc_heap *heap) {
+static void trace_mutator_conservative_roots_after_stop(struct gc_heap *heap) {
   int active_mutators_already_marked = heap_should_mark_while_stopping(heap);
   if (!active_mutators_already_marked) {
     for (struct gc_mutator *mut = atomic_load(&heap->mutator_trace_list);
          mut;
          mut = mut->next)
-      trace_conservative_mutator_roots_with_lock(mut);
+      trace_mutator_conservative_roots_with_lock(mut);
   }
 
   for (struct gc_mutator *mut = heap->deactivated_mutators;
        mut;
        mut = mut->next)
-    trace_conservative_mutator_roots_with_lock(mut);
+    trace_mutator_conservative_roots_with_lock(mut);
 }
 
 static void trace_precise_mutator_roots_after_stop(struct gc_heap *heap) {
@@ -998,8 +1006,12 @@ static void trace_precise_global_roots(struct gc_heap *heap) {
   gc_trace_precise_heap_roots(heap->roots, trace_and_enqueue_globally, heap);
 }
 
-static void trace_conservative_global_roots(struct gc_heap *heap) {
-  gc_trace_conservative_heap_roots(heap->roots, trace_ref_and_enqueue_globally, heap);
+static void trace_global_conservative_roots(struct gc_heap *heap) {
+  /*
+  if (gc_has_global_conservative_roots())
+    gc_platform_visit_global_conservative_roots
+      (mark_and_globally_enqueue_conservative_roots, heap);
+  */
 }
 
 static inline uint64_t load_eight_aligned_bytes(uint8_t *mark) {
@@ -1111,6 +1123,7 @@ static void pause_mutator_for_collection_with_lock(struct gc_mutator *mut) {
   struct gc_heap *heap = mutator_heap(mut);
   GC_ASSERT(mutators_are_stopping(heap));
   finish_sweeping_in_block(mut);
+  gc_stack_capture_hot(&mut->stack);
   if (mutator_should_mark_while_stopping(mut))
     // No need to collect results in mark buf; we can enqueue roots directly.
     trace_mutator_roots_with_lock(mut);
@@ -1124,6 +1137,7 @@ static void pause_mutator_for_collection_without_lock(struct gc_mutator *mut) {
   struct gc_heap *heap = mutator_heap(mut);
   GC_ASSERT(mutators_are_stopping(heap));
   finish_sweeping(mut);
+  gc_stack_capture_hot(&mut->stack);
   if (mutator_should_mark_while_stopping(mut))
     trace_stopping_mutator_roots(mut);
   enqueue_mutator_for_tracing(mut);
@@ -1228,6 +1242,11 @@ static double clamp_major_gc_yield_threshold(struct gc_heap *heap,
   return threshold;
 }
 
+static inline int has_conservative_roots(void) {
+  return gc_has_mutator_conservative_roots() ||
+    gc_has_global_conservative_roots();
+}
+
 static enum gc_kind determine_collection_kind(struct gc_heap *heap) {
   struct mark_space *mark_space = heap_mark_space(heap);
   enum gc_kind previous_gc_kind = atomic_load(&heap->gc_kind);
@@ -1257,7 +1276,7 @@ static enum gc_kind determine_collection_kind(struct gc_heap *heap) {
     // blocks, try to avoid any pinning caused by the ragged-stop
     // marking.  Of course if the mutator has conservative roots we will
     // have pinning anyway and might as well allow ragged stops.
-    mark_while_stopping = gc_has_conservative_roots();
+    mark_while_stopping = has_conservative_roots();
   } else if (previous_gc_kind == GC_KIND_MAJOR_EVACUATING
              && fragmentation >= heap->fragmentation_low_threshold) {
     DEBUG("continuing evacuation due to fragmentation %.2f%% > %.2f%%\n",
@@ -1426,15 +1445,15 @@ static void prepare_for_evacuation(struct gc_heap *heap) {
 
 static void trace_conservative_roots_after_stop(struct gc_heap *heap) {
   GC_ASSERT(!heap_mark_space(heap)->evacuating);
-  GC_ASSERT(gc_has_conservative_roots());
-  trace_conservative_mutator_roots_after_stop(heap);
-  trace_conservative_global_roots(heap);
+  if (gc_has_mutator_conservative_roots())
+    trace_mutator_conservative_roots_after_stop(heap);
+  if (gc_has_global_conservative_roots())
+    trace_global_conservative_roots(heap);
 }
 
 static void trace_pinned_roots_after_stop(struct gc_heap *heap) {
   GC_ASSERT(!heap_mark_space(heap)->evacuating);
-  if (gc_has_conservative_roots())
-    trace_conservative_roots_after_stop(heap);
+  trace_conservative_roots_after_stop(heap);
 }
 
 static void trace_precise_roots_after_stop(struct gc_heap *heap) {
@@ -2034,6 +2053,7 @@ int gc_init(int argc, struct gc_option argv[],
 
   *mut = calloc(1, sizeof(struct gc_mutator));
   if (!*mut) GC_CRASH();
+  gc_stack_init(&(*mut)->stack, stack_base);
   add_mutator(*heap, *mut);
   return 1;
 }
@@ -2043,6 +2063,7 @@ struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *stack_base,
   struct gc_mutator *ret = calloc(1, sizeof(struct gc_mutator));
   if (!ret)
     GC_CRASH();
+  gc_stack_init(&ret->stack, stack_base);
   add_mutator(heap, ret);
   return ret;
 }
@@ -2059,6 +2080,7 @@ static void deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->next = heap->deactivated_mutators;
   heap->deactivated_mutators = mut;
   heap->active_mutator_count--;
+  gc_stack_capture_hot(&mut->stack);
   if (!heap->active_mutator_count && mutators_are_stopping(heap))
     pthread_cond_signal(&heap->collector_cond);
   heap_unlock(heap);
