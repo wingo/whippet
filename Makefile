@@ -1,5 +1,5 @@
 TESTS=quads mt-gcbench # MT_GCBench MT_GCBench2
-COLLECTORS=bdw semi whippet parallel-whippet generational-whippet parallel-generational-whippet
+COLLECTORS=bdw semi whippet conservative-whippet parallel-whippet conservative-parallel-whippet generational-whippet conservative-generational-whippet parallel-generational-whippet conservative-parallel-generational-whippet
 
 CC=gcc
 CFLAGS=-Wall -O2 -g -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused -DNDEBUG
@@ -35,20 +35,40 @@ whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h asse
 whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_PRECISE=1 -include whippet-attrs.h -o $@ -c $*.c
 
+conservative-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
+	$(COMPILE) -DGC_PRECISE=0 -include $*-embedder.h -o $@ -c whippet.c
+conservative-whippet-%.o: whippet.c %.c
+	$(COMPILE) -DGC_PRECISE=0 -include whippet-attrs.h -o $@ -c $*.c
+
 parallel-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h parallel-tracer.h assert.h debug.h heap-objects.h %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_PRECISE=1 -include $*-embedder.h -o $@ -c whippet.c
 parallel-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_PRECISE=1 -include whippet-attrs.h -o $@ -c $*.c
+
+conservative-parallel-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
+	$(COMPILE) -DGC_PARALLEL=1 -DGC_PRECISE=0 -include $*-embedder.h -o $@ -c whippet.c
+conservative-parallel-whippet-%.o: whippet.c %.c
+	$(COMPILE) -DGC_PARALLEL=1 -DGC_PRECISE=0 -include whippet-attrs.h -o $@ -c $*.c
 
 generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
 	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_PRECISE=1 -include $*-embedder.h -o $@ -c whippet.c
 generational-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_PRECISE=1 -include whippet-attrs.h -o $@ -c $*.c
 
+conservative-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
+	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_PRECISE=0 -include $*-embedder.h -o $@ -c whippet.c
+conservative-generational-whippet-%.o: whippet.c %.c
+	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_PRECISE=0 -include whippet-attrs.h -o $@ -c $*.c
+
 parallel-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h parallel-tracer.h assert.h debug.h heap-objects.h %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE=1 -include $*-embedder.h -o $@ -c whippet.c
 parallel-generational-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE=1 -include whippet-attrs.h -o $@ -c $*.c
+
+conservative-parallel-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h parallel-tracer.h assert.h debug.h heap-objects.h %.c
+	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE=0 -include $*-embedder.h -o $@ -c whippet.c
+conservative-parallel-generational-whippet-%.o: whippet.c %.c
+	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE=0 -include whippet-attrs.h -o $@ -c $*.c
 
 %: %.o %-gc.o gc-platform.o gc-stack.o
 	$(CC) $(LDFLAGS) $($*_LDFLAGS) -o $@ $^
