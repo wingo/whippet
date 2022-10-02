@@ -487,7 +487,8 @@ trace_worker_steal_from_any(struct trace_worker *worker, struct tracer *tracer) 
     DEBUG("tracer #%zu: stealing from #%zu\n", worker->id, steal_id);
     struct gc_ref obj = tracer_steal_from_worker(tracer, steal_id);
     if (gc_ref_is_heap_object(obj)) {
-      DEBUG("tracer #%zu: stealing got %p\n", worker->id, obj);
+      DEBUG("tracer #%zu: stealing got %p\n", worker->id,
+            gc_ref_heap_object(obj));
       worker->steal_id = steal_id;
       return obj;
     }
