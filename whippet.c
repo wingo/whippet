@@ -310,6 +310,7 @@ struct gc_heap {
   pthread_cond_t mutator_cond;
   size_t size;
   int collecting;
+  int mark_while_stopping;
   enum gc_kind gc_kind;
   int multithreaded;
   size_t active_mutator_count;
@@ -871,20 +872,7 @@ static void enqueue_mutator_for_tracing(struct gc_mutator *mut) {
 }
 
 static int heap_should_mark_while_stopping(struct gc_heap *heap) {
-  // Generally speaking, we allow mutators to mark their own stacks
-  // before pausing.  This is a limited form of concurrent marking, as
-  // other mutators might be running, not having received the signal to
-  // stop yet.  In a compacting collection, this results in pinned
-  // roots, because we haven't started evacuating yet and instead mark
-  // in place; avoid this pinning only if we're trying to reclaim free
-  // blocks.
-  GC_ASSERT(!heap_mark_space(heap)->evacuating);
-  if ((atomic_load(&heap->gc_kind) & GC_KIND_FLAG_EVACUATING)
-      && atomic_load_explicit(&heap_mark_space(heap)->pending_unavailable_bytes,
-                              memory_order_acquire) > 0)
-    return 0;
-
-  return 1;
+  return atomic_load_explicit(&heap->mark_while_stopping, memory_order_acquire);
 }
 
 static int mutator_should_mark_while_stopping(struct gc_mutator *mut) {
@@ -1245,18 +1233,32 @@ static enum gc_kind determine_collection_kind(struct gc_heap *heap) {
   struct mark_space *mark_space = heap_mark_space(heap);
   enum gc_kind previous_gc_kind = atomic_load(&heap->gc_kind);
   enum gc_kind gc_kind;
+  int mark_while_stopping = 1;
   double yield = heap_last_gc_yield(heap);
   double fragmentation = heap_fragmentation(heap);
+  ssize_t pending = atomic_load_explicit(&mark_space->pending_unavailable_bytes,
+                                         memory_order_acquire);
 
   if (heap->count == 0) {
     DEBUG("first collection is always major\n");
     gc_kind = GC_KIND_MAJOR_IN_PLACE;
-  } else if (atomic_load_explicit(&mark_space->pending_unavailable_bytes,
-                                  memory_order_acquire) > 0) {
+  } else if (pending > 0) {
+    DEBUG("evacuating due to need to reclaim %zd bytes\n", pending);
     // During the last cycle, a large allocation could not find enough
     // free blocks, and we decided not to expand the heap.  Let's do an
     // evacuating major collection to maximize the free block yield.
     gc_kind = GC_KIND_MAJOR_EVACUATING;
+
+    // Generally speaking, we allow mutators to mark their own stacks
+    // before pausing.  This is a limited form of concurrent marking, as
+    // other mutators might be running, not having received the signal
+    // to stop yet.  In a compacting collection, this results in pinned
+    // roots, because we haven't started evacuating yet and instead mark
+    // in place.  However as in this case we are trying to reclaim free
+    // blocks, try to avoid any pinning caused by the ragged-stop
+    // marking.  Of course if the mutator has conservative roots we will
+    // have pinning anyway and might as well allow ragged stops.
+    mark_while_stopping = gc_has_conservative_roots();
   } else if (previous_gc_kind == GC_KIND_MAJOR_EVACUATING
              && fragmentation >= heap->fragmentation_low_threshold) {
     DEBUG("continuing evacuation due to fragmentation %.2f%% > %.2f%%\n",
@@ -1298,6 +1300,7 @@ static enum gc_kind determine_collection_kind(struct gc_heap *heap) {
       (gc_kind & GC_KIND_FLAG_EVACUATING)) {
     DEBUG("welp.  conservative heap scanning, no evacuation for you\n");
     gc_kind = GC_KIND_MAJOR_IN_PLACE;
+    mark_while_stopping = 1;
   }
 
   // If this is the first in a series of minor collections, reset the
@@ -1311,6 +1314,10 @@ static enum gc_kind determine_collection_kind(struct gc_heap *heap) {
     DEBUG("first minor collection at yield %.2f%%, threshold %.2f%%\n",
           yield * 100., clamped * 100.);
   }
+
+  atomic_store_explicit(&heap->mark_while_stopping, mark_while_stopping,
+                        memory_order_release);
+
   atomic_store(&heap->gc_kind, gc_kind);
   return gc_kind;
 }
