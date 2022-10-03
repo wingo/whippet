@@ -547,6 +547,16 @@ trace_worker_steal(struct local_tracer *trace) {
   struct tracer *tracer = heap_tracer(trace->heap);
   struct trace_worker *worker = trace->worker;
 
+  // It could be that the worker's local trace queue has simply
+  // overflowed.  In that case avoid contention by trying to pop
+  // something from the worker's own queue.
+  {
+    DEBUG("tracer #%zu: trying to pop worker's own deque\n", worker->id);
+    struct gc_ref obj = trace_deque_try_pop(&worker->deque);
+    if (gc_ref_is_heap_object(obj))
+      return obj;
+  }
+
   while (1) {
     DEBUG("tracer #%zu: trying to steal\n", worker->id);
     struct gc_ref obj = trace_worker_steal_from_any(worker, tracer);
