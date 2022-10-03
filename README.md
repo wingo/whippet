@@ -142,9 +142,9 @@ large majority of use cases.
 
 ### Missing features before Guile can use Whippet
 
- - [ ] Pinning
- - [ ] Conservative stacks
- - [ ] Conservative data segments
+ - [X] Pinning
+ - [X] Conservative stacks
+ - [X] Conservative data segments
  - [ ] Heap growth/shrinking
  - [ ] Debugging/tracing
  - [ ] Finalizers
