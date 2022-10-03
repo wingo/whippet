@@ -36,7 +36,9 @@ static inline void
 visit_hole_fields(Hole *obj,
                   void (*visit)(struct gc_edge edge, void *visit_data),
                   void *visit_data) {
+#if GC_PRECISE
   GC_CRASH();
+#endif
 }
 
 #include "simple-gc-embedder.h"
