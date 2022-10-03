@@ -485,17 +485,15 @@ tracer_can_steal_from_worker(struct tracer *tracer, size_t id) {
 
 static struct gc_ref
 trace_worker_steal_from_any(struct trace_worker *worker, struct tracer *tracer) {
-  size_t steal_id = worker->steal_id;
   for (size_t i = 0; i < tracer->worker_count; i++) {
-    steal_id = (steal_id + 1) % tracer->worker_count;
-    DEBUG("tracer #%zu: stealing from #%zu\n", worker->id, steal_id);
-    struct gc_ref obj = tracer_steal_from_worker(tracer, steal_id);
+    DEBUG("tracer #%zu: stealing from #%zu\n", worker->id, worker->steal_id);
+    struct gc_ref obj = tracer_steal_from_worker(tracer, worker->steal_id);
     if (gc_ref_is_heap_object(obj)) {
       DEBUG("tracer #%zu: stealing got %p\n", worker->id,
             gc_ref_heap_object(obj));
-      worker->steal_id = steal_id;
       return obj;
     }
+    worker->steal_id = (worker->steal_id + 1) % tracer->worker_count;
   }
   DEBUG("tracer #%zu: failed to steal\n", worker->id);
   return gc_ref_null();
@@ -503,16 +501,15 @@ trace_worker_steal_from_any(struct trace_worker *worker, struct tracer *tracer) 
 
 static int
 trace_worker_can_steal_from_any(struct trace_worker *worker, struct tracer *tracer) {
-  size_t steal_id = worker->steal_id;
   DEBUG("tracer #%zu: checking if any worker has tasks\n", worker->id);
   for (size_t i = 0; i < tracer->worker_count; i++) {
-    steal_id = (steal_id + 1) % tracer->worker_count;
-    int res = tracer_can_steal_from_worker(tracer, steal_id);
+    int res = tracer_can_steal_from_worker(tracer, worker->steal_id);
     if (res) {
-      DEBUG("tracer #%zu: worker #%zu has tasks!\n", worker->id, steal_id);
-      worker->steal_id = steal_id;
+      DEBUG("tracer #%zu: worker #%zu has tasks!\n", worker->id,
+            worker->steal_id);
       return 1;
     }
+    worker->steal_id = (worker->steal_id + 1) % tracer->worker_count;
   }
   DEBUG("tracer #%zu: nothing to steal\n", worker->id);
   return 0;
