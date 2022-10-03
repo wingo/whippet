@@ -161,7 +161,8 @@ trace_deque_push(struct trace_deque *q, struct gc_ref x) {
   size_t t = LOAD_ACQUIRE(&q->top);
   int active = LOAD_RELAXED(&q->active);
 
-  if (b - t > trace_buf_size(&q->bufs[active]) - 1) /* Full queue. */
+  ssize_t size = b - t;
+  if (size > trace_buf_size(&q->bufs[active]) - 1) /* Full queue. */
     active = trace_deque_grow(q, active, b, t);
 
   trace_buf_put(&q->bufs[active], b, x);
@@ -175,7 +176,8 @@ trace_deque_push_many(struct trace_deque *q, struct gc_ref *objv, size_t count) 
   size_t t = LOAD_ACQUIRE(&q->top);
   int active = LOAD_RELAXED(&q->active);
 
-  while (b - t > trace_buf_size(&q->bufs[active]) - count) /* Full queue. */
+  ssize_t size = b - t;
+  while (size > trace_buf_size(&q->bufs[active]) - count) /* Full queue. */
     active = trace_deque_grow(q, active, b, t);
 
   for (size_t i = 0; i < count; i++)
@@ -187,25 +189,25 @@ trace_deque_push_many(struct trace_deque *q, struct gc_ref *objv, size_t count) 
 static struct gc_ref
 trace_deque_try_pop(struct trace_deque *q) {
   size_t b = LOAD_RELAXED(&q->bottom);
-  b = b - 1;
   int active = LOAD_RELAXED(&q->active);
-  STORE_RELAXED(&q->bottom, b);
+  STORE_RELAXED(&q->bottom, b - 1);
   atomic_thread_fence(memory_order_seq_cst);
   size_t t = LOAD_RELAXED(&q->top);
   struct gc_ref x;
-  if (t <= b) { // Non-empty queue.
-    x = trace_buf_get(&q->bufs[active], b);
-    if (t == b) { // Single last element in queue.
+  ssize_t size = b - t;
+  if (size > 0) { // Non-empty queue.
+    x = trace_buf_get(&q->bufs[active], b - 1);
+    if (size == 1) { // Single last element in queue.
       if (!atomic_compare_exchange_strong_explicit(&q->top, &t, t + 1,
                                                    memory_order_seq_cst,
                                                    memory_order_relaxed))
         // Failed race.
         x = gc_ref_null();
-      STORE_RELAXED(&q->bottom, b + 1);
+      STORE_RELAXED(&q->bottom, b);
     }
   } else { // Empty queue.
     x = gc_ref_null();
-    STORE_RELAXED(&q->bottom, b + 1);
+    STORE_RELAXED(&q->bottom, b);
   }
   return x;
 }
@@ -216,7 +218,8 @@ trace_deque_steal(struct trace_deque *q) {
     size_t t = LOAD_ACQUIRE(&q->top);
     atomic_thread_fence(memory_order_seq_cst);
     size_t b = LOAD_ACQUIRE(&q->bottom);
-    if (t >= b)
+    ssize_t size = b - t;
+    if (size <= 0)
       return gc_ref_null();
     int active = LOAD_CONSUME(&q->active);
     struct gc_ref ref = trace_buf_get(&q->bufs[active], t);
@@ -234,7 +237,8 @@ trace_deque_can_steal(struct trace_deque *q) {
   size_t t = LOAD_ACQUIRE(&q->top);
   atomic_thread_fence(memory_order_seq_cst);
   size_t b = LOAD_ACQUIRE(&q->bottom);
-  return t < b;
+  ssize_t size = b - t;
+  return size > 0;
 }
 
 #undef LOAD_RELAXED
