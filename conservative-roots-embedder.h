@@ -36,13 +36,17 @@ gc_conservative_ref_might_be_a_heap_object(struct gc_conservative_ref ref,
 
 static inline void gc_trace_mutator_roots(struct gc_mutator_roots *roots,
                                           void (*trace_edge)(struct gc_edge edge,
+                                                             struct gc_heap *heap,
                                                              void *trace_data),
+                                          struct gc_heap *heap,
                                           void *trace_data) {
 }
 
 static inline void gc_trace_heap_roots(struct gc_heap_roots *roots,
                                        void (*trace_edge)(struct gc_edge edge,
+                                                          struct gc_heap *heap,
                                                           void *trace_data),
+                                       struct gc_heap *heap,
                                        void *trace_data) {
 }
 

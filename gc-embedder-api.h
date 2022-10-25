@@ -12,6 +12,7 @@
 struct gc_mutator_roots;
 struct gc_heap_roots;
 struct gc_atomic_forward;
+struct gc_heap;
 
 GC_EMBEDDER_API inline int gc_has_mutator_conservative_roots(void);
 GC_EMBEDDER_API inline int gc_has_global_conservative_roots(void);
@@ -23,18 +24,24 @@ GC_EMBEDDER_API inline int gc_conservative_ref_might_be_a_heap_object(struct gc_
                                                                       int possibly_interior);
 
 GC_EMBEDDER_API inline void gc_trace_object(struct gc_ref ref,
-                                            void (*trace_edge)(struct gc_edge edge,
-                                                               void *trace_data),
+                                            void (*visit)(struct gc_edge edge,
+                                                          struct gc_heap *heap,
+                                                          void *visit_data),
+                                            struct gc_heap *heap,
                                             void *trace_data,
                                             size_t *size) GC_ALWAYS_INLINE;
 
 GC_EMBEDDER_API inline void gc_trace_mutator_roots(struct gc_mutator_roots *roots,
                                                    void (*trace_edge)(struct gc_edge edge,
+                                                                      struct gc_heap *heap,
                                                                       void *trace_data),
+                                                   struct gc_heap *heap,
                                                    void *trace_data);
 GC_EMBEDDER_API inline void gc_trace_heap_roots(struct gc_heap_roots *roots,
                                                 void (*trace_edge)(struct gc_edge edge,
+                                                                   struct gc_heap *heap,
                                                                    void *trace_data),
+                                                struct gc_heap *heap,
                                                 void *trace_data);
 
 GC_EMBEDDER_API inline uintptr_t gc_object_forwarded_nonatomic(struct gc_ref ref);

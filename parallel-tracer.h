@@ -320,7 +320,6 @@ struct tracer {
 struct local_tracer {
   struct trace_worker *worker;
   struct trace_deque *share_deque;
-  struct gc_heap *heap;
   struct local_trace_queue local;
 };
 
@@ -449,8 +448,10 @@ static void tracer_release(struct gc_heap *heap) {
     trace_deque_release(&tracer->workers[i].deque);
 }
 
-static inline void tracer_visit(struct gc_edge edge, void *trace_data) GC_ALWAYS_INLINE;
-static inline void trace_one(struct gc_ref ref, void *trace_data) GC_ALWAYS_INLINE;
+static inline void tracer_visit(struct gc_edge edge, struct gc_heap *heap,
+                                void *trace_data) GC_ALWAYS_INLINE;
+static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
+                             void *trace_data) GC_ALWAYS_INLINE;
 static inline int trace_edge(struct gc_heap *heap,
                              struct gc_edge edge) GC_ALWAYS_INLINE;
 
@@ -462,9 +463,9 @@ tracer_share(struct local_tracer *trace) {
 }
 
 static inline void
-tracer_visit(struct gc_edge edge, void *trace_data) {
-  struct local_tracer *trace = trace_data;
-  if (trace_edge(trace->heap, edge)) {
+tracer_visit(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
+  if (trace_edge(heap, edge)) {
+    struct local_tracer *trace = trace_data;
     if (local_trace_queue_full(&trace->local))
       tracer_share(trace);
     local_trace_queue_push(&trace->local, gc_edge_ref(edge));
@@ -544,8 +545,8 @@ trace_worker_check_termination(struct trace_worker *worker,
 
 static struct gc_ref
 trace_worker_steal(struct local_tracer *trace) {
-  struct tracer *tracer = heap_tracer(trace->heap);
   struct trace_worker *worker = trace->worker;
+  struct tracer *tracer = heap_tracer(worker->heap);
 
   // It could be that the worker's local trace queue has simply
   // overflowed.  In that case avoid contention by trying to pop
@@ -573,7 +574,7 @@ trace_worker_trace(struct trace_worker *worker) {
   struct local_tracer trace;
   trace.worker = worker;
   trace.share_deque = &worker->deque;
-  trace.heap = worker->heap;
+  struct gc_heap *heap = worker->heap;
   local_trace_queue_init(&trace.local);
 
   size_t n = 0;
@@ -587,7 +588,7 @@ trace_worker_trace(struct trace_worker *worker) {
       if (!gc_ref_is_heap_object(ref))
         break;
     }
-    trace_one(ref, &trace);
+    trace_one(ref, heap, &trace);
     n++;
   }
   DEBUG("tracer #%zu: done tracing, %zu objects traced\n", worker->id, n);

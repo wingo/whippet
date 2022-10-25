@@ -63,7 +63,9 @@ void* gc_call_with_stack_addr(void* (*f)(struct gc_stack_addr *base,
 }
 
 void gc_stack_visit(struct gc_stack *stack,
-                    void (*visit)(uintptr_t low, uintptr_t high, void *data),
+                    void (*visit)(uintptr_t low, uintptr_t high,
+                                  struct gc_heap *heap, void *data),
+                    struct gc_heap *heap,
                     void *data) {
   {
     uintptr_t low = (uintptr_t)stack->registers;
@@ -71,7 +73,7 @@ void gc_stack_visit(struct gc_stack *stack,
     uintptr_t high = low + sizeof(jmp_buf);
     DEBUG("found mutator register roots for %p: [%p,%p)\n", stack,
           (void*)low, (void*)high);
-    visit(low, high, data);
+    visit(low, high, heap, data);
   }
 
   if (0 HOTTER_THAN 1) {
@@ -79,12 +81,12 @@ void gc_stack_visit(struct gc_stack *stack,
           (void*)stack->hot.addr, (void*)stack->cold.addr);
     visit(align_up(stack->hot.addr, sizeof(uintptr_t)),
           align_down(stack->cold.addr, sizeof(uintptr_t)),
-          data);
+          heap, data);
   } else {
     DEBUG("found mutator stack roots for %p: [%p,%p)\n", stack,
           (void*)stack->cold.addr, (void*)stack->hot.addr);
     visit(align_up(stack->cold.addr, sizeof(uintptr_t)),
           align_down(stack->hot.addr, sizeof(uintptr_t)),
-          data);
+          heap, data);
   }
 }

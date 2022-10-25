@@ -30,26 +30,32 @@ gc_conservative_ref_might_be_a_heap_object(struct gc_conservative_ref ref,
 
 static inline void visit_roots(struct handle *roots,
                                void (*trace_edge)(struct gc_edge edge,
+                                                  struct gc_heap *heap,
                                                   void *trace_data),
+                               struct gc_heap *heap,
                                void *trace_data) {
   for (struct handle *h = roots; h; h = h->next)
-    trace_edge(gc_edge(&h->v), trace_data);
+    trace_edge(gc_edge(&h->v), heap, trace_data);
 }
 
 static inline void gc_trace_mutator_roots(struct gc_mutator_roots *roots,
                                           void (*trace_edge)(struct gc_edge edge,
+                                                             struct gc_heap *heap,
                                                              void *trace_data),
+                                          struct gc_heap *heap,
                                           void *trace_data) {
   if (roots)
-    visit_roots(roots->roots, trace_edge, trace_data);
+    visit_roots(roots->roots, trace_edge, heap, trace_data);
 }
 
 static inline void gc_trace_heap_roots(struct gc_heap_roots *roots,
                                        void (*trace_edge)(struct gc_edge edge,
+                                                          struct gc_heap *heap,
                                                           void *trace_data),
+                                       struct gc_heap *heap,
                                        void *trace_data) {
   if (roots)
-    visit_roots(roots->roots, trace_edge, trace_data);
+    visit_roots(roots->roots, trace_edge, heap, trace_data);
 }
 
 #endif // PRECISE_ROOTS_EMBEDDER_H

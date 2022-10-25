@@ -710,8 +710,9 @@ static inline struct gc_ref trace_conservative_ref(struct gc_heap *heap,
                                                     ref, possibly_interior);
 }
 
-static inline void trace_one(struct gc_ref ref, void *mark_data) {
-  gc_trace_object(ref, tracer_visit, mark_data, NULL);
+static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
+                             void *mark_data) {
+  gc_trace_object(ref, tracer_visit, heap, mark_data, NULL);
 }
 
 static int heap_has_multiple_mutators(struct gc_heap *heap) {
@@ -959,55 +960,60 @@ void gc_heap_set_roots(struct gc_heap *heap, struct gc_heap_roots *roots) {
   heap->roots = roots;
 }
 
-static void trace_and_enqueue_locally(struct gc_edge edge, void *data) {
+static void trace_and_enqueue_locally(struct gc_edge edge,
+                                      struct gc_heap *heap,
+                                      void *data) {
   struct gc_mutator *mut = data;
-  if (trace_edge(mutator_heap(mut), edge))
+  if (trace_edge(heap, edge))
     mutator_mark_buf_push(&mut->mark_buf, gc_edge_ref(edge));
 }
 
 static inline void do_trace_conservative_ref_and_enqueue_locally(struct gc_conservative_ref ref,
+                                                                 struct gc_heap *heap,
                                                                  void *data,
                                                                  int possibly_interior) {
   struct gc_mutator *mut = data;
-  struct gc_ref object = trace_conservative_ref(mutator_heap(mut), ref,
-                                                possibly_interior);
+  struct gc_ref object = trace_conservative_ref(heap, ref, possibly_interior);
   if (gc_ref_is_heap_object(object))
     mutator_mark_buf_push(&mut->mark_buf, object);
 }
 
 static void trace_possibly_interior_conservative_ref_and_enqueue_locally
-    (struct gc_conservative_ref ref, void *data) {
-  return do_trace_conservative_ref_and_enqueue_locally(ref, data, 1);
+    (struct gc_conservative_ref ref, struct gc_heap *heap, void *data) {
+  return do_trace_conservative_ref_and_enqueue_locally(ref, heap, data, 1);
 }
 
 static void trace_conservative_ref_and_enqueue_locally
-    (struct gc_conservative_ref ref, void *data) {
-  return do_trace_conservative_ref_and_enqueue_locally(ref, data, 0);
+    (struct gc_conservative_ref ref, struct gc_heap *heap, void *data) {
+  return do_trace_conservative_ref_and_enqueue_locally(ref, heap, data, 0);
 }
 
-static void trace_and_enqueue_globally(struct gc_edge edge, void *data) {
-  struct gc_heap *heap = data;
+static void trace_and_enqueue_globally(struct gc_edge edge,
+                                       struct gc_heap *heap,
+                                       void *unused) {
   if (trace_edge(heap, edge))
     tracer_enqueue_root(&heap->tracer, gc_edge_ref(edge));
 }
 
 static inline void do_trace_conservative_ref_and_enqueue_globally(struct gc_conservative_ref ref,
+                                                                  struct gc_heap *heap,
                                                                   void *data,
                                                                   int possibly_interior) {
-  struct gc_heap *heap = data;
   struct gc_ref object = trace_conservative_ref(heap, ref, possibly_interior);
   if (gc_ref_is_heap_object(object))
     tracer_enqueue_root(&heap->tracer, object);
 }
 
 static void trace_possibly_interior_conservative_ref_and_enqueue_globally(struct gc_conservative_ref ref,
+                                                                          struct gc_heap *heap,
                                                                           void *data) {
-  return do_trace_conservative_ref_and_enqueue_globally(ref, data, 1);
+  return do_trace_conservative_ref_and_enqueue_globally(ref, heap, data, 1);
 }
 
 static void trace_conservative_ref_and_enqueue_globally(struct gc_conservative_ref ref,
+                                                        struct gc_heap *heap,
                                                         void *data) {
-  return do_trace_conservative_ref_and_enqueue_globally(ref, data, 0);
+  return do_trace_conservative_ref_and_enqueue_globally(ref, heap, data, 0);
 }
 
 static inline struct gc_conservative_ref
@@ -1021,75 +1027,84 @@ load_conservative_ref(uintptr_t addr) {
 static inline void
 trace_conservative_edges(uintptr_t low,
                          uintptr_t high,
-                         void (*trace)(struct gc_conservative_ref, void *),
+                         void (*trace)(struct gc_conservative_ref,
+                                       struct gc_heap *, void *),
+                         struct gc_heap *heap,
                          void *data) {
   GC_ASSERT(low == align_down(low, sizeof(uintptr_t)));
   GC_ASSERT(high == align_down(high, sizeof(uintptr_t)));
   for (uintptr_t addr = low; addr < high; addr += sizeof(uintptr_t))
-    trace(load_conservative_ref(addr), data);
+    trace(load_conservative_ref(addr), heap, data);
 }
 
 static void
 mark_and_globally_enqueue_mutator_conservative_roots(uintptr_t low,
                                                      uintptr_t high,
+                                                     struct gc_heap *heap,
                                                      void *data) {
   trace_conservative_edges(low, high,
                            gc_mutator_conservative_roots_may_be_interior()
                            ? trace_possibly_interior_conservative_ref_and_enqueue_globally
                            : trace_conservative_ref_and_enqueue_globally,
-                           data);
+                           heap, data);
 }
 
 static void
 mark_and_globally_enqueue_heap_conservative_roots(uintptr_t low,
                                                   uintptr_t high,
+                                                  struct gc_heap *heap,
                                                   void *data) {
   trace_conservative_edges(low, high,
                            trace_conservative_ref_and_enqueue_globally,
-                           data);
+                           heap, data);
 }
 
 static void
 mark_and_locally_enqueue_mutator_conservative_roots(uintptr_t low,
                                                     uintptr_t high,
+                                                    struct gc_heap *heap,
                                                     void *data) {
   trace_conservative_edges(low, high,
                            gc_mutator_conservative_roots_may_be_interior()
                            ? trace_possibly_interior_conservative_ref_and_enqueue_locally
                            : trace_conservative_ref_and_enqueue_locally,
-                           data);
+                           heap, data);
 }
 
 static inline void
 trace_mutator_conservative_roots(struct gc_mutator *mut,
                                  void (*trace_range)(uintptr_t low,
                                                      uintptr_t high,
+                                                     struct gc_heap *heap,
                                                      void *data),
+                                 struct gc_heap *heap,
                                  void *data) {
   if (gc_has_mutator_conservative_roots())
-    gc_stack_visit(&mut->stack, trace_range, data);
+    gc_stack_visit(&mut->stack, trace_range, heap, data);
 }
 
 // Mark the roots of a mutator that is stopping for GC.  We can't
 // enqueue them directly, so we send them to the controller in a buffer.
 static void trace_stopping_mutator_roots(struct gc_mutator *mut) {
   GC_ASSERT(mutator_should_mark_while_stopping(mut));
+  struct gc_heap *heap = mutator_heap(mut);
   trace_mutator_conservative_roots(mut,
                                    mark_and_locally_enqueue_mutator_conservative_roots,
-                                   mut);
-  gc_trace_mutator_roots(mut->roots, trace_and_enqueue_locally, mut);
+                                   heap, mut);
+  gc_trace_mutator_roots(mut->roots, trace_and_enqueue_locally, heap, mut);
 }
 
 static void trace_mutator_conservative_roots_with_lock(struct gc_mutator *mut) {
   trace_mutator_conservative_roots(mut,
                                    mark_and_globally_enqueue_mutator_conservative_roots,
-                                   mutator_heap(mut));
+                                   mutator_heap(mut),
+                                   NULL);
 }
 
 static void trace_mutator_roots_with_lock(struct gc_mutator *mut) {
   trace_mutator_conservative_roots_with_lock(mut);
   gc_trace_mutator_roots(mut->roots, trace_and_enqueue_globally,
-                         mutator_heap(mut));
+                         mutator_heap(mut), NULL);
 }
 
 static void trace_mutator_roots_with_lock_before_stop(struct gc_mutator *mut) {
@@ -1154,7 +1169,7 @@ static void trace_mutator_roots_after_stop(struct gc_heap *heap) {
 static void trace_global_conservative_roots(struct gc_heap *heap) {
   if (gc_has_global_conservative_roots())
     gc_platform_visit_global_conservative_roots
-      (mark_and_globally_enqueue_heap_conservative_roots, heap);
+      (mark_and_globally_enqueue_heap_conservative_roots, heap, NULL);
 }
 
 static inline uint64_t load_eight_aligned_bytes(uint8_t *mark) {
@@ -1601,7 +1616,7 @@ static void trace_pinned_roots_after_stop(struct gc_heap *heap) {
 
 static void trace_roots_after_stop(struct gc_heap *heap) {
   trace_mutator_roots_after_stop(heap);
-  gc_trace_heap_roots(heap->roots, trace_and_enqueue_globally, heap);
+  gc_trace_heap_roots(heap->roots, trace_and_enqueue_globally, heap, NULL);
   trace_generational_roots(heap);
 }
 

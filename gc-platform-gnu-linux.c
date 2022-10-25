@@ -11,7 +11,7 @@
 #include "debug.h"
 #include "gc-assert.h"
 #include "gc-inline.h"
-//#include "gc-stack.h"
+#include "gc-platform.h"
 
 void gc_platform_init(void) {
   // Nothing to do.
@@ -59,7 +59,8 @@ uintptr_t gc_platform_current_thread_stack_base(void) {
 }
 
 struct visit_data {
-  void (*f)(uintptr_t start, uintptr_t end, void *data);
+  void (*f)(uintptr_t start, uintptr_t end, struct gc_heap *heap, void *data);
+  struct gc_heap *heap;
   void *data;
 };
 
@@ -85,7 +86,7 @@ static int visit_roots(struct dl_phdr_info *info, size_t size, void *data) {
       uintptr_t end = start + p->p_memsz;
       DEBUG("found roots for '%s': [%p,%p)\n", object_name,
             (void*)start, (void*)end);
-      visit_data->f(start, end, visit_data->data);
+      visit_data->f(start, end, visit_data->heap, visit_data->data);
     }
   }
 
@@ -94,8 +95,10 @@ static int visit_roots(struct dl_phdr_info *info, size_t size, void *data) {
 
 void gc_platform_visit_global_conservative_roots(void (*f)(uintptr_t start,
                                                            uintptr_t end,
+                                                           struct gc_heap*,
                                                            void *data),
+                                                 struct gc_heap *heap,
                                                  void *data) {
-  struct visit_data visit_data = { f, data };
+  struct visit_data visit_data = { f, heap, data };
   dl_iterate_phdr(visit_roots, &visit_data);
 }

@@ -63,7 +63,7 @@ static uintptr_t align_up(uintptr_t addr, size_t align) {
 static void collect(struct gc_mutator *mut) GC_NEVER_INLINE;
 static void collect_for_alloc(struct gc_mutator *mut, size_t bytes) GC_NEVER_INLINE;
 
-static void visit(struct gc_edge edge, void *visit_data);
+static void trace(struct gc_edge edge, struct gc_heap *heap, void *visit_data);
 
 static int semi_space_steal_pages(struct semi_space *space, size_t npages) {
   size_t stolen_pages = space->stolen_pages + npages;
@@ -103,7 +103,7 @@ static void flip(struct semi_space *space) {
 
 static struct gc_ref copy(struct semi_space *space, struct gc_ref ref) {
   size_t size;
-  gc_trace_object(ref, NULL, NULL, &size);
+  gc_trace_object(ref, NULL, NULL, NULL, &size);
   struct gc_ref new_ref = gc_ref(space->hp);
   memcpy(gc_ref_heap_object(new_ref), gc_ref_heap_object(ref), size);
   gc_object_forward_nonatomic(ref, new_ref);
@@ -113,7 +113,7 @@ static struct gc_ref copy(struct semi_space *space, struct gc_ref ref) {
 
 static uintptr_t scan(struct gc_heap *heap, struct gc_ref grey) {
   size_t size;
-  gc_trace_object(grey, visit, heap, &size);
+  gc_trace_object(grey, trace, heap, NULL, &size);
   return gc_ref_value(grey) + align_up(size, GC_ALIGNMENT);
 }
 
@@ -131,7 +131,7 @@ static void visit_large_object_space(struct gc_heap *heap,
                                      struct large_object_space *space,
                                      struct gc_ref ref) {
   if (large_object_space_copy(space, ref))
-    gc_trace_object(ref, visit, heap, NULL);
+    gc_trace_object(ref, trace, heap, NULL, NULL);
 }
 
 static int semi_space_contains(struct semi_space *space, struct gc_ref ref) {
@@ -139,8 +139,7 @@ static int semi_space_contains(struct semi_space *space, struct gc_ref ref) {
   return addr - space->base < space->size;
 }
 
-static void visit(struct gc_edge edge, void *visit_data) {
-  struct gc_heap *heap = visit_data;
+static void visit(struct gc_edge edge, struct gc_heap *heap) {
   struct gc_ref ref = gc_edge_ref(edge);
   if (!gc_ref_is_heap_object(ref))
     return;
@@ -152,6 +151,10 @@ static void visit(struct gc_edge edge, void *visit_data) {
     GC_CRASH();
 }
 
+static void trace(struct gc_edge edge, struct gc_heap *heap, void *visit_data) {
+  return visit(edge, heap);
+}
+
 static void collect(struct gc_mutator *mut) {
   struct gc_heap *heap = mutator_heap(mut);
   struct semi_space *semi = heap_semi_space(heap);
@@ -161,7 +164,7 @@ static void collect(struct gc_mutator *mut) {
   flip(semi);
   uintptr_t grey = semi->hp;
   if (mut->roots)
-    gc_trace_mutator_roots(mut->roots, visit, heap);
+    gc_trace_mutator_roots(mut->roots, trace, heap, NULL);
   // fprintf(stderr, "pushed %zd bytes in roots\n", space->hp - grey);
   while(grey < semi->hp)
     grey = scan(heap, gc_ref(grey));

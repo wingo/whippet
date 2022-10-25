@@ -5,7 +5,9 @@
 
 static inline void gc_trace_object(struct gc_ref ref,
                                    void (*trace_edge)(struct gc_edge edge,
+                                                      struct gc_heap *heap,
                                                       void *trace_data),
+                                   struct gc_heap *heap,
                                    void *trace_data,
                                    size_t *size) {
   switch (tag_live_alloc_kind(*tag_word(ref))) {
@@ -13,7 +15,7 @@ static inline void gc_trace_object(struct gc_ref ref,
     case ALLOC_KIND_##NAME:                                             \
       if (trace_edge)                                                   \
         visit_##name##_fields(gc_ref_heap_object(ref), trace_edge,      \
-                              trace_data);                              \
+                              heap, trace_data);                        \
       if (size)                                                         \
         *size = name##_size(gc_ref_heap_object(ref));                   \
       break;
