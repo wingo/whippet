@@ -5,9 +5,10 @@
 
 #include "assert.h"
 #include "gc-api.h"
-#if GC_PRECISE
+#if GC_PRECISE_ROOTS
 #include "precise-roots-api.h"
-#else
+#endif
+#if GC_CONSERVATIVE_ROOTS
 #include "conservative-roots-api.h"
 #endif
 #include "quads-types.h"

@@ -1,6 +1,7 @@
 #ifndef CONSERVATIVE_ROOTS_EMBEDDER_H
 #define CONSERVATIVE_ROOTS_EMBEDDER_H
 
+#include "gc-config.h"
 #include "gc-embedder-api.h"
 
 static inline int gc_has_mutator_conservative_roots(void) {
@@ -13,7 +14,7 @@ static inline int gc_has_global_conservative_roots(void) {
   return 1;
 }
 static inline int gc_has_conservative_intraheap_edges(void) {
-  return 0;
+  return GC_CONSERVATIVE_TRACE;
 }
 
 static inline int

@@ -26,9 +26,11 @@ static inline void gc_trace_object(struct gc_ref ref,
   }
 }
 
-#if GC_PRECISE
+#if GC_PRECISE_ROOTS
 #include "precise-roots-embedder.h"
-#else
+#endif
+
+#if GC_CONSERVATIVE_ROOTS
 #include "conservative-roots-embedder.h"
 #endif
 

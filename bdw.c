@@ -8,11 +8,19 @@
 
 #include "bdw-attrs.h"
 
-#if GC_PRECISE
+#if GC_PRECISE_ROOTS
 #error bdw-gc is a conservative collector
-#else
-#include "conservative-roots-embedder.h"
 #endif
+
+#if !GC_CONSERVATIVE_ROOTS
+#error bdw-gc is a conservative collector
+#endif
+
+#if !GC_CONSERVATIVE_TRACE
+#error bdw-gc is a conservative collector
+#endif
+
+#include "conservative-roots-embedder.h"
 
 // When pthreads are used, let `libgc' know about it and redirect
 // allocation calls such as `GC_MALLOC ()' to (contention-free, faster)

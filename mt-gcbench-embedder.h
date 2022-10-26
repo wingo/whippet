@@ -1,6 +1,7 @@
 #ifndef MT_GCBENCH_EMBEDDER_H
 #define MT_GCBENCH_EMBEDDER_H
 
+#include "gc-config.h"
 #include "mt-gcbench-types.h"
 
 struct gc_heap;
@@ -44,9 +45,8 @@ visit_hole_fields(Hole *obj,
                   void (*visit)(struct gc_edge edge,
                                 struct gc_heap *heap, void *visit_data),
                   struct gc_heap *heap, void *visit_data) {
-#if GC_PRECISE
-  GC_CRASH();
-#endif
+  if (GC_PRECISE_ROOTS)
+    GC_CRASH();
 }
 
 #include "simple-gc-embedder.h"

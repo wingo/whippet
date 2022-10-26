@@ -137,6 +137,8 @@ static void tracer_release(struct gc_heap *heap) {
 
 static inline void tracer_visit(struct gc_edge edge, struct gc_heap *heap,
                                 void *trace_data) GC_ALWAYS_INLINE;
+static inline void tracer_enqueue(struct gc_ref ref, struct gc_heap *heap,
+                                  void *trace_data) GC_ALWAYS_INLINE;
 static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
                              void *trace_data) GC_ALWAYS_INLINE;
 static inline int trace_edge(struct gc_heap *heap,
@@ -152,9 +154,13 @@ tracer_enqueue_roots(struct tracer *tracer, struct gc_ref *objs,
   trace_queue_push_many(&tracer->queue, objs, count);
 }
 static inline void
+tracer_enqueue(struct gc_ref ref, struct gc_heap *heap, void *trace_data) {
+  tracer_enqueue_root(heap_tracer(heap), ref);
+}
+static inline void
 tracer_visit(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
   if (trace_edge(heap, edge))
-    tracer_enqueue_root(heap_tracer(heap), gc_edge_ref(edge));
+    tracer_enqueue(gc_edge_ref(edge), heap, trace_data);
 }
 static inline void
 tracer_trace(struct gc_heap *heap) {

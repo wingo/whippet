@@ -13,8 +13,20 @@
 #define GC_GENERATIONAL 0
 #endif
 
-#ifndef GC_PRECISE
-#define GC_PRECISE 0
+// Though you normally wouldn't configure things this way, it's possible
+// to have both precise and conservative roots.  However we have to
+// either have precise or conservative tracing; not a mix.
+
+#ifndef GC_PRECISE_ROOTS
+#define GC_PRECISE_ROOTS 0
+#endif
+
+#ifndef GC_CONSERVATIVE_ROOTS
+#define GC_CONSERVATIVE_ROOTS 0
+#endif
+
+#ifndef GC_CONSERVATIVE_TRACE
+#define GC_CONSERVATIVE_TRACE 0
 #endif
 
 #endif // GC_CONFIG_H

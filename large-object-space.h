@@ -9,6 +9,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "gc-assert.h"
 #include "gc-ref.h"
 #include "gc-conservative-ref.h"
 #include "address-map.h"
@@ -94,6 +95,14 @@ done:
 static int large_object_space_mark_object(struct large_object_space *space,
                                           struct gc_ref ref) {
   return large_object_space_copy(space, ref);
+}
+
+static inline size_t large_object_space_object_size(struct large_object_space *space,
+                                                    struct gc_ref ref) {
+  size_t npages = address_map_lookup(&space->object_pages,
+                                     gc_ref_value(ref), 0);
+  GC_ASSERT(npages != 0);
+  return npages * space->page_size;
 }
 
 static void large_object_space_reclaim_one(uintptr_t addr, void *data) {

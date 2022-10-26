@@ -11,9 +11,11 @@
 #include "semi-attrs.h"
 #include "large-object-space.h"
 
-#if GC_PRECISE
+#if GC_PRECISE_ROOTS
 #include "precise-roots-embedder.h"
-#else
+#endif
+
+#if GC_CONSERVATIVE_ROOTS
 #error semi is a precise collector
 #endif
 

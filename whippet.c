@@ -26,9 +26,11 @@
 #include "spin.h"
 #include "whippet-attrs.h"
 
-#if GC_PRECISE
+#if GC_PRECISE_ROOTS
 #include "precise-roots-embedder.h"
-#else
+#endif
+
+#if GC_CONSERVATIVE_ROOTS
 #include "conservative-roots-embedder.h"
 #endif
 
@@ -371,11 +373,52 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
 
 static void collect(struct gc_mutator *mut) GC_NEVER_INLINE;
 
-static size_t mark_space_live_object_granules(uint8_t *metadata) {
+static inline uint64_t load_eight_aligned_bytes(uint8_t *mark) {
+  GC_ASSERT(((uintptr_t)mark & 7) == 0);
+  uint8_t * __attribute__((aligned(8))) aligned_mark = mark;
+  uint64_t word;
+  memcpy(&word, aligned_mark, 8);
+#ifdef WORDS_BIGENDIAN
+  word = __builtin_bswap64(word);
+#endif
+  return word;
+}
+
+static inline size_t count_zero_bytes(uint64_t bytes) {
+  return bytes ? (__builtin_ctzll(bytes) / 8) : sizeof(bytes);
+}
+
+static uint64_t broadcast_byte(uint8_t byte) {
+  uint64_t result = byte;
+  return result * 0x0101010101010101ULL;
+}
+
+static size_t next_mark(uint8_t *mark, size_t limit, uint64_t sweep_mask) {
   size_t n = 0;
-  while ((metadata[n] & METADATA_BYTE_END) == 0)
-    n++;
-  return n + 1;
+  // If we have a hole, it is likely to be more that 8 granules long.
+  // Assuming that it's better to make aligned loads, first we align the
+  // sweep pointer, then we load aligned mark words.
+  size_t unaligned = ((uintptr_t) mark) & 7;
+  if (unaligned) {
+    uint64_t bytes = load_eight_aligned_bytes(mark - unaligned) >> (unaligned * 8);
+    bytes &= sweep_mask;
+    if (bytes)
+      return count_zero_bytes(bytes);
+    n += 8 - unaligned;
+  }
+
+  for(; n < limit; n += 8) {
+    uint64_t bytes = load_eight_aligned_bytes(mark + n);
+    bytes &= sweep_mask;
+    if (bytes)
+      return n + count_zero_bytes(bytes);
+  }
+
+  return limit;
+}
+
+static size_t mark_space_live_object_granules(uint8_t *metadata) {
+  return next_mark(metadata, -1, broadcast_byte(METADATA_BYTE_END)) + 1;
 }
 
 static inline int mark_space_mark_object(struct mark_space *space,
@@ -710,9 +753,18 @@ static inline struct gc_ref trace_conservative_ref(struct gc_heap *heap,
                                                     ref, possibly_interior);
 }
 
-static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
-                             void *mark_data) {
-  gc_trace_object(ref, tracer_visit, heap, mark_data, NULL);
+static inline size_t mark_space_object_size(struct mark_space *space,
+                                            struct gc_ref ref) {
+  uint8_t *loc = metadata_byte_for_object(ref);
+  size_t granules = mark_space_live_object_granules(loc);
+  return granules * GRANULE_SIZE;
+}
+
+static inline size_t gc_object_allocation_size(struct gc_heap *heap,
+                                               struct gc_ref ref) {
+  if (GC_LIKELY(mark_space_contains(heap_mark_space(heap), ref)))
+    return mark_space_object_size(heap_mark_space(heap), ref);
+  return large_object_space_object_size(heap_large_object_space(heap), ref);
 }
 
 static int heap_has_multiple_mutators(struct gc_heap *heap) {
@@ -1037,6 +1089,29 @@ trace_conservative_edges(uintptr_t low,
     trace(load_conservative_ref(addr), heap, data);
 }
 
+static inline void tracer_trace_conservative_ref(struct gc_conservative_ref ref,
+                                                 struct gc_heap *heap,
+                                                 void *data) {
+  int possibly_interior = 0;
+  struct gc_ref resolved = trace_conservative_ref(heap, ref, possibly_interior);
+  if (gc_ref_is_heap_object(resolved))
+    tracer_enqueue(resolved, heap, data);
+}
+
+static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
+                             void *mark_data) {
+  if (gc_has_conservative_intraheap_edges()) {
+    size_t bytes = GC_LIKELY(mark_space_contains(heap_mark_space(heap), ref))
+      ? mark_space_object_size(heap_mark_space(heap), ref)
+      : large_object_space_object_size(heap_large_object_space(heap), ref);
+    trace_conservative_edges(gc_ref_value(ref),
+                             gc_ref_value(ref) + bytes,
+                             tracer_trace_conservative_ref, heap, mark_data);
+  } else {
+    gc_trace_object(ref, tracer_visit, heap, mark_data, NULL);
+  }
+}
+
 static void
 mark_and_globally_enqueue_mutator_conservative_roots(uintptr_t low,
                                                      uintptr_t high,
@@ -1170,26 +1245,6 @@ static void trace_global_conservative_roots(struct gc_heap *heap) {
   if (gc_has_global_conservative_roots())
     gc_platform_visit_global_conservative_roots
       (mark_and_globally_enqueue_heap_conservative_roots, heap, NULL);
-}
-
-static inline uint64_t load_eight_aligned_bytes(uint8_t *mark) {
-  GC_ASSERT(((uintptr_t)mark & 7) == 0);
-  uint8_t * __attribute__((aligned(8))) aligned_mark = mark;
-  uint64_t word;
-  memcpy(&word, aligned_mark, 8);
-#ifdef WORDS_BIGENDIAN
-  word = __builtin_bswap64(word);
-#endif
-  return word;
-}
-
-static inline size_t count_zero_bytes(uint64_t bytes) {
-  return bytes ? (__builtin_ctzll(bytes) / 8) : sizeof(bytes);
-}
-
-static uint64_t broadcast_byte(uint8_t byte) {
-  uint64_t result = byte;
-  return result * 0x0101010101010101ULL;
 }
 
 // Note that it's quite possible (and even likely) that any given remset
@@ -1688,30 +1743,6 @@ static int sweep_word(uintptr_t *loc, uintptr_t sweep_mask) {
     atomic_store_explicit(loc, 0, memory_order_relaxed);
   }
   return 0;
-}
-
-static size_t next_mark(uint8_t *mark, size_t limit, uint64_t sweep_mask) {
-  size_t n = 0;
-  // If we have a hole, it is likely to be more that 8 granules long.
-  // Assuming that it's better to make aligned loads, first we align the
-  // sweep pointer, then we load aligned mark words.
-  size_t unaligned = ((uintptr_t) mark) & 7;
-  if (unaligned) {
-    uint64_t bytes = load_eight_aligned_bytes(mark - unaligned) >> (unaligned * 8);
-    bytes &= sweep_mask;
-    if (bytes)
-      return count_zero_bytes(bytes);
-    n += 8 - unaligned;
-  }
-
-  for(; n < limit; n += 8) {
-    uint64_t bytes = load_eight_aligned_bytes(mark + n);
-    bytes &= sweep_mask;
-    if (bytes)
-      return n + count_zero_bytes(bytes);
-  }
-
-  return limit;
 }
 
 static uintptr_t mark_space_next_block_to_sweep(struct mark_space *space) {
