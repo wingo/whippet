@@ -20,8 +20,6 @@
 #error bdw-gc is a conservative collector
 #endif
 
-#include "conservative-roots-embedder.h"
-
 // When pthreads are used, let `libgc' know about it and redirect
 // allocation calls such as `GC_MALLOC ()' to (contention-free, faster)
 // thread-local allocation.

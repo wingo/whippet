@@ -1,7 +1,7 @@
 #ifndef GC_EMBEDDER_API_H
 #define GC_EMBEDDER_API_H
 
-#include "gc-conservative-ref.h"
+#include "gc-config.h"
 #include "gc-edge.h"
 #include "gc-forwarding.h"
 
@@ -14,14 +14,7 @@ struct gc_heap_roots;
 struct gc_atomic_forward;
 struct gc_heap;
 
-GC_EMBEDDER_API inline int gc_has_mutator_conservative_roots(void);
-GC_EMBEDDER_API inline int gc_has_global_conservative_roots(void);
-GC_EMBEDDER_API inline int gc_has_conservative_intraheap_edges(void);
-GC_EMBEDDER_API inline int gc_mutator_conservative_roots_may_be_interior(void);
-
 GC_EMBEDDER_API inline int gc_is_valid_conservative_ref_displacement(uintptr_t displacement);
-GC_EMBEDDER_API inline int gc_conservative_ref_might_be_a_heap_object(struct gc_conservative_ref,
-                                                                      int possibly_interior);
 
 GC_EMBEDDER_API inline void gc_trace_object(struct gc_ref ref,
                                             void (*visit)(struct gc_edge edge,

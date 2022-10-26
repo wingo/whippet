@@ -1,5 +1,5 @@
-#ifndef PRECISE_ROOTS_TYPES_H
-#define PRECISE_ROOTS_TYPES_H
+#ifndef SIMPLE_ROOTS_TYPES_H
+#define SIMPLE_ROOTS_TYPES_H
 
 struct handle {
   void *v;
@@ -14,4 +14,4 @@ struct gc_mutator_roots {
   struct handle *roots;
 };
 
-#endif // PRECISE_ROOTS_TYPES_H
+#endif // SIMPLE_ROOTS_TYPES_H

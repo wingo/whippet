@@ -1,7 +1,8 @@
-#ifndef PRECISE_ROOTS_API_H
-#define PRECISE_ROOTS_API_H
+#ifndef SIMPLE_ROOTS_API_H
+#define SIMPLE_ROOTS_API_H
 
-#include "precise-roots-types.h"
+#include "gc-config.h"
+#include "simple-roots-types.h"
 
 #define HANDLE_TO(T) union { T* v; struct handle handle; }
 #define HANDLE_REF(h) h.v
@@ -10,12 +11,15 @@
 #define POP_HANDLE(cx) pop_handle(&(cx)->roots.roots)
 
 static inline void push_handle(struct handle **roots, struct handle *handle) {
-  handle->next = *roots;
-  *roots = handle;
+  if (GC_PRECISE_ROOTS) {
+    handle->next = *roots;
+    *roots = handle;
+  }
 }
 
 static inline void pop_handle(struct handle **roots) {
-  *roots = (*roots)->next;
+  if (GC_PRECISE_ROOTS)
+    *roots = (*roots)->next;
 }
 
-#endif // PRECISE_ROOTS_API_H
+#endif // SIMPLE_ROOTS_API_H

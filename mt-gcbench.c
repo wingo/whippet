@@ -47,13 +47,7 @@
 #include "assert.h"
 #include "gc-api.h"
 #include "mt-gcbench-types.h"
-#if GC_PRECISE_ROOTS
-#include "precise-roots-api.h"
-#endif
-#if GC_CONSERVATIVE_ROOTS
-#include "conservative-roots-api.h"
-#endif
-#include "mt-gcbench-types.h"
+#include "simple-roots-api.h"
 #include "simple-allocator.h"
 
 #define MAX_THREAD_COUNT 256

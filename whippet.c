@@ -17,6 +17,7 @@
 #include "gc-inline.h"
 #include "gc-platform.h"
 #include "gc-stack.h"
+#include "gc-trace.h"
 #include "large-object-space.h"
 #if GC_PARALLEL
 #include "parallel-tracer.h"
@@ -25,14 +26,6 @@
 #endif
 #include "spin.h"
 #include "whippet-attrs.h"
-
-#if GC_PRECISE_ROOTS
-#include "precise-roots-embedder.h"
-#endif
-
-#if GC_CONSERVATIVE_ROOTS
-#include "conservative-roots-embedder.h"
-#endif
 
 #define GRANULE_SIZE 16
 #define GRANULE_SIZE_LOG_2 4
@@ -1455,11 +1448,6 @@ static double clamp_major_gc_yield_threshold(struct gc_heap *heap,
   return threshold;
 }
 
-static inline int has_conservative_roots(void) {
-  return gc_has_mutator_conservative_roots() ||
-    gc_has_global_conservative_roots();
-}
-
 static enum gc_kind determine_collection_kind(struct gc_heap *heap) {
   struct mark_space *mark_space = heap_mark_space(heap);
   enum gc_kind previous_gc_kind = atomic_load(&heap->gc_kind);
@@ -1489,7 +1477,7 @@ static enum gc_kind determine_collection_kind(struct gc_heap *heap) {
     // blocks, try to avoid any pinning caused by the ragged-stop
     // marking.  Of course if the mutator has conservative roots we will
     // have pinning anyway and might as well allow ragged stops.
-    mark_while_stopping = has_conservative_roots();
+    mark_while_stopping = gc_has_conservative_roots();
   } else if (previous_gc_kind == GC_KIND_MAJOR_EVACUATING
              && fragmentation >= heap->fragmentation_low_threshold) {
     DEBUG("continuing evacuation due to fragmentation %.2f%% > %.2f%%\n",

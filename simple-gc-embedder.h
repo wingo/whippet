@@ -1,7 +1,20 @@
 #include <stdatomic.h>
 
 #include "simple-tagging-scheme.h"
+#include "simple-roots-types.h"
+#include "gc-config.h"
 #include "gc-embedder-api.h"
+
+static inline int
+gc_is_valid_conservative_ref_displacement(uintptr_t displacement) {
+#if GC_CONSERVATIVE_ROOTS || GC_CONSERVATIVE_TRACE
+  // Here is where you would allow tagged heap object references.
+  return displacement == 0;
+#else
+  // Shouldn't get here.
+  GC_CRASH();
+#endif
+}
 
 static inline void gc_trace_object(struct gc_ref ref,
                                    void (*trace_edge)(struct gc_edge edge,
@@ -10,6 +23,10 @@ static inline void gc_trace_object(struct gc_ref ref,
                                    struct gc_heap *heap,
                                    void *trace_data,
                                    size_t *size) {
+#if GC_CONSERVATIVE_TRACE
+  // Shouldn't get here.
+  GC_CRASH();
+#else
   switch (tag_live_alloc_kind(*tag_word(ref))) {
 #define SCAN_OBJECT(name, Name, NAME)                                   \
     case ALLOC_KIND_##NAME:                                             \
@@ -24,15 +41,38 @@ static inline void gc_trace_object(struct gc_ref ref,
   default:
     GC_CRASH();
   }
+#endif
 }
 
-#if GC_PRECISE_ROOTS
-#include "precise-roots-embedder.h"
-#endif
+static inline void visit_roots(struct handle *roots,
+                               void (*trace_edge)(struct gc_edge edge,
+                                                  struct gc_heap *heap,
+                                                  void *trace_data),
+                               struct gc_heap *heap,
+                               void *trace_data) {
+  for (struct handle *h = roots; h; h = h->next)
+    trace_edge(gc_edge(&h->v), heap, trace_data);
+}
 
-#if GC_CONSERVATIVE_ROOTS
-#include "conservative-roots-embedder.h"
-#endif
+static inline void gc_trace_mutator_roots(struct gc_mutator_roots *roots,
+                                          void (*trace_edge)(struct gc_edge edge,
+                                                             struct gc_heap *heap,
+                                                             void *trace_data),
+                                          struct gc_heap *heap,
+                                          void *trace_data) {
+  if (roots)
+    visit_roots(roots->roots, trace_edge, heap, trace_data);
+}
+
+static inline void gc_trace_heap_roots(struct gc_heap_roots *roots,
+                                       void (*trace_edge)(struct gc_edge edge,
+                                                          struct gc_heap *heap,
+                                                          void *trace_data),
+                                       struct gc_heap *heap,
+                                       void *trace_data) {
+  if (roots)
+    visit_roots(roots->roots, trace_edge, heap, trace_data);
+}
 
 static inline uintptr_t gc_object_forwarded_nonatomic(struct gc_ref ref) {
   uintptr_t tag = *tag_word(ref);
@@ -107,10 +147,4 @@ static inline uintptr_t
 gc_atomic_forward_address(struct gc_atomic_forward *fwd) {
   GC_ASSERT(fwd->state == GC_FORWARDING_STATE_FORWARDED);
   return fwd->data;
-}
-
-static inline uintptr_t
-gc_conservative_ref_heap_address(struct gc_conservative_ref ref) {
-  // The specific spaces are responsible for checking alignment.
-  return gc_conservative_ref_value(ref);
 }

@@ -5,12 +5,7 @@
 
 #include "assert.h"
 #include "gc-api.h"
-#if GC_PRECISE_ROOTS
-#include "precise-roots-api.h"
-#endif
-#if GC_CONSERVATIVE_ROOTS
-#include "conservative-roots-api.h"
-#endif
+#include "simple-roots-api.h"
 #include "quads-types.h"
 #include "simple-allocator.h"
 
