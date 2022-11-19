@@ -41,7 +41,7 @@ bdw-%-gc.o: bdw.c %-embedder.h %.c
 bdw-%.o: bdw.c %.c
 	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include bdw-attrs.h -o $@ -c $*.c
 bdw-%: bdw-%.o bdw-%-gc.o gc-stack.o gc-platform.o
-	$(CC) $(LDFLAGS) `pkg-config --libs bdw-gc` -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^ `pkg-config --libs bdw-gc`
 
 semi-%-gc.o: semi.c %-embedder.h large-object-space.h assert.h debug.h %.c
 	$(COMPILE) -DGC_PRECISE_ROOTS=1 -include $*-embedder.h -o $@ -c semi.c
