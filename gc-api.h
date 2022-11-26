@@ -26,11 +26,6 @@ struct gc_option {
   double value;
 };
 
-// FIXME: Conflict with bdw-gc GC_API.  Switch prefix?
-#ifndef GC_API_
-#define GC_API_ GC_INTERNAL
-#endif
-
 GC_API_ int gc_option_from_string(const char *str);
 
 struct gc_stack_addr;

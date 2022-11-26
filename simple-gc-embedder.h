@@ -5,6 +5,8 @@
 #include "gc-config.h"
 #include "gc-embedder-api.h"
 
+#define GC_EMBEDDER_EPHEMERON_HEADER struct gc_header header;
+
 static inline int
 gc_is_valid_conservative_ref_displacement(uintptr_t displacement) {
 #if GC_CONSERVATIVE_ROOTS || GC_CONSERVATIVE_TRACE

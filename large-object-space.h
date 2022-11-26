@@ -92,6 +92,16 @@ done:
   return copied;
 }
 
+static int large_object_space_is_copied(struct large_object_space *space,
+                                        struct gc_ref ref) {
+  int copied = 0;
+  uintptr_t addr = gc_ref_value(ref);
+  pthread_mutex_lock(&space->lock);
+  copied = address_set_contains(&space->from_space, addr);
+  pthread_mutex_unlock(&space->lock);
+  return copied;
+}
+
 static int large_object_space_mark_object(struct large_object_space *space,
                                           struct gc_ref ref) {
   return large_object_space_copy(space, ref);

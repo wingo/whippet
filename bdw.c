@@ -3,8 +3,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define GC_API_ 
 #include "gc-api.h"
+#include "gc-ephemeron.h"
+
+#define GC_IMPL 1
+#include "gc-internal.h"
 
 #include "bdw-attrs.h"
 
@@ -34,6 +37,7 @@
 
 #include <gc/gc.h>
 #include <gc/gc_inline.h> /* GC_generic_malloc_many */
+#include <gc/gc_mark.h> /* GC_generic_malloc */
 
 #define GC_INLINE_GRANULE_WORDS 2
 #define GC_INLINE_GRANULE_BYTES (sizeof(void *) * GC_INLINE_GRANULE_WORDS)
@@ -118,6 +122,85 @@ void* gc_allocate_pointerless(struct gc_mutator *mut,
 
 void gc_collect(struct gc_mutator *mut) {
   GC_gcollect();
+}
+
+// In BDW-GC, we can't hook into the mark phase to call
+// gc_trace_ephemerons_for_object, so the advertised ephemeron strategy
+// doesn't really work.  The primitives that we have are mark functions,
+// which run during GC and can't allocate; finalizers, which run after
+// GC and can allocate but can't add to the connectivity graph; and
+// disappearing links, which are cleared at the end of marking, in the
+// stop-the-world phase.  It does not appear to be possible to implement
+// ephemerons using these primitives.  Instead fall back to weak-key
+// tables.
+
+static int ephemeron_gc_kind;
+
+struct gc_ref gc_allocate_ephemeron(struct gc_mutator *mut) {
+  void *ret = GC_generic_malloc(gc_ephemeron_size(), ephemeron_gc_kind);
+  return gc_ref_from_heap_object(ret);
+}
+
+unsigned gc_heap_ephemeron_trace_epoch(struct gc_heap *heap) {
+  return 0;
+}
+
+void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
+                       struct gc_ref key, struct gc_ref value) {
+  gc_ephemeron_init_internal(mut->heap, ephemeron, key, value);
+  if (GC_base((void*)gc_ref_value(key))) {
+    struct gc_ref *loc = gc_edge_loc(gc_ephemeron_key_edge(ephemeron));
+    GC_register_disappearing_link((void**)loc);
+  }
+}
+
+struct ephemeron_mark_state {
+  struct GC_ms_entry *mark_stack_ptr;
+  struct GC_ms_entry *mark_stack_limit;
+};
+
+int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
+  // Pretend the key is traced, to avoid adding this ephemeron to the
+  // global table.
+  return 1;
+}
+static void trace_ephemeron_edge(struct gc_edge edge, struct gc_heap *heap,
+                                 void *visit_data) {
+  struct ephemeron_mark_state *state = visit_data;
+  uintptr_t addr = gc_ref_value(gc_edge_ref(edge));
+  state->mark_stack_ptr = GC_MARK_AND_PUSH ((void *) addr,
+                                            state->mark_stack_ptr,
+                                            state->mark_stack_limit,
+                                            NULL);
+}
+
+static struct GC_ms_entry *
+mark_ephemeron(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
+               struct GC_ms_entry *mark_stack_limit, GC_word env) {
+
+  struct ephemeron_mark_state state = {
+    mark_stack_ptr,
+    mark_stack_limit,
+  };
+  
+  struct gc_ephemeron *ephemeron = (struct gc_ephemeron*) addr;
+
+  // If this ephemeron is on a freelist, its first word will be a
+  // freelist link and everything else will be NULL.
+  if (!gc_ref_value(gc_edge_ref(gc_ephemeron_value_edge(ephemeron)))) {
+    trace_ephemeron_edge(gc_edge(addr), NULL, &state);
+    return state.mark_stack_ptr;
+  }
+
+  if (!gc_ref_value(gc_edge_ref(gc_ephemeron_key_edge(ephemeron)))) {
+    // If the key died in a previous collection, the disappearing link
+    // will have been cleared.  Mark the ephemeron as dead.
+    gc_ephemeron_mark_dead(ephemeron);
+  }
+
+  gc_trace_ephemeron(ephemeron, trace_ephemeron_edge, NULL, &state);
+
+  return state.mark_stack_ptr;
 }
 
 static inline struct gc_mutator *add_mutator(struct gc_heap *heap) {
@@ -224,6 +307,15 @@ int gc_init(int argc, struct gc_option argv[],
   *heap = GC_malloc(sizeof(struct gc_heap));
   pthread_mutex_init(&(*heap)->lock, NULL);
   *mutator = add_mutator(*heap);
+
+  {
+    GC_word descriptor = GC_MAKE_PROC(GC_new_proc(mark_ephemeron), 0);
+    int add_size_to_descriptor = 0;
+    int clear_memory = 1;
+    ephemeron_gc_kind = GC_new_kind(GC_new_free_list(), descriptor,
+                                    add_size_to_descriptor, clear_memory);
+  }
+
   return 1;
 }
 

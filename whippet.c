@@ -7,10 +7,10 @@
 #include <string.h>
 #include <unistd.h>
 
-#define GC_API_ 
 #include "gc-api.h"
 
 #define GC_IMPL 1
+#include "gc-internal.h"
 
 #include "debug.h"
 #include "gc-align.h"
@@ -77,9 +77,9 @@ enum metadata_byte {
   METADATA_BYTE_MARK_1 = 4,
   METADATA_BYTE_MARK_2 = 8,
   METADATA_BYTE_END = 16,
-  METADATA_BYTE_UNUSED_1 = 32,
-  METADATA_BYTE_UNUSED_2 = 64,
-  METADATA_BYTE_UNUSED_3 = 128
+  METADATA_BYTE_EPHEMERON = 32,
+  METADATA_BYTE_PINNED = 64,
+  METADATA_BYTE_UNUSED_1 = 128
 };
 
 static uint8_t rotate_dead_survivor_marked(uint8_t mask) {
@@ -307,6 +307,8 @@ struct gc_heap {
   size_t size;
   int collecting;
   int mark_while_stopping;
+  int check_pending_ephemerons;
+  struct gc_pending_ephemerons *pending_ephemerons;
   enum gc_kind gc_kind;
   int multithreaded;
   size_t active_mutator_count;
@@ -323,6 +325,8 @@ struct gc_heap {
   double minor_gc_yield_threshold;
   double major_gc_yield_threshold;
   double minimum_major_gc_yield_threshold;
+  double pending_ephemerons_size_factor;
+  double pending_ephemerons_size_slop;
 };
 
 struct gc_mutator_mark_buf {
@@ -649,8 +653,8 @@ static inline int mark_space_contains(struct mark_space *space,
   return mark_space_contains_address(space, gc_ref_value(ref));
 }
 
-static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge) {
-  struct gc_ref ref = gc_edge_ref(edge);
+static inline int do_trace(struct gc_heap *heap, struct gc_edge edge,
+                           struct gc_ref ref) {
   if (!gc_ref_is_heap_object(ref))
     return 0;
   if (GC_LIKELY(mark_space_contains(heap_mark_space(heap), ref))) {
@@ -664,6 +668,63 @@ static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge) {
                                           ref);
   else
     GC_CRASH();
+}
+
+static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge) {
+  struct gc_ref ref = gc_edge_ref(edge);
+  int is_new = do_trace(heap, edge, ref);
+
+  if (GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
+                                       memory_order_relaxed)))
+    gc_resolve_pending_ephemerons(ref, heap);
+
+  return is_new;
+}
+
+int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
+  struct gc_ref ref = gc_edge_ref(edge);
+  if (!gc_ref_is_heap_object(ref))
+    return 0;
+  if (GC_LIKELY(mark_space_contains(heap_mark_space(heap), ref))) {
+    struct mark_space *space = heap_mark_space(heap);
+    uint8_t *metadata = metadata_byte_for_object(ref);
+    uint8_t byte = *metadata;
+    if (byte & space->marked_mask)
+      return 1;
+
+    if (!space->evacuating)
+      return 0;
+    if (!block_summary_has_flag(block_summary_for_addr(gc_ref_value(ref)),
+                                BLOCK_EVACUATE))
+      return 0;
+
+    struct gc_atomic_forward fwd = gc_atomic_forward_begin(ref);
+    switch (fwd.state) {
+    case GC_FORWARDING_STATE_NOT_FORWARDED:
+      return 0;
+    case GC_FORWARDING_STATE_BUSY:
+      // Someone else claimed this object first.  Spin until new address
+      // known, or evacuation aborts.
+      for (size_t spin_count = 0;; spin_count++) {
+        if (gc_atomic_forward_retry_busy(&fwd))
+          break;
+        yield_for_spin(spin_count);
+      }
+      if (fwd.state == GC_FORWARDING_STATE_ABORTED)
+        // Remote evacuation aborted; remote will mark and enqueue.
+        return 1;
+      ASSERT(fwd.state == GC_FORWARDING_STATE_FORWARDED);
+      // Fall through.
+    case GC_FORWARDING_STATE_FORWARDED:
+      gc_edge_update(edge, gc_ref(gc_atomic_forward_address(&fwd)));
+      return 1;
+    default:
+      GC_CRASH();
+    }
+  } else if (large_object_space_contains(heap_large_object_space(heap), ref)) {
+    return large_object_space_is_copied(heap_large_object_space(heap), ref);
+  }
+  GC_CRASH();
 }
 
 static inline struct gc_ref mark_space_mark_conservative_ref(struct mark_space *space,
@@ -732,9 +793,9 @@ static inline struct gc_ref mark_space_mark_conservative_ref(struct mark_space *
   return gc_ref(addr);
 }
 
-static inline struct gc_ref trace_conservative_ref(struct gc_heap *heap,
-                                                   struct gc_conservative_ref ref,
-                                                   int possibly_interior) {
+static inline struct gc_ref do_trace_conservative_ref(struct gc_heap *heap,
+                                                      struct gc_conservative_ref ref,
+                                                      int possibly_interior) {
   if (!gc_conservative_ref_might_be_a_heap_object(ref, possibly_interior))
     return gc_ref_null();
 
@@ -744,6 +805,19 @@ static inline struct gc_ref trace_conservative_ref(struct gc_heap *heap,
   else
     return large_object_space_mark_conservative_ref(heap_large_object_space(heap),
                                                     ref, possibly_interior);
+}
+
+static inline struct gc_ref trace_conservative_ref(struct gc_heap *heap,
+                                                   struct gc_conservative_ref ref,
+                                                   int possibly_interior) {
+  struct gc_ref ret = do_trace_conservative_ref(heap, ref, possibly_interior);
+
+  if (gc_ref_is_heap_object(ret) &&
+      GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
+                                       memory_order_relaxed)))
+    gc_resolve_pending_ephemerons(ret, heap);
+
+  return ret;
 }
 
 static inline size_t mark_space_object_size(struct mark_space *space,
@@ -1091,18 +1165,37 @@ static inline void tracer_trace_conservative_ref(struct gc_conservative_ref ref,
     tracer_enqueue(resolved, heap, data);
 }
 
+static inline void trace_one_conservatively(struct gc_ref ref,
+                                            struct gc_heap *heap,
+                                            void *mark_data) {
+  size_t bytes;
+  if (GC_LIKELY(mark_space_contains(heap_mark_space(heap), ref))) {
+    // Generally speaking we trace conservatively and don't allow much
+    // in the way of incremental precise marking on a
+    // conservative-by-default heap.  But, we make an exception for
+    // ephemerons.
+    uint8_t meta = *metadata_byte_for_addr(gc_ref_value(ref));
+    if (GC_UNLIKELY(meta & METADATA_BYTE_EPHEMERON)) {
+      gc_trace_ephemeron(gc_ref_heap_object(ref), tracer_visit, heap,
+                         mark_data);
+      return;
+    }
+    bytes = mark_space_object_size(heap_mark_space(heap), ref);
+  } else {
+    bytes = large_object_space_object_size(heap_large_object_space(heap), ref);
+  }
+  trace_conservative_edges(gc_ref_value(ref),
+                           gc_ref_value(ref) + bytes,
+                           tracer_trace_conservative_ref, heap,
+                           mark_data);
+}
+
 static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
                              void *mark_data) {
-  if (gc_has_conservative_intraheap_edges()) {
-    size_t bytes = GC_LIKELY(mark_space_contains(heap_mark_space(heap), ref))
-      ? mark_space_object_size(heap_mark_space(heap), ref)
-      : large_object_space_object_size(heap_large_object_space(heap), ref);
-    trace_conservative_edges(gc_ref_value(ref),
-                             gc_ref_value(ref) + bytes,
-                             tracer_trace_conservative_ref, heap, mark_data);
-  } else {
+  if (gc_has_conservative_intraheap_edges())
+    trace_one_conservatively(ref, heap, mark_data);
+  else
     gc_trace_object(ref, tracer_visit, heap, mark_data, NULL);
-  }
 }
 
 static void
@@ -1672,6 +1765,26 @@ static void mark_space_finish_gc(struct mark_space *space,
   release_evacuation_target_blocks(space);
 }
 
+static void resolve_ephemerons_lazily(struct gc_heap *heap) {
+  atomic_store_explicit(&heap->check_pending_ephemerons, 0,
+                        memory_order_release);
+}
+
+static void resolve_ephemerons_eagerly(struct gc_heap *heap) {
+  atomic_store_explicit(&heap->check_pending_ephemerons, 1,
+                        memory_order_release);
+  gc_scan_pending_ephemerons(heap->pending_ephemerons, heap, 0, 1);
+}
+
+static int enqueue_resolved_ephemerons(struct gc_heap *heap) {
+  return gc_pop_resolved_ephemerons(heap, trace_and_enqueue_globally,
+                                    NULL);
+}
+
+static void sweep_ephemerons(struct gc_heap *heap) {
+  return gc_sweep_pending_ephemerons(heap->pending_ephemerons, 0, 1);
+}
+
 static void collect(struct gc_mutator *mut) {
   struct gc_heap *heap = mutator_heap(mut);
   struct mark_space *space = heap_mark_space(heap);
@@ -1684,6 +1797,7 @@ static void collect(struct gc_mutator *mut) {
   enum gc_kind gc_kind = determine_collection_kind(heap);
   update_mark_patterns(space, !(gc_kind & GC_KIND_FLAG_MINOR));
   large_object_space_start_gc(lospace, gc_kind & GC_KIND_FLAG_MINOR);
+  resolve_ephemerons_lazily(heap);
   tracer_prepare(heap);
   request_mutators_to_stop(heap);
   trace_mutator_roots_with_lock_before_stop(mut);
@@ -1697,6 +1811,10 @@ static void collect(struct gc_mutator *mut) {
   prepare_for_evacuation(heap);
   trace_roots_after_stop(heap);
   tracer_trace(heap);
+  resolve_ephemerons_eagerly(heap);
+  while (enqueue_resolved_ephemerons(heap))
+    tracer_trace(heap);
+  sweep_ephemerons(heap);
   tracer_release(heap);
   mark_space_finish_gc(space, gc_kind);
   large_object_space_finish_gc(lospace, gc_kind & GC_KIND_FLAG_MINOR);
@@ -2054,6 +2172,31 @@ void* gc_allocate_pointerless(struct gc_mutator *mut, size_t size) {
   return gc_allocate(mut, size);
 }
 
+struct gc_ref gc_allocate_ephemeron(struct gc_mutator *mut) {
+  struct gc_ref ret =
+    gc_ref_from_heap_object(gc_allocate(mut, gc_ephemeron_size()));
+  if (gc_has_conservative_intraheap_edges()) {
+    uint8_t *metadata = metadata_byte_for_addr(gc_ref_value(ret));
+    *metadata |= METADATA_BYTE_EPHEMERON;
+  }
+  return ret;
+}
+
+void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
+                       struct gc_ref key, struct gc_ref value) {
+  gc_ephemeron_init_internal(mutator_heap(mut), ephemeron, key, value);
+  // No write barrier: we require that the ephemeron be newer than the
+  // key or the value.
+}
+
+struct gc_pending_ephemerons *gc_heap_pending_ephemerons(struct gc_heap *heap) {
+  return heap->pending_ephemerons;
+}
+
+unsigned gc_heap_ephemeron_trace_epoch(struct gc_heap *heap) {
+  return heap->count;
+}
+
 #define FOR_EACH_GC_OPTION(M) \
   M(GC_OPTION_FIXED_HEAP_SIZE, "fixed-heap-size") \
   M(GC_OPTION_PARALLELISM, "parallelism")
@@ -2141,6 +2284,16 @@ static struct slab* allocate_slabs(size_t nslabs) {
   return (struct slab*) aligned_base;
 }
 
+static int heap_prepare_pending_ephemerons(struct gc_heap *heap) {
+  struct gc_pending_ephemerons *cur = heap->pending_ephemerons;
+  size_t target = heap->size * heap->pending_ephemerons_size_factor;
+  double slop = heap->pending_ephemerons_size_slop;
+
+  heap->pending_ephemerons = gc_prepare_pending_ephemerons(cur, target, slop);
+
+  return !!heap->pending_ephemerons;
+}
+
 static int heap_init(struct gc_heap *heap, struct options *options) {
   // *heap is already initialized to 0.
 
@@ -2152,12 +2305,17 @@ static int heap_init(struct gc_heap *heap, struct options *options) {
   if (!tracer_init(heap, options->parallelism))
     GC_CRASH();
 
+  heap->pending_ephemerons_size_factor = 0.005;
+  heap->pending_ephemerons_size_slop = 0.5;
   heap->fragmentation_low_threshold = 0.05;
   heap->fragmentation_high_threshold = 0.10;
   heap->minor_gc_yield_threshold = 0.30;
   heap->minimum_major_gc_yield_threshold = 0.05;
   heap->major_gc_yield_threshold =
     clamp_major_gc_yield_threshold(heap, heap->minor_gc_yield_threshold);
+
+  if (!heap_prepare_pending_ephemerons(heap))
+    GC_CRASH();
 
   return 1;
 }
