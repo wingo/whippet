@@ -4,20 +4,20 @@ COLLECTORS= \
 	semi \
 	\
 	whippet \
-	conservative-whippet \
-	fully-conservative-whippet \
+	stack-conservative-whippet \
+	heap-conservative-whippet \
 	\
 	parallel-whippet \
-	conservative-parallel-whippet \
-	fully-conservative-parallel-whippet \
+	stack-conservative-parallel-whippet \
+	heap-conservative-parallel-whippet \
 	\
 	generational-whippet \
-	conservative-generational-whippet \
-	fully-conservative-generational-whippet \
+	stack-conservative-generational-whippet \
+	heap-conservative-generational-whippet \
 	\
 	parallel-generational-whippet \
-	conservative-parallel-generational-whippet \
-	fully-conservative-parallel-generational-whippet
+	stack-conservative-parallel-generational-whippet \
+	heap-conservative-parallel-generational-whippet
 
 CC=gcc
 CFLAGS=-Wall -O2 -g -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused -DNDEBUG
@@ -53,14 +53,14 @@ whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h asse
 whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_PRECISE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
 
-conservative-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
+stack-conservative-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
 	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -include $*-embedder.h -o $@ -c whippet.c
-conservative-whippet-%.o: whippet.c %.c
+stack-conservative-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
 
-fully-conservative-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
+heap-conservative-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
 	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include $*-embedder.h -o $@ -c whippet.c
-fully-conservative-whippet-%.o: whippet.c %.c
+heap-conservative-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include whippet-attrs.h -o $@ -c $*.c
 
 parallel-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h parallel-tracer.h assert.h debug.h heap-objects.h %.c
@@ -68,14 +68,14 @@ parallel-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h parallel-tr
 parallel-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_PRECISE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
 
-conservative-parallel-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
+stack-conservative-parallel-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -include $*-embedder.h -o $@ -c whippet.c
-conservative-parallel-whippet-%.o: whippet.c %.c
+stack-conservative-parallel-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
 
-fully-conservative-parallel-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
+heap-conservative-parallel-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include $*-embedder.h -o $@ -c whippet.c
-fully-conservative-parallel-whippet-%.o: whippet.c %.c
+heap-conservative-parallel-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -DGC_FULLY_CONSERVATIVE=1 -include whippet-attrs.h -o $@ -c $*.c
 
 generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
@@ -83,14 +83,14 @@ generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-
 generational-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
 
-conservative-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
+stack-conservative-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
 	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -include $*-embedder.h -o $@ -c whippet.c
-conservative-generational-whippet-%.o: whippet.c %.c
+stack-conservative-generational-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
 
-fully-conservative-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
+heap-conservative-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
 	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include $*-embedder.h -o $@ -c whippet.c
-fully-conservative-generational-whippet-%.o: whippet.c %.c
+heap-conservative-generational-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include whippet-attrs.h -o $@ -c $*.c
 
 parallel-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h parallel-tracer.h assert.h debug.h heap-objects.h %.c
@@ -98,14 +98,14 @@ parallel-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.
 parallel-generational-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
 
-conservative-parallel-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h parallel-tracer.h assert.h debug.h heap-objects.h %.c
+stack-conservative-parallel-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h parallel-tracer.h assert.h debug.h heap-objects.h %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -include $*-embedder.h -o $@ -c whippet.c
-conservative-parallel-generational-whippet-%.o: whippet.c %.c
+stack-conservative-parallel-generational-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
 
-fully-conservative-parallel-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h parallel-tracer.h assert.h debug.h heap-objects.h %.c
+heap-conservative-parallel-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h parallel-tracer.h assert.h debug.h heap-objects.h %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include $*-embedder.h -o $@ -c whippet.c
-fully-conservative-parallel-generational-whippet-%.o: whippet.c %.c
+heap-conservative-parallel-generational-whippet-%.o: whippet.c %.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include whippet-attrs.h -o $@ -c $*.c
 
 %: %.o %-gc.o gc-platform.o gc-stack.o
