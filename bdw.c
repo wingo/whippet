@@ -116,7 +116,7 @@ void* gc_allocate_pointerless(struct gc_mutator *mut,
   return GC_malloc_atomic(size);
 }
 
-static inline void collect(struct gc_mutator *mut) {
+void gc_collect(struct gc_mutator *mut) {
   GC_gcollect();
 }
 

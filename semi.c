@@ -171,6 +171,10 @@ static void collect(struct gc_mutator *mut) {
   // fprintf(stderr, "%zd bytes copied\n", (space->size>>1)-(space->limit-space->hp));
 }
 
+void gc_collect(struct gc_mutator *mut) {
+  collect(mut);
+}
+
 static void collect_for_alloc(struct gc_mutator *mut, size_t bytes) {
   collect(mut);
   struct semi_space *space = mutator_semi_space(mut);

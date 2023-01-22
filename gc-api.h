@@ -57,6 +57,8 @@ GC_API_ void* gc_call_without_gc(struct gc_mutator *mut, void* (*f)(void*),
                                  void *data) GC_NEVER_INLINE;
 GC_API_ void gc_print_stats(struct gc_heap *heap);
 
+GC_API_ void gc_collect(struct gc_mutator *mut);
+
 static inline void gc_clear_fresh_allocation(struct gc_ref obj,
                                              size_t size) GC_ALWAYS_INLINE;
 static inline void gc_clear_fresh_allocation(struct gc_ref obj,

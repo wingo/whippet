@@ -1992,6 +1992,10 @@ static void trigger_collection(struct gc_mutator *mut) {
   heap_unlock(heap);
 }
 
+void gc_collect(struct gc_mutator *mut) {
+  trigger_collection(mut);
+}
+
 void* gc_allocate_large(struct gc_mutator *mut, size_t size) {
   struct gc_heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);
