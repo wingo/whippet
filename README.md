@@ -148,7 +148,7 @@ large majority of use cases.
  - [ ] Heap growth/shrinking
  - [ ] Debugging/tracing
  - [ ] Finalizers
- - [ ] Weak references / weak maps
+ - [X] Weak references / weak maps
 
 ### Features that would improve Whippet performance
 
