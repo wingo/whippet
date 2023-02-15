@@ -225,12 +225,14 @@ int main(int argc, char *argv[]) {
   printf("Allocating heap of %.3fGB (%.2f multiplier of live data).\n",
          heap_size / 1e9, heap_multiplier);
 
-  struct gc_option options[] = { { GC_OPTION_FIXED_HEAP_SIZE, (size_t) heap_size },
-                                 { GC_OPTION_PARALLELISM, parallelism } };
+  struct gc_options *options = gc_allocate_options();
+  gc_options_set_int(options, GC_OPTION_HEAP_SIZE_POLICY, GC_HEAP_SIZE_FIXED);
+  gc_options_set_size(options, GC_OPTION_HEAP_SIZE, heap_size);
+  gc_options_set_int(options, GC_OPTION_PARALLELISM, parallelism);
+
   struct gc_heap *heap;
   struct gc_mutator *mut;
-  if (!gc_init(sizeof options / sizeof options[0], options, NULL, &heap,
-               &mut)) {
+  if (!gc_init(options, NULL, &heap, &mut)) {
     fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
             (size_t)heap_size);
     return 1;

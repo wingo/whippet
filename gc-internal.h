@@ -6,5 +6,6 @@
 #endif
 
 #include "gc-ephemeron-internal.h"
+#include "gc-options-internal.h"
 
 #endif // GC_INTERNAL_H

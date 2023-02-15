@@ -20,5 +20,6 @@ void gc_platform_visit_global_conservative_roots(void (*f)(uintptr_t start,
                                                            void *data),
                                                  struct gc_heap *heap,
                                                  void *data);
+GC_INTERNAL int gc_platform_processor_count(void);
 
 #endif // GC_PLATFORM_H

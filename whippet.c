@@ -2197,69 +2197,6 @@ unsigned gc_heap_ephemeron_trace_epoch(struct gc_heap *heap) {
   return heap->count;
 }
 
-#define FOR_EACH_GC_OPTION(M) \
-  M(GC_OPTION_FIXED_HEAP_SIZE, "fixed-heap-size") \
-  M(GC_OPTION_PARALLELISM, "parallelism")
-
-static void dump_available_gc_options(void) {
-  fprintf(stderr, "available gc options:");
-#define PRINT_OPTION(option, name) fprintf(stderr, " %s", name);
-  FOR_EACH_GC_OPTION(PRINT_OPTION)
-#undef PRINT_OPTION
-  fprintf(stderr, "\n");
-}
-
-int gc_option_from_string(const char *str) {
-#define PARSE_OPTION(option, name) if (strcmp(str, name) == 0) return option;
-  FOR_EACH_GC_OPTION(PARSE_OPTION)
-#undef PARSE_OPTION
-  if (strcmp(str, "fixed-heap-size") == 0)
-    return GC_OPTION_FIXED_HEAP_SIZE;
-  if (strcmp(str, "parallelism") == 0)
-    return GC_OPTION_PARALLELISM;
-  fprintf(stderr, "bad gc option: '%s'\n", str);
-  dump_available_gc_options();
-  return -1;
-}
-
-struct options {
-  size_t fixed_heap_size;
-  size_t parallelism;
-};
-
-static size_t parse_size_t(double value) {
-  GC_ASSERT(value >= 0);
-  GC_ASSERT(value <= (size_t) -1);
-  return value;
-}
-
-static size_t number_of_current_processors(void) { return 1; }
-
-static int parse_options(int argc, struct gc_option argv[],
-                         struct options *options) {
-  for (int i = 0; i < argc; i++) {
-    switch (argv[i].option) {
-    case GC_OPTION_FIXED_HEAP_SIZE:
-      options->fixed_heap_size = parse_size_t(argv[i].value);
-      break;
-    case GC_OPTION_PARALLELISM:
-      options->parallelism = parse_size_t(argv[i].value);
-      break;
-    default:
-      GC_CRASH();
-    }
-  }
-
-  if (!options->fixed_heap_size) {
-    fprintf(stderr, "fixed heap size is currently required\n");
-    return 0;
-  }
-  if (!options->parallelism)
-    options->parallelism = number_of_current_processors();
-
-  return 1;
-}
-
 static struct slab* allocate_slabs(size_t nslabs) {
   size_t size = nslabs * SLAB_SIZE;
   size_t extent = size + SLAB_SIZE;
@@ -2294,15 +2231,42 @@ static int heap_prepare_pending_ephemerons(struct gc_heap *heap) {
   return !!heap->pending_ephemerons;
 }
 
-static int heap_init(struct gc_heap *heap, struct options *options) {
+struct gc_options {
+  struct gc_common_options common;
+};
+int gc_option_from_string(const char *str) {
+  return gc_common_option_from_string(str);
+}
+struct gc_options* gc_allocate_options(void) {
+  struct gc_options *ret = malloc(sizeof(struct gc_options));
+  gc_init_common_options(&ret->common);
+  return ret;
+}
+int gc_options_set_int(struct gc_options *options, int option, int value) {
+  return gc_common_options_set_int(&options->common, option, value);
+}
+int gc_options_set_size(struct gc_options *options, int option,
+                        size_t value) {
+  return gc_common_options_set_size(&options->common, option, value);
+}
+int gc_options_set_double(struct gc_options *options, int option,
+                          double value) {
+  return gc_common_options_set_double(&options->common, option, value);
+}
+int gc_options_parse_and_set(struct gc_options *options, int option,
+                             const char *value) {
+  return gc_common_options_parse_and_set(&options->common, option, value);
+}
+
+static int heap_init(struct gc_heap *heap, struct gc_options *options) {
   // *heap is already initialized to 0.
 
   pthread_mutex_init(&heap->lock, NULL);
   pthread_cond_init(&heap->mutator_cond, NULL);
   pthread_cond_init(&heap->collector_cond, NULL);
-  heap->size = options->fixed_heap_size;
+  heap->size = options->common.heap_size;
 
-  if (!tracer_init(heap, options->parallelism))
+  if (!tracer_init(heap, options->common.parallelism))
     GC_CRASH();
 
   heap->pending_ephemerons_size_factor = 0.005;
@@ -2352,9 +2316,8 @@ static int mark_space_init(struct mark_space *space, struct gc_heap *heap) {
   return 1;
 }
 
-int gc_init(int argc, struct gc_option argv[],
-            struct gc_stack_addr *stack_base, struct gc_heap **heap,
-            struct gc_mutator **mut) {
+int gc_init(struct gc_options *options, struct gc_stack_addr *stack_base,
+            struct gc_heap **heap, struct gc_mutator **mut) {
   GC_ASSERT_EQ(gc_allocator_small_granule_size(), GRANULE_SIZE);
   GC_ASSERT_EQ(gc_allocator_large_threshold(), LARGE_OBJECT_THRESHOLD);
   GC_ASSERT_EQ(gc_allocator_allocation_pointer_offset(),
@@ -2370,14 +2333,15 @@ int gc_init(int argc, struct gc_option argv[],
                  BLOCK_SIZE / REMSET_BYTES_PER_BLOCK);
   }
 
-  struct options options = { 0, };
-  if (!parse_options(argc, argv, &options))
+  if (options->common.heap_size_policy != GC_HEAP_SIZE_FIXED) {
+    fprintf(stderr, "fixed heap size is currently required\n");
     return 0;
+  }
 
   *heap = calloc(1, sizeof(struct gc_heap));
   if (!*heap) GC_CRASH();
 
-  if (!heap_init(*heap, &options))
+  if (!heap_init(*heap, options))
     GC_CRASH();
 
   struct mark_space *space = heap_mark_space(*heap);

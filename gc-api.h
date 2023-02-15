@@ -4,9 +4,10 @@
 #include "gc-config.h"
 #include "gc-assert.h"
 #include "gc-attrs.h"
-#include "gc-inline.h"
-#include "gc-ref.h"
 #include "gc-edge.h"
+#include "gc-inline.h"
+#include "gc-options.h"
+#include "gc-ref.h"
 #include "gc-visibility.h"
 
 #include <stdatomic.h>
@@ -16,26 +17,13 @@
 struct gc_heap;
 struct gc_mutator;
 
-enum {
-  GC_OPTION_FIXED_HEAP_SIZE,
-  GC_OPTION_PARALLELISM
-};
-
-struct gc_option {
-  int option;
-  double value;
-};
-
-GC_API_ int gc_option_from_string(const char *str);
-
 struct gc_stack_addr;
 GC_API_ void* gc_call_with_stack_addr(void* (*f)(struct gc_stack_addr *,
                                                  void *),
                                       void *data) GC_NEVER_INLINE;
 
-GC_API_ int gc_init(int argc, struct gc_option argv[],
-                    struct gc_stack_addr *base, struct gc_heap **heap,
-                    struct gc_mutator **mutator);
+GC_API_ int gc_init(struct gc_options *options, struct gc_stack_addr *base,
+                    struct gc_heap **heap, struct gc_mutator **mutator);
 
 struct gc_mutator_roots;
 GC_API_ void gc_mutator_set_roots(struct gc_mutator *mut,

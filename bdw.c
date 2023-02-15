@@ -213,79 +213,40 @@ static inline struct gc_heap *mutator_heap(struct gc_mutator *mutator) {
   return mutator->heap;
 }
 
-#define FOR_EACH_GC_OPTION(M) \
-  M(GC_OPTION_FIXED_HEAP_SIZE, "fixed-heap-size") \
-  M(GC_OPTION_PARALLELISM, "parallelism")
-
-static void dump_available_gc_options(void) {
-  fprintf(stderr, "available gc options:");
-#define PRINT_OPTION(option, name) fprintf(stderr, " %s", name);
-  FOR_EACH_GC_OPTION(PRINT_OPTION)
-#undef PRINT_OPTION
-  fprintf(stderr, "\n");
-}
-
-int gc_option_from_string(const char *str) {
-#define PARSE_OPTION(option, name) if (strcmp(str, name) == 0) return option;
-  FOR_EACH_GC_OPTION(PARSE_OPTION)
-#undef PARSE_OPTION
-  if (strcmp(str, "fixed-heap-size") == 0)
-    return GC_OPTION_FIXED_HEAP_SIZE;
-  if (strcmp(str, "parallelism") == 0)
-    return GC_OPTION_PARALLELISM;
-  fprintf(stderr, "bad gc option: '%s'\n", str);
-  dump_available_gc_options();
-  return -1;
-}
-
-struct options {
-  size_t fixed_heap_size;
-  size_t parallelism;
+struct gc_options {
+  struct gc_common_options common;
 };
-
-static size_t parse_size_t(double value) {
-  GC_ASSERT(value >= 0);
-  GC_ASSERT(value <= (size_t) -1);
-  return value;
+int gc_option_from_string(const char *str) {
+  return gc_common_option_from_string(str);
+}
+struct gc_options* gc_allocate_options(void) {
+  struct gc_options *ret = malloc(sizeof(struct gc_options));
+  gc_init_common_options(&ret->common);
+  return ret;
+}
+int gc_options_set_int(struct gc_options *options, int option, int value) {
+  return gc_common_options_set_int(&options->common, option, value);
+}
+int gc_options_set_size(struct gc_options *options, int option,
+                        size_t value) {
+  return gc_common_options_set_size(&options->common, option, value);
+}
+int gc_options_set_double(struct gc_options *options, int option,
+                          double value) {
+  return gc_common_options_set_double(&options->common, option, value);
+}
+int gc_options_parse_and_set(struct gc_options *options, int option,
+                             const char *value) {
+  return gc_common_options_parse_and_set(&options->common, option, value);
 }
 
-static size_t number_of_current_processors(void) { return 1; }
-
-static int parse_options(int argc, struct gc_option argv[],
-                         struct options *options) {
-  for (int i = 0; i < argc; i++) {
-    switch (argv[i].option) {
-    case GC_OPTION_FIXED_HEAP_SIZE:
-      options->fixed_heap_size = parse_size_t(argv[i].value);
-      break;
-    case GC_OPTION_PARALLELISM:
-      options->parallelism = parse_size_t(argv[i].value);
-      break;
-    default:
-      GC_CRASH();
-    }
-  }
-
-  if (!options->fixed_heap_size) {
-    fprintf(stderr, "fixed heap size is currently required\n");
-    return 0;
-  }
-  if (!options->parallelism)
-    options->parallelism = number_of_current_processors();
-
-  return 1;
-}
-
-int gc_init(int argc, struct gc_option argv[],
-            struct gc_stack_addr *stack_base, struct gc_heap **heap,
-            struct gc_mutator **mutator) {
+int gc_init(struct gc_options *options, struct gc_stack_addr *stack_base,
+            struct gc_heap **heap, struct gc_mutator **mutator) {
   GC_ASSERT_EQ(gc_allocator_small_granule_size(), GC_INLINE_GRANULE_BYTES);
   GC_ASSERT_EQ(gc_allocator_large_threshold(),
                GC_INLINE_FREELIST_COUNT * GC_INLINE_GRANULE_BYTES);
 
-  struct options options = { 0, };
-  if (!parse_options(argc, argv, &options))
-    return 0;
+  if (!options) options = gc_allocate_options();
 
   // GC_full_freq = 30;
   // GC_free_space_divisor = 16;
@@ -293,16 +254,16 @@ int gc_init(int argc, struct gc_option argv[],
   
   // Ignore stack base for main thread.
 
-  GC_set_max_heap_size(options.fixed_heap_size);
+  GC_set_max_heap_size(options->common.heap_size);
   // Not part of 7.3, sigh.  Have to set an env var.
-  // GC_set_markers_count(options.parallelism);
+  // GC_set_markers_count(options->common.parallelism);
   char markers[21] = {0,}; // 21 bytes enough for 2**64 in decimal + NUL.
-  snprintf(markers, sizeof(markers), "%zu", options.parallelism);
+  snprintf(markers, sizeof(markers), "%d", options->common.parallelism);
   setenv("GC_MARKERS", markers, 1);
   GC_init();
   size_t current_heap_size = GC_get_heap_size();
-  if (options.fixed_heap_size > current_heap_size)
-    GC_expand_hp(options.fixed_heap_size - current_heap_size);
+  if (options->common.heap_size > current_heap_size)
+    GC_expand_hp(options->common.heap_size - current_heap_size);
   GC_allow_register_threads();
   *heap = GC_malloc(sizeof(struct gc_heap));
   pthread_mutex_init(&(*heap)->lock, NULL);

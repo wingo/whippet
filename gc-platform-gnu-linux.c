@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <link.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <unistd.h>
 
@@ -101,4 +102,11 @@ void gc_platform_visit_global_conservative_roots(void (*f)(uintptr_t start,
                                                  void *data) {
   struct visit_data visit_data = { f, heap, data };
   dl_iterate_phdr(visit_roots, &visit_data);
+}
+
+int gc_platform_processor_count(void) {
+  cpu_set_t set;
+  if (sched_getaffinity(0, sizeof (set), &set) != 0)
+    return 1;
+  return CPU_COUNT(&set);
 }
