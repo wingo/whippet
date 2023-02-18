@@ -17,15 +17,19 @@
 #error semi is a precise collector
 #endif
 
+struct region {
+  uintptr_t base;
+  size_t size;
+  size_t unavailable;
+};
 struct semi_space {
   uintptr_t hp;
   uintptr_t limit;
-  uintptr_t from_space;
-  uintptr_t to_space;
+  struct region from_space;
+  struct region to_space;
   size_t page_size;
   size_t stolen_pages;
-  uintptr_t base;
-  size_t size;
+  size_t reserve_pages;
 };
 struct gc_heap {
   struct semi_space semi_space;
@@ -70,39 +74,68 @@ static void collect_for_alloc(struct gc_mutator *mut, size_t bytes) GC_NEVER_INL
 
 static void trace(struct gc_edge edge, struct gc_heap *heap, void *visit_data);
 
-static int semi_space_steal_pages(struct semi_space *space, size_t npages) {
-  size_t stolen_pages = space->stolen_pages + npages;
-  size_t old_limit_size = space->limit - space->to_space;
-  size_t new_limit_size =
-    (space->size - align_up(stolen_pages, 2) * space->page_size) / 2;
+static void region_trim_by(struct region *region, size_t newly_unavailable) {
+  size_t old_available = region->size - region->unavailable;
+  GC_ASSERT(newly_unavailable <= old_available);
 
-  if (space->to_space + new_limit_size < space->hp)
+  madvise((void*)(region->base + old_available - newly_unavailable),
+          newly_unavailable,
+          MADV_DONTNEED);
+  region->unavailable += newly_unavailable;
+}
+
+static void region_reset_unavailable(struct region *region,
+                                     size_t unavailable) {
+  GC_ASSERT(unavailable <= region->unavailable);
+  region->unavailable = unavailable;
+}
+
+static int semi_space_steal_pages(struct semi_space *space, size_t npages) {
+  size_t old_unavailable_pages = space->stolen_pages + space->reserve_pages;
+  size_t old_region_unavailable_pages = align_up(old_unavailable_pages, 2) / 2;
+  size_t new_unavailable_pages = old_unavailable_pages + npages;
+  size_t new_region_unavailable_pages = align_up(new_unavailable_pages, 2) / 2;
+  size_t region_newly_unavailable_pages =
+    new_region_unavailable_pages - old_region_unavailable_pages;
+  size_t region_newly_unavailable_bytes =
+    region_newly_unavailable_pages * space->page_size;
+
+  if (space->limit - space->hp < region_newly_unavailable_bytes)
     return 0;
 
-  space->limit = space->to_space + new_limit_size;
-  space->stolen_pages = stolen_pages;
+  space->stolen_pages += npages;
 
-  madvise((void*)(space->to_space + new_limit_size),
-          old_limit_size - new_limit_size,
-          MADV_DONTNEED);
-  madvise((void*)(space->from_space + new_limit_size),
-          old_limit_size - new_limit_size,
-          MADV_DONTNEED);
+  if (region_newly_unavailable_bytes == 0)
+    return 1;
+
+  space->limit -= region_newly_unavailable_bytes;
+  region_trim_by(&space->to_space, region_newly_unavailable_bytes);
+  region_trim_by(&space->from_space, region_newly_unavailable_bytes);
   return 1;
 }
 
-static void semi_space_set_stolen_pages(struct semi_space *space, size_t npages) {
+static void semi_space_set_stolen_pages(struct semi_space *space,
+                                        size_t npages) {
   space->stolen_pages = npages;
-  size_t limit_size =
-    (space->size - align_up(npages, 2) * space->page_size) / 2;
-  space->limit = space->to_space + limit_size;
+  size_t unavailable_pages = space->stolen_pages + space->reserve_pages;
+  size_t region_unavailable_pages = align_up(unavailable_pages, 2) / 2;
+  size_t region_unavailable_bytes = region_unavailable_pages * space->page_size;
+
+  region_reset_unavailable(&space->to_space, region_unavailable_bytes);
+  region_reset_unavailable(&space->from_space, region_unavailable_bytes);
+
+  space->limit =
+    space->to_space.base + space->to_space.size - space->to_space.unavailable;
 }
 
 static void flip(struct semi_space *space) {
-  space->hp = space->from_space;
-  space->from_space = space->to_space;
-  space->to_space = space->hp;
-  space->limit = space->hp + space->size / 2;
+  struct region tmp;
+  memcpy(&tmp, &space->from_space, sizeof(tmp));
+  memcpy(&space->from_space, &space->to_space, sizeof(tmp));
+  memcpy(&space->to_space, &tmp, sizeof(tmp));
+
+  space->hp = space->to_space.base;
+  space->limit = space->hp + space->to_space.size;
 }  
 
 static struct gc_ref copy(struct gc_heap *heap, struct semi_space *space,
@@ -148,9 +181,16 @@ static void visit_large_object_space(struct gc_heap *heap,
   }
 }
 
+static int region_contains(struct region *region, uintptr_t addr) {
+  return addr - region->base < region->size;
+}
+
 static int semi_space_contains(struct semi_space *space, struct gc_ref ref) {
+  // As each live object is traced exactly once, its edges have not been
+  // visited, so its refs are to fromspace and not tospace.
   uintptr_t addr = gc_ref_value(ref);
-  return addr - space->base < space->size;
+  GC_ASSERT(!region_contains(&space->to_space, addr));
+  return region_contains(&space->from_space, addr);
 }
 
 static void visit(struct gc_edge edge, struct gc_heap *heap) {
@@ -223,7 +263,8 @@ static void collect_for_alloc(struct gc_mutator *mut, size_t bytes) {
   collect(mut);
   struct semi_space *space = mutator_semi_space(mut);
   if (space->limit - space->hp < bytes) {
-    fprintf(stderr, "ran out of space, heap size %zu\n", space->size);
+    fprintf(stderr, "ran out of space, heap size %zu\n",
+            mutator_heap(mut)->size);
     GC_CRASH();
   }
 }
@@ -237,7 +278,8 @@ void* gc_allocate_large(struct gc_mutator *mut, size_t size) {
   if (!semi_space_steal_pages(semi_space, npages)) {
     collect(mut);
     if (!semi_space_steal_pages(semi_space, npages)) {
-      fprintf(stderr, "ran out of space, heap size %zu\n", semi_space->size);
+      fprintf(stderr, "ran out of space, heap size %zu\n",
+              mutator_heap(mut)->size);
       GC_CRASH();
     }
   }
@@ -282,11 +324,7 @@ void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
   gc_ephemeron_init_internal(mutator_heap(mut), ephemeron, key, value);
 }
 
-static int initialize_semi_space(struct semi_space *space, size_t size) {
-  // Allocate even numbers of pages.
-  size_t page_size = getpagesize();
-  size = align_up(size, page_size * 2);
-
+static int initialize_region(struct region *region, size_t size) {
   void *mem = mmap(NULL, size, PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
@@ -294,11 +332,28 @@ static int initialize_semi_space(struct semi_space *space, size_t size) {
     return 0;
   }
 
-  space->to_space = space->hp = space->base = (uintptr_t) mem;
-  space->from_space = space->base + size / 2;
+  region->base = (uintptr_t)mem;
+  region->size = size;
+  region->unavailable = 0;
+  return 1;
+}
+
+static int initialize_semi_space(struct semi_space *space, size_t size) {
+  // Allocate even numbers of pages.
+  size_t page_size = getpagesize();
+  size = align_up(size, page_size * 2);
+
+  if (!initialize_region(&space->from_space, size / 2))
+    return 0;
+  if (!initialize_region(&space->to_space, size / 2))
+    return 0;
+
+  space->hp = space->to_space.base;
+  space->limit = space->hp + space->to_space.size;
+
   space->page_size = page_size;
   space->stolen_pages = 0;
-  space->size = size;
+  space->reserve_pages = 0;
 
   return 1;
 }
