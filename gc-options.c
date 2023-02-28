@@ -8,24 +8,25 @@
 #include "gc-options-internal.h"
 #include "gc-platform.h"
 
-// M(UPPER, lower, repr, parser, default, min, max)
+// M(UPPER, lower, repr, type, parser, default, min, max)
 #define FOR_EACH_INT_GC_OPTION(M)                                       \
   M(HEAP_SIZE_POLICY, heap_size_policy, "heap-size-policy",             \
-    int, GC_HEAP_SIZE_FIXED, GC_HEAP_SIZE_FIXED, GC_HEAP_SIZE_ADAPTIVE) \
+    int, heap_size_policy, GC_HEAP_SIZE_FIXED, GC_HEAP_SIZE_FIXED,      \
+    GC_HEAP_SIZE_ADAPTIVE)                                              \
   M(PARALLELISM, parallelism, "parallelism",                            \
-    int, default_parallelism(), 1, 64)
+    int, int, default_parallelism(), 1, 64)
 
 #define FOR_EACH_SIZE_GC_OPTION(M)                                      \
   M(HEAP_SIZE, heap_size, "heap-size",                                  \
-    size, 6 * 1024 * 1024, 0, -1)                                       \
+    size, size, 6 * 1024 * 1024, 0, -1)                                 \
   M(MAXIMUM_HEAP_SIZE, maximum_heap_size, "maximum-heap-size",          \
-    size, 0, 0, -1)
+    size, size, 0, 0, -1)
 
 #define FOR_EACH_DOUBLE_GC_OPTION(M)                                    \
   M(HEAP_SIZE_MULTIPLIER, heap_size_multiplier, "heap-size-multiplier", \
-    double, 1.75, 1.0, 1e6)                                             \
+    double, double, 1.75, 1.0, 1e6)                                     \
   M(HEAP_FRUGALITY, heap_frugality, "heap-frugality",                   \
-    double, 1e-1, 1e-6, 1e6)
+    double, double, 1e-1, 1e-6, 1e6)
 
 typedef int gc_option_int;
 typedef size_t gc_option_size;
@@ -51,23 +52,23 @@ static int default_parallelism(void) {
 }
 
 void gc_init_common_options(struct gc_common_options *options) {
-#define INIT(UPPER, lower, repr, parser, default, min, max) \
+#define INIT(UPPER, lower, repr, type, parser, default, min, max) \
   options->lower = default;
   FOR_EACH_COMMON_GC_OPTION(INIT)
 #undef INIT
 }
 
 int gc_common_option_from_string(const char *str) {
-#define GET_OPTION(UPPER, lower, repr, parser, default, min, max) \
+#define GET_OPTION(UPPER, lower, repr, type, parser, default, min, max) \
   if (strcmp(str, repr) == 0) return GC_OPTION_##UPPER;
   FOR_EACH_COMMON_GC_OPTION(GET_OPTION)
 #undef GET_OPTION
   return -1;
 }
 
-#define SET_OPTION(UPPER, lower, repr, parser, default, min, max)       \
+#define SET_OPTION(UPPER, lower, repr, type, parser, default, min, max)  \
   case GC_OPTION_##UPPER:                                               \
-  if (value != clamp_##parser(value, min, max)) return 0;               \
+  if (value != clamp_##type(value, min, max)) return 0;                 \
     options->lower = value;                                             \
     return 1;
 #define DEFINE_SETTER(STEM, stem, type)                                 \
@@ -113,6 +114,22 @@ static int parse_int(const char *arg, int *val) {
   return 1;
 }
 
+static int parse_heap_size_policy(const char *arg, int *val) {
+  if (strcmp(arg, "fixed") == 0) {
+    *val = GC_HEAP_SIZE_FIXED;
+    return 1;
+  }
+  if (strcmp(arg, "growable") == 0) {
+    *val = GC_HEAP_SIZE_GROWABLE;
+    return 1;
+  }
+  if (strcmp(arg, "adaptive") == 0) {
+    *val = GC_HEAP_SIZE_ADAPTIVE;
+    return 1;
+  }
+  return parse_int(arg, val);
+}
+
 static int parse_double(const char *arg, double *val) {
   char *end;
   double d = strtod(arg, &end);
@@ -125,11 +142,11 @@ static int parse_double(const char *arg, double *val) {
 int gc_common_options_parse_and_set(struct gc_common_options *options,
                                     int option, const char *value) {
   switch (option) {
-#define SET_OPTION(UPPER, lower, repr, parser, default, min, max)       \
-    case GC_OPTION_##UPPER: {                                           \
-      gc_option_##parser v;                                             \
-      if (!parse_##parser(value, &v)) return 0;                         \
-      return gc_common_options_set_##parser(options, option, v);        \
+#define SET_OPTION(UPPER, lower, repr, type, parser, default, min, max)  \
+    case GC_OPTION_##UPPER: {                                            \
+      gc_option_##type v;                                                \
+      if (!parse_##parser(value, &v)) return 0;                          \
+      return gc_common_options_set_##type(options, option, v);           \
     }
     FOR_EACH_COMMON_GC_OPTION(SET_OPTION)
     default: return 0;
