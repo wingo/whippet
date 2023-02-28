@@ -131,7 +131,7 @@ int main(int argc, char *argv[]) {
   struct gc_options *options = gc_allocate_options();
   gc_options_set_int(options, GC_OPTION_HEAP_SIZE_POLICY, GC_HEAP_SIZE_FIXED);
   gc_options_set_size(options, GC_OPTION_HEAP_SIZE, heap_size);
-  gc_options_set_int(options, GC_OPTION_PARALLELISM, 1);
+  gc_options_set_int(options, GC_OPTION_PARALLELISM, parallelism);
 
   struct gc_heap *heap;
   struct gc_mutator *mut;
