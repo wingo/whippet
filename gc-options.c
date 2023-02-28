@@ -147,7 +147,7 @@ static int is_value_end(char c) { return c == '\0' || c == ','; }
 static char* read_token(char *p, int (*is_tok)(char c), int (*is_end)(char c),
                         char *delim) {
   char c;
-  for (c = *p; is_tok(c); p++);
+  for (c = *p; is_tok(c); c = *++p);
   if (!is_end(c)) return NULL;
   *delim = c;
   *p = '\0';
