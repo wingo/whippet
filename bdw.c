@@ -248,13 +248,35 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
 
   if (!options) options = gc_allocate_options();
 
-  // GC_full_freq = 30;
-  // GC_free_space_divisor = 16;
-  // GC_enable_incremental();
-  
   // Ignore stack base for main thread.
 
-  GC_set_max_heap_size(options->common.heap_size);
+  switch (options->common.heap_size_policy) {
+    case GC_HEAP_SIZE_FIXED:
+      GC_set_max_heap_size(options->common.heap_size);
+      break;
+    case GC_HEAP_SIZE_GROWABLE: {
+      if (options->common.maximum_heap_size)
+        GC_set_max_heap_size(options->common.maximum_heap_size);
+      // BDW uses a pretty weird heap-sizing heuristic:
+      //
+      // heap-size = live-data * (1 + (2 / GC_free_space_divisor))
+      // heap-size-multiplier = heap-size/live-data = 1 + 2/GC_free_space_divisor
+      // GC_free_space_divisor = 2/(heap-size-multiplier-1)
+      //
+      // (Assumption: your heap is mostly "composite", i.e. not
+      // "atomic".  See bdw's alloc.c:min_bytes_allocd.)
+      double fsd = 2.0/(options->common.heap_size_multiplier - 1);
+      // But, the divisor is an integer.  WTF.  This caps the effective
+      // maximum heap multiplier at 3.  Oh well.
+      GC_set_free_space_divisor(fsd + 0.51);
+      break;
+    }
+    case GC_HEAP_SIZE_ADAPTIVE:
+    default:
+      fprintf(stderr, "adaptive heap sizing unsupported by bdw-gc\n");
+      return 0;
+  }
+
   // Not part of 7.3, sigh.  Have to set an env var.
   // GC_set_markers_count(options->common.parallelism);
   char markers[21] = {0,}; // 21 bytes enough for 2**64 in decimal + NUL.
