@@ -191,15 +191,14 @@ static void *join_thread(void *data) {
 #define MAX_THREAD_COUNT 256
 
 int main(int argc, char *argv[]) {
-  if (argc != 5) {
-    fprintf(stderr, "usage: %s HEAP_SIZE MULTIPLIER NTHREADS PARALLELISM\n", argv[0]);
+  if (argc < 4 || 5 < argc) {
+    fprintf(stderr, "usage: %s HEAP_SIZE MULTIPLIER NTHREADS [GC-OPTIONS]\n", argv[0]);
     return 1;
   }
 
   heap_size = atof(argv[1]);
   heap_multiplier = atof(argv[2]);
   nthreads = atol(argv[3]);
-  size_t parallelism = atol(argv[4]);
 
   if (heap_size < 8192) {
     fprintf(stderr,
@@ -216,11 +215,6 @@ int main(int argc, char *argv[]) {
             (int)MAX_THREAD_COUNT, argv[2]);
     return 1;
   }
-  if (parallelism < 1 || parallelism > MAX_THREAD_COUNT) {
-    fprintf(stderr, "Expected integer between 1 and %d for parallelism, got '%s'\n",
-            (int)MAX_THREAD_COUNT, argv[3]);
-    return 1;
-  }
 
   printf("Allocating heap of %.3fGB (%.2f multiplier of live data).\n",
          heap_size / 1e9, heap_multiplier);
@@ -228,7 +222,12 @@ int main(int argc, char *argv[]) {
   struct gc_options *options = gc_allocate_options();
   gc_options_set_int(options, GC_OPTION_HEAP_SIZE_POLICY, GC_HEAP_SIZE_FIXED);
   gc_options_set_size(options, GC_OPTION_HEAP_SIZE, heap_size);
-  gc_options_set_int(options, GC_OPTION_PARALLELISM, parallelism);
+  if (argc == 5) {
+    if (!gc_options_parse_and_set_many(options, argv[4])) {
+      fprintf(stderr, "Failed to set GC options: '%s'\n", argv[4]);
+      return 1;
+    }
+  }
 
   struct gc_heap *heap;
   struct gc_mutator *mut;
