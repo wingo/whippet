@@ -17,10 +17,13 @@
 #error semi is a precise collector
 #endif
 
+struct gc_options {
+  struct gc_common_options common;
+};
 struct region {
   uintptr_t base;
-  size_t size;
-  size_t unavailable;
+  size_t active_size;
+  size_t mapped_size;
 };
 struct semi_space {
   uintptr_t hp;
@@ -29,7 +32,6 @@ struct semi_space {
   struct region to_space;
   size_t page_size;
   size_t stolen_pages;
-  size_t reserve_pages;
 };
 struct gc_heap {
   struct semi_space semi_space;
@@ -40,13 +42,13 @@ struct gc_heap {
   size_t size;
   long count;
   int check_pending_ephemerons;
+  const struct gc_options *options;
 };
 // One mutator per space, can just store the heap in the mutator.
 struct gc_mutator {
   struct gc_heap heap;
   struct gc_mutator_roots *roots;
 };
-
 
 static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
@@ -68,37 +70,42 @@ static inline struct semi_space* mutator_semi_space(struct gc_mutator *mut) {
 static uintptr_t align_up(uintptr_t addr, size_t align) {
   return (addr + align - 1) & ~(align-1);
 }
+static size_t min_size(size_t a, size_t b) { return a < b ? a : b; }
+static size_t max_size(size_t a, size_t b) { return a < b ? b : a; }
 
-static void collect(struct gc_mutator *mut) GC_NEVER_INLINE;
-static void collect_for_alloc(struct gc_mutator *mut, size_t bytes) GC_NEVER_INLINE;
+static void collect(struct gc_mutator *mut, size_t for_alloc) GC_NEVER_INLINE;
+static void collect_for_alloc(struct gc_mutator *mut,
+                              size_t bytes) GC_NEVER_INLINE;
 
 static void trace(struct gc_edge edge, struct gc_heap *heap, void *visit_data);
 
 static void region_trim_by(struct region *region, size_t newly_unavailable) {
-  size_t old_available = region->size - region->unavailable;
-  GC_ASSERT(newly_unavailable <= old_available);
+  size_t old_available = region->active_size;
+  GC_ASSERT(newly_unavailable <= region->active_size);
 
-  madvise((void*)(region->base + old_available - newly_unavailable),
-          newly_unavailable,
+  region->active_size -= newly_unavailable;
+  madvise((void*)(region->base + region->active_size), newly_unavailable,
           MADV_DONTNEED);
-  region->unavailable += newly_unavailable;
 }
 
-static void region_reset_unavailable(struct region *region,
-                                     size_t unavailable) {
-  GC_ASSERT(unavailable <= region->unavailable);
-  region->unavailable = unavailable;
+static void region_set_active_size(struct region *region, size_t size) {
+  GC_ASSERT(size <= region->mapped_size);
+  GC_ASSERT(size == align_up(size, getpagesize()));
+  if (size < region->active_size)
+    region_trim_by(region, region->active_size - size);
+  else
+    region->active_size = size;
 }
 
 static int semi_space_steal_pages(struct semi_space *space, size_t npages) {
-  size_t old_unavailable_pages = space->stolen_pages + space->reserve_pages;
-  size_t old_region_unavailable_pages = align_up(old_unavailable_pages, 2) / 2;
-  size_t new_unavailable_pages = old_unavailable_pages + npages;
-  size_t new_region_unavailable_pages = align_up(new_unavailable_pages, 2) / 2;
-  size_t region_newly_unavailable_pages =
-    new_region_unavailable_pages - old_region_unavailable_pages;
+  size_t old_stolen_pages = space->stolen_pages;
+  size_t old_region_stolen_pages = align_up(old_stolen_pages,2)/2;
+  size_t new_stolen_pages = old_stolen_pages + npages;
+  size_t new_region_stolen_pages = align_up(new_stolen_pages,2)/2;
+  size_t region_newly_stolen_pages =
+    new_region_stolen_pages - old_region_stolen_pages;
   size_t region_newly_unavailable_bytes =
-    region_newly_unavailable_pages * space->page_size;
+    region_newly_stolen_pages * space->page_size;
 
   if (space->limit - space->hp < region_newly_unavailable_bytes)
     return 0;
@@ -114,28 +121,23 @@ static int semi_space_steal_pages(struct semi_space *space, size_t npages) {
   return 1;
 }
 
-static void semi_space_set_stolen_pages(struct semi_space *space,
-                                        size_t npages) {
-  space->stolen_pages = npages;
-  size_t unavailable_pages = space->stolen_pages + space->reserve_pages;
-  size_t region_unavailable_pages = align_up(unavailable_pages, 2) / 2;
-  size_t region_unavailable_bytes = region_unavailable_pages * space->page_size;
-
-  region_reset_unavailable(&space->to_space, region_unavailable_bytes);
-  region_reset_unavailable(&space->from_space, region_unavailable_bytes);
-
-  space->limit =
-    space->to_space.base + space->to_space.size - space->to_space.unavailable;
+static void semi_space_finish_gc(struct semi_space *space,
+                                 size_t large_object_pages) {
+  space->stolen_pages = large_object_pages;
+  space->limit = 0; // set in adjust_heap_size_and_limits
 }
 
 static void flip(struct semi_space *space) {
   struct region tmp;
+  GC_ASSERT(space->hp <= space->limit);
+  GC_ASSERT(space->limit - space->to_space.base <= space->to_space.active_size);
+  GC_ASSERT(space->to_space.active_size <= space->from_space.mapped_size);
   memcpy(&tmp, &space->from_space, sizeof(tmp));
   memcpy(&space->from_space, &space->to_space, sizeof(tmp));
   memcpy(&space->to_space, &tmp, sizeof(tmp));
 
   space->hp = space->to_space.base;
-  space->limit = space->hp + space->to_space.size;
+  space->limit = space->hp + space->to_space.active_size;
 }  
 
 static struct gc_ref copy(struct gc_heap *heap, struct semi_space *space,
@@ -182,7 +184,7 @@ static void visit_large_object_space(struct gc_heap *heap,
 }
 
 static int region_contains(struct region *region, uintptr_t addr) {
-  return addr - region->base < region->size;
+  return addr - region->base < region->active_size;
 }
 
 static int semi_space_contains(struct semi_space *space, struct gc_ref ref) {
@@ -229,7 +231,99 @@ static void trace(struct gc_edge edge, struct gc_heap *heap, void *visit_data) {
   return visit(edge, heap);
 }
 
-static void collect(struct gc_mutator *mut) {
+static int grow_region_if_needed(struct region *region, size_t new_size) {
+  if (new_size <= region->mapped_size)
+    return 1;
+
+  new_size = max_size(new_size, region->mapped_size * 2);
+
+  void *mem = mmap(NULL, new_size, PROT_READ|PROT_WRITE,
+                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+  if (mem == MAP_FAILED) {
+    perror("mmap failed");
+    return 0;
+  }
+  if (region->mapped_size)
+    munmap((void*)region->base, region->mapped_size);
+  region->base = (uintptr_t)mem;
+  region->active_size = 0;
+  region->mapped_size = new_size;
+  return 1;
+}
+
+static void truncate_region(struct region *region, size_t new_size) {
+  GC_ASSERT(new_size <= region->mapped_size);
+
+  size_t bytes = region->mapped_size - new_size;
+  if (bytes) {
+    munmap((void*)(region->base + new_size), bytes);
+    region->mapped_size = new_size;
+    if (region->active_size > new_size)
+      region->active_size = new_size;
+  }
+}
+
+static size_t compute_new_heap_size(struct gc_heap *heap, size_t for_alloc) {
+  struct semi_space *semi = heap_semi_space(heap);
+  struct large_object_space *large = heap_large_object_space(heap);
+  size_t live_bytes = semi->hp - semi->to_space.base;
+  live_bytes += large->live_pages_at_last_collection * semi->page_size;
+  live_bytes += for_alloc;
+
+  size_t new_heap_size = heap->size;
+  switch (heap->options->common.heap_size_policy) {
+    case GC_HEAP_SIZE_FIXED:
+      break;
+
+    case GC_HEAP_SIZE_GROWABLE: {
+      new_heap_size =
+        max_size(heap->size,
+                 live_bytes * heap->options->common.heap_size_multiplier);
+      break;
+    }
+
+    case GC_HEAP_SIZE_ADAPTIVE:
+    default:
+      GC_CRASH();
+  }
+  return align_up(new_heap_size, semi->page_size * 2);
+}
+
+static void adjust_heap_size_and_limits(struct gc_heap *heap,
+                                        size_t for_alloc) {
+  struct semi_space *semi = heap_semi_space(heap);
+  size_t new_heap_size = compute_new_heap_size(heap, for_alloc);
+  size_t new_region_size = new_heap_size / 2;
+
+  // Note that there is an asymmetry in how heap size is adjusted: we
+  // grow in two cycles (first the fromspace, then the tospace after it
+  // becomes the fromspace in the next collection) but shrink in one (by
+  // returning pages to the OS).
+
+  // If we are growing the heap now, grow the fromspace mapping.  Also,
+  // always try to grow the fromspace if it is smaller than the tospace.
+  grow_region_if_needed(&semi->from_space,
+                        max_size(new_region_size, semi->to_space.mapped_size));
+
+  // We may have grown fromspace.  Find out what our actual new region
+  // size will be.
+  new_region_size = min_size(new_region_size,
+                             min_size(semi->to_space.mapped_size,
+                                      semi->from_space.mapped_size));
+  heap->size = new_region_size * 2;
+  size_t stolen = align_up(semi->stolen_pages, 2) * semi->page_size;
+  GC_ASSERT(new_region_size > stolen/2);
+  size_t new_active_region_size = new_region_size - stolen/2;
+
+  region_set_active_size(&semi->from_space, new_active_region_size);
+  region_set_active_size(&semi->to_space, new_active_region_size);
+
+  size_t new_limit = semi->to_space.base + new_active_region_size;
+  GC_ASSERT(semi->hp <= new_limit);
+  semi->limit = new_limit;
+}
+
+static void collect(struct gc_mutator *mut, size_t for_alloc) {
   struct gc_heap *heap = mutator_heap(mut);
   struct semi_space *semi = heap_semi_space(heap);
   struct large_object_space *large = heap_large_object_space(heap);
@@ -250,23 +344,39 @@ static void collect(struct gc_mutator *mut) {
     while(grey < semi->hp)
       grey = scan(heap, gc_ref(grey));
   large_object_space_finish_gc(large, 0);
-  semi_space_set_stolen_pages(semi, large->live_pages_at_last_collection);
+  semi_space_finish_gc(semi, large->live_pages_at_last_collection);
   gc_sweep_pending_ephemerons(heap->pending_ephemerons, 0, 1);
+  adjust_heap_size_and_limits(heap, for_alloc);
+
   // fprintf(stderr, "%zd bytes copied\n", (space->size>>1)-(space->limit-space->hp));
 }
 
-void gc_collect(struct gc_mutator *mut) {
-  collect(mut);
+static void collect_for_alloc(struct gc_mutator *mut, size_t bytes) {
+  collect(mut, bytes);
+
+  struct semi_space *space = mutator_semi_space(mut);
+  if (bytes < space->limit - space->hp)
+    return;
+
+  struct gc_heap *heap = mutator_heap(mut);
+  if (heap->options->common.heap_size_policy != GC_HEAP_SIZE_FIXED) {
+    // Each collection can potentially resize only the inactive
+    // fromspace, so if we really run out of space we will need to
+    // collect again in order to resize the other half.
+    collect(mut, bytes);
+    if (bytes < space->limit - space->hp)
+      return;
+  }
+  fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
+  GC_CRASH();
 }
 
-static void collect_for_alloc(struct gc_mutator *mut, size_t bytes) {
-  collect(mut);
-  struct semi_space *space = mutator_semi_space(mut);
-  if (space->limit - space->hp < bytes) {
-    fprintf(stderr, "ran out of space, heap size %zu\n",
-            mutator_heap(mut)->size);
-    GC_CRASH();
-  }
+void gc_collect(struct gc_mutator *mut) {
+  collect(mut, 0);
+}
+
+static void collect_for_large_alloc(struct gc_mutator *mut, size_t npages) {
+  collect_for_alloc(mut, npages * mutator_semi_space(mut)->page_size);
 }
 
 void* gc_allocate_large(struct gc_mutator *mut, size_t size) {
@@ -275,14 +385,8 @@ void* gc_allocate_large(struct gc_mutator *mut, size_t size) {
   struct semi_space *semi_space = heap_semi_space(heap);
 
   size_t npages = large_object_space_npages(space, size);
-  if (!semi_space_steal_pages(semi_space, npages)) {
-    collect(mut);
-    if (!semi_space_steal_pages(semi_space, npages)) {
-      fprintf(stderr, "ran out of space, heap size %zu\n",
-              mutator_heap(mut)->size);
-      GC_CRASH();
-    }
-  }
+  while (!semi_space_steal_pages(semi_space, npages))
+    collect_for_large_alloc(mut, npages);
 
   void *ret = large_object_space_alloc(space, npages);
   if (!ret)
@@ -302,7 +406,8 @@ void* gc_allocate_small(struct gc_mutator *mut, size_t size) {
     uintptr_t addr = space->hp;
     uintptr_t new_hp = align_up (addr + size, GC_ALIGNMENT);
     if (space->limit < new_hp) {
-      collect_for_alloc(mut, size);
+      // The factor of 2 is for both regions.
+      collect_for_alloc(mut, size * 2);
       continue;
     }
     space->hp = new_hp;
@@ -324,36 +429,36 @@ void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
   gc_ephemeron_init_internal(mutator_heap(mut), ephemeron, key, value);
 }
 
-static int initialize_region(struct region *region, size_t size) {
-  void *mem = mmap(NULL, size, PROT_READ|PROT_WRITE,
-                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-  if (mem == MAP_FAILED) {
-    perror("mmap failed");
+static int region_init(struct region *region, size_t size) {
+  region->base = 0;
+  region->active_size = 0;
+  region->mapped_size = 0;
+
+  if (!grow_region_if_needed(region, size)) {
+    fprintf(stderr, "failed to allocated %zu bytes\n", size);
     return 0;
   }
 
-  region->base = (uintptr_t)mem;
-  region->size = size;
-  region->unavailable = 0;
+  region->active_size = size;
+
   return 1;
 }
 
-static int initialize_semi_space(struct semi_space *space, size_t size) {
+static int semi_space_init(struct semi_space *space, struct gc_heap *heap) {
   // Allocate even numbers of pages.
   size_t page_size = getpagesize();
-  size = align_up(size, page_size * 2);
-
-  if (!initialize_region(&space->from_space, size / 2))
-    return 0;
-  if (!initialize_region(&space->to_space, size / 2))
-    return 0;
-
-  space->hp = space->to_space.base;
-  space->limit = space->hp + space->to_space.size;
+  size_t size = align_up(heap->size, page_size * 2);
 
   space->page_size = page_size;
   space->stolen_pages = 0;
-  space->reserve_pages = 0;
+
+  if (!region_init(&space->from_space, size / 2))
+    return 0;
+  if (!region_init(&space->to_space, size / 2))
+    return 0;
+
+  space->hp = space->to_space.base;
+  space->limit = space->hp + space->to_space.active_size;
 
   return 1;
 }
@@ -372,18 +477,16 @@ unsigned gc_heap_ephemeron_trace_epoch(struct gc_heap *heap) {
   return heap->count;
 }
 
-static int heap_init(struct gc_heap *heap, size_t size) {
+static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   heap->pending_ephemerons_size_factor = 0.01;
   heap->pending_ephemerons_size_slop = 0.5;
   heap->count = 0;
-  heap->size = size;
+  heap->options = options;
+  heap->size = options->common.heap_size;
 
   return heap_prepare_pending_ephemerons(heap);
 }
 
-struct gc_options {
-  struct gc_common_options common;
-};
 int gc_option_from_string(const char *str) {
   return gc_common_option_from_string(str);
 }
@@ -417,8 +520,8 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
 
   if (!options) options = gc_allocate_options();
 
-  if (options->common.heap_size_policy != GC_HEAP_SIZE_FIXED) {
-    fprintf(stderr, "fixed heap size is currently required\n");
+  if (options->common.heap_size_policy == GC_HEAP_SIZE_ADAPTIVE) {
+    fprintf(stderr, "adaptive heap size is currently unimplemented\n");
     return 0;
   }
   if (options->common.parallelism != 1) {
@@ -430,11 +533,10 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   if (!*mut) GC_CRASH();
   *heap = mutator_heap(*mut);
 
-  if (!heap_init(*heap, options->common.heap_size))
+  if (!heap_init(*heap, options))
     return 0;
 
-  struct semi_space *space = mutator_semi_space(*mut);
-  if (!initialize_semi_space(space, options->common.heap_size))
+  if (!semi_space_init(heap_semi_space(*heap), *heap))
     return 0;
   if (!large_object_space_init(heap_large_object_space(*heap), *heap))
     return 0;
