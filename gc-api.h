@@ -22,8 +22,9 @@ GC_API_ void* gc_call_with_stack_addr(void* (*f)(struct gc_stack_addr *,
                                                  void *),
                                       void *data) GC_NEVER_INLINE;
 
-GC_API_ int gc_init(struct gc_options *options, struct gc_stack_addr *base,
-                    struct gc_heap **heap, struct gc_mutator **mutator);
+GC_API_ int gc_init(const struct gc_options *options,
+                    struct gc_stack_addr *base, struct gc_heap **heap,
+                    struct gc_mutator **mutator);
 
 struct gc_mutator_roots;
 GC_API_ void gc_mutator_set_roots(struct gc_mutator *mut,

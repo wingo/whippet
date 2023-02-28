@@ -2258,7 +2258,7 @@ int gc_options_parse_and_set(struct gc_options *options, int option,
   return gc_common_options_parse_and_set(&options->common, option, value);
 }
 
-static int heap_init(struct gc_heap *heap, struct gc_options *options) {
+static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   // *heap is already initialized to 0.
 
   pthread_mutex_init(&heap->lock, NULL);
@@ -2316,7 +2316,7 @@ static int mark_space_init(struct mark_space *space, struct gc_heap *heap) {
   return 1;
 }
 
-int gc_init(struct gc_options *options, struct gc_stack_addr *stack_base,
+int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
             struct gc_heap **heap, struct gc_mutator **mut) {
   GC_ASSERT_EQ(gc_allocator_small_granule_size(), GRANULE_SIZE);
   GC_ASSERT_EQ(gc_allocator_large_threshold(), LARGE_OBJECT_THRESHOLD);

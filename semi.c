@@ -408,7 +408,7 @@ int gc_options_parse_and_set(struct gc_options *options, int option,
   return gc_common_options_parse_and_set(&options->common, option, value);
 }
 
-int gc_init(struct gc_options *options, struct gc_stack_addr *stack_base,
+int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
             struct gc_heap **heap, struct gc_mutator **mut) {
   GC_ASSERT_EQ(gc_allocator_allocation_pointer_offset(),
                offsetof(struct semi_space, hp));
