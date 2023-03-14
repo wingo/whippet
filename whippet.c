@@ -2114,7 +2114,7 @@ void gc_collect(struct gc_mutator *mut) {
   trigger_collection(mut);
 }
 
-void* gc_allocate_large(struct gc_mutator *mut, size_t size) {
+static void* allocate_large(struct gc_mutator *mut, size_t size) {
   struct gc_heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);
 
@@ -2139,9 +2139,12 @@ void* gc_allocate_large(struct gc_mutator *mut, size_t size) {
   return ret;
 }
 
-void* gc_allocate_small(struct gc_mutator *mut, size_t size) {
+void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
   GC_ASSERT(size > 0); // allocating 0 bytes would be silly
-  GC_ASSERT(size <= gc_allocator_large_threshold());
+
+  if (size > gc_allocator_large_threshold())
+    return allocate_large(mut, size);
+
   size = align_up(size, GRANULE_SIZE);
   uintptr_t alloc = mut->alloc;
   uintptr_t sweep = mut->sweep;

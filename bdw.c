@@ -74,42 +74,33 @@ enum gc_inline_kind {
   GC_INLINE_KIND_NORMAL
 };
 
-static void* allocate_small_slow(void **freelist, size_t idx,
-                                 enum gc_inline_kind kind) GC_NEVER_INLINE;
-static void* allocate_small_slow(void **freelist, size_t idx,
-                                 enum gc_inline_kind kind) {
-  size_t bytes = gc_inline_freelist_object_size(idx);
-  GC_generic_malloc_many(bytes, kind, freelist);
-  void *head = *freelist;
-  if (GC_UNLIKELY (!head)) {
-    fprintf(stderr, "ran out of space, heap size %zu\n",
-            GC_get_heap_size());
-    GC_CRASH();
-  }
-  *freelist = *(void **)(head);
-  return head;
-}
-
 static inline void *
 allocate_small(void **freelist, size_t idx, enum gc_inline_kind kind) {
   void *head = *freelist;
 
-  if (GC_UNLIKELY (!head))
-    return allocate_small_slow(freelist, idx, kind);
+  if (!head) {
+    size_t bytes = gc_inline_freelist_object_size(idx);
+    GC_generic_malloc_many(bytes, kind, freelist);
+    head = *freelist;
+    if (GC_UNLIKELY (!head)) {
+      fprintf(stderr, "ran out of space, heap size %zu\n",
+              GC_get_heap_size());
+      GC_CRASH();
+    }
+  }
 
   *freelist = *(void **)(head);
   return head;
 }
 
-void* gc_allocate_large(struct gc_mutator *mut, size_t size) {
-  return GC_malloc(size);
-}
-
-void* gc_allocate_small(struct gc_mutator *mut, size_t size) {
+void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
   GC_ASSERT(size != 0);
-  GC_ASSERT(size <= gc_allocator_large_threshold());
-  size_t idx = gc_inline_bytes_to_freelist_index(size);
-  return allocate_small(&mut->freelists[idx], idx, GC_INLINE_KIND_NORMAL);
+  if (size <= gc_allocator_large_threshold()) {
+    size_t idx = gc_inline_bytes_to_freelist_index(size);
+    return allocate_small(&mut->freelists[idx], idx, GC_INLINE_KIND_NORMAL);
+  } else {
+    return GC_malloc(size);
+  }
 }
 
 void* gc_allocate_pointerless(struct gc_mutator *mut,

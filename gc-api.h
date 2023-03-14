@@ -83,12 +83,11 @@ static inline void gc_update_alloc_table(struct gc_mutator *mut,
   }
 }
 
-GC_API_ void* gc_allocate_small(struct gc_mutator *mut, size_t bytes) GC_NEVER_INLINE;
-GC_API_ void* gc_allocate_large(struct gc_mutator *mut, size_t bytes) GC_NEVER_INLINE;
+GC_API_ void* gc_allocate_slow(struct gc_mutator *mut, size_t bytes) GC_NEVER_INLINE;
 
 static inline void*
-gc_allocate_bump_pointer(struct gc_mutator *mut, size_t size) GC_ALWAYS_INLINE;
-static inline void* gc_allocate_bump_pointer(struct gc_mutator *mut, size_t size) {
+gc_allocate_small_fast_bump_pointer(struct gc_mutator *mut, size_t size) GC_ALWAYS_INLINE;
+static inline void* gc_allocate_small_fast_bump_pointer(struct gc_mutator *mut, size_t size) {
   GC_ASSERT(size <= gc_allocator_large_threshold());
 
   size_t granule_size = gc_allocator_small_granule_size();
@@ -105,7 +104,7 @@ static inline void* gc_allocate_bump_pointer(struct gc_mutator *mut, size_t size
   uintptr_t new_hp = hp + size;
 
   if (GC_UNLIKELY (new_hp > limit))
-    return gc_allocate_small(mut, size);
+    return NULL;
 
   *hp_loc = new_hp;
 
@@ -115,9 +114,9 @@ static inline void* gc_allocate_bump_pointer(struct gc_mutator *mut, size_t size
   return (void*)hp;
 }
 
-static inline void* gc_allocate_freelist(struct gc_mutator *mut,
-                                         size_t size) GC_ALWAYS_INLINE;
-static inline void* gc_allocate_freelist(struct gc_mutator *mut, size_t size) {
+static inline void* gc_allocate_small_fast_freelist(struct gc_mutator *mut,
+                                                    size_t size) GC_ALWAYS_INLINE;
+static inline void* gc_allocate_small_fast_freelist(struct gc_mutator *mut, size_t size) {
   GC_ASSERT(size <= gc_allocator_large_threshold());
 
   size_t freelist_offset = gc_allocator_freelist_offset(size);
@@ -126,7 +125,7 @@ static inline void* gc_allocate_freelist(struct gc_mutator *mut, size_t size) {
 
   void *head = *freelist_loc;
   if (GC_UNLIKELY(!head))
-    return gc_allocate_small(mut, size);
+    return NULL;
 
   *freelist_loc = *(void**)head;
 
@@ -136,22 +135,39 @@ static inline void* gc_allocate_freelist(struct gc_mutator *mut, size_t size) {
   return head;
 }
 
-static inline void* gc_allocate(struct gc_mutator *mut, size_t bytes) GC_ALWAYS_INLINE;
-static inline void* gc_allocate(struct gc_mutator *mut, size_t size) {
+static inline void* gc_allocate_small_fast(struct gc_mutator *mut, size_t size) GC_ALWAYS_INLINE;
+static inline void* gc_allocate_small_fast(struct gc_mutator *mut, size_t size) {
   GC_ASSERT(size != 0);
-  if (size > gc_allocator_large_threshold())
-    return gc_allocate_large(mut, size);
+  GC_ASSERT(size <= gc_allocator_large_threshold());
 
   switch (gc_allocator_kind()) {
   case GC_ALLOCATOR_INLINE_BUMP_POINTER:
-    return gc_allocate_bump_pointer(mut, size);
+    return gc_allocate_small_fast_bump_pointer(mut, size);
   case GC_ALLOCATOR_INLINE_FREELIST:
-    return gc_allocate_freelist(mut, size);
+    return gc_allocate_small_fast_freelist(mut, size);
   case GC_ALLOCATOR_INLINE_NONE:
-    return gc_allocate_small(mut, size);
+    return NULL;
   default:
     GC_CRASH();
   }
+}
+
+static inline void* gc_allocate_fast(struct gc_mutator *mut, size_t size) GC_ALWAYS_INLINE;
+static inline void* gc_allocate_fast(struct gc_mutator *mut, size_t size) {
+  GC_ASSERT(size != 0);
+  if (size > gc_allocator_large_threshold())
+    return NULL;
+
+  return gc_allocate_small_fast(mut, size);
+}
+
+static inline void* gc_allocate(struct gc_mutator *mut, size_t size) GC_ALWAYS_INLINE;
+static inline void* gc_allocate(struct gc_mutator *mut, size_t size) {
+  void *ret = gc_allocate_fast(mut, size);
+  if (GC_LIKELY(ret != NULL))
+    return ret;
+
+  return gc_allocate_slow(mut, size);
 }
 
 // FIXME: remove :P
