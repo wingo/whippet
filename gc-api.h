@@ -177,18 +177,30 @@ static inline void gc_small_write_barrier(struct gc_ref obj, struct gc_edge edge
                                           struct gc_ref new_val) GC_ALWAYS_INLINE;
 static inline void gc_small_write_barrier(struct gc_ref obj, struct gc_edge edge,
                                           struct gc_ref new_val) {
-  switch (gc_small_write_barrier_kind()) {
+}
+
+GC_API_ void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
+                                     struct gc_edge edge, struct gc_ref new_val) GC_NEVER_INLINE;
+
+static inline void gc_write_barrier(struct gc_ref obj, size_t obj_size,
+                                    struct gc_edge edge, struct gc_ref new_val) GC_ALWAYS_INLINE;
+static inline void gc_write_barrier(struct gc_ref obj, size_t obj_size,
+                                    struct gc_edge edge, struct gc_ref new_val) {
+  switch (gc_write_barrier_kind(obj_size)) {
   case GC_WRITE_BARRIER_NONE:
     return;
   case GC_WRITE_BARRIER_CARD: {
-    size_t card_table_alignment = gc_small_write_barrier_card_table_alignment();
-    size_t card_size = gc_small_write_barrier_card_size();
+    size_t card_table_alignment = gc_write_barrier_card_table_alignment();
+    size_t card_size = gc_write_barrier_card_size();
     uintptr_t addr = gc_ref_value(obj);
     uintptr_t base = addr & ~(card_table_alignment - 1);
     uintptr_t card = (addr & (card_table_alignment - 1)) / card_size;
     atomic_store_explicit((uint8_t*)(base + card), 1, memory_order_relaxed);
     return;
   }
+  case GC_WRITE_BARRIER_EXTERN:
+    gc_write_barrier_extern(obj, obj_size, edge, new_val);
+    return;
   default:
     GC_CRASH();
   }

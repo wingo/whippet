@@ -29,11 +29,12 @@ static inline int gc_allocator_needs_clear(void) GC_ALWAYS_INLINE;
 
 enum gc_write_barrier_kind {
   GC_WRITE_BARRIER_NONE,
-  GC_WRITE_BARRIER_CARD
+  GC_WRITE_BARRIER_CARD,
+  GC_WRITE_BARRIER_EXTERN
 };
 
-static inline enum gc_write_barrier_kind gc_small_write_barrier_kind(void) GC_ALWAYS_INLINE;
-static inline size_t gc_small_write_barrier_card_table_alignment(void) GC_ALWAYS_INLINE;
-static inline size_t gc_small_write_barrier_card_size(void) GC_ALWAYS_INLINE;
+static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) GC_ALWAYS_INLINE;
+static inline size_t gc_write_barrier_card_table_alignment(void) GC_ALWAYS_INLINE;
+static inline size_t gc_write_barrier_card_size(void) GC_ALWAYS_INLINE;
 
 #endif // GC_ATTRS_H

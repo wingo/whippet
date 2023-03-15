@@ -58,6 +58,49 @@ static size_t large_object_space_npages(struct large_object_space *space,
   return (bytes + space->page_size - 1) >> space->page_size_log2;
 }
 
+static void large_object_space_clear_one_remembered(uintptr_t addr,
+                                                    void *unused) {
+  struct gc_ref ref = gc_ref(addr);
+  if (gc_object_is_remembered_nonatomic(ref))
+    gc_object_clear_remembered_nonatomic(ref);
+}
+
+static void
+large_object_space_clear_remembered_set(struct large_object_space *space) {
+  if (!GC_GENERATIONAL)
+    return;
+  address_set_for_each(&space->to_space,
+                       large_object_space_clear_one_remembered, NULL);
+}
+
+struct large_object_space_trace_remembered_data {
+  void (*trace)(struct gc_ref, struct gc_heap*);
+  struct gc_heap *heap;
+};
+
+static void large_object_space_trace_one_remembered(uintptr_t addr,
+                                                    void *data) {
+  struct gc_ref ref = gc_ref(addr);
+  if (gc_object_is_remembered_nonatomic(ref)) {
+    gc_object_clear_remembered_nonatomic(ref);
+    struct large_object_space_trace_remembered_data *vdata = data;
+    vdata->trace(ref, vdata->heap);
+  }
+}
+
+static void
+large_object_space_trace_remembered_set(struct large_object_space *space,
+                                        void (*trace)(struct gc_ref,
+                                                      struct gc_heap*),
+                                        struct gc_heap *heap) {
+  struct large_object_space_trace_remembered_data vdata = { trace, heap };
+
+  if (!GC_GENERATIONAL)
+    return;
+  address_set_for_each(&space->to_space,
+                       large_object_space_trace_one_remembered, &vdata);
+}
+
 static void large_object_space_start_gc(struct large_object_space *space,
                                         int is_minor_gc) {
   if (is_minor_gc)

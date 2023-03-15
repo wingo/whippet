@@ -1333,6 +1333,10 @@ static void trace_global_conservative_roots(struct gc_heap *heap) {
       (mark_and_globally_enqueue_heap_conservative_roots, heap, NULL);
 }
 
+static void enqueue_generational_root(struct gc_ref ref, struct gc_heap *heap) {
+  tracer_enqueue_root(&heap->tracer, ref);
+}
+
 // Note that it's quite possible (and even likely) that any given remset
 // byte doesn't hold any roots, if all stores were to nursery objects.
 STATIC_ASSERT_EQ(GRANULES_PER_REMSET_BYTE % 8, 0);
@@ -1352,7 +1356,7 @@ static void mark_space_trace_card(struct mark_space *space,
       size_t granule = granule_base + granule_offset;
       uintptr_t addr = first_addr_in_slab + granule * GRANULE_SIZE;
       GC_ASSERT(metadata_byte_for_addr(addr) == &slab->metadata[granule]);
-      tracer_enqueue_root(&heap->tracer, gc_ref(addr));
+      enqueue_generational_root(gc_ref(addr), heap);
     }
   }
 }
@@ -1385,12 +1389,22 @@ static void mark_space_clear_remembered_set(struct mark_space *space) {
   }
 }
 
+void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
+                             struct gc_edge edge, struct gc_ref new_val) {
+  GC_ASSERT(size > gc_allocator_large_threshold());
+  gc_object_set_remembered(obj);
+}
+
 static void trace_generational_roots(struct gc_heap *heap) {
   // TODO: Add lospace nursery.
   if (atomic_load(&heap->gc_kind) & GC_KIND_FLAG_MINOR) {
     mark_space_trace_remembered_set(heap_mark_space(heap), heap);
+    large_object_space_trace_remembered_set(heap_large_object_space(heap),
+                                            enqueue_generational_root,
+                                            heap);
   } else {
     mark_space_clear_remembered_set(heap_mark_space(heap));
+    large_object_space_clear_remembered_set(heap_large_object_space(heap));
   }
 }
 

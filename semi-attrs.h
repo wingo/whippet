@@ -42,13 +42,13 @@ static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
   GC_CRASH();
 }
 
-static inline enum gc_write_barrier_kind gc_small_write_barrier_kind(void) {
+static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t) {
   return GC_WRITE_BARRIER_NONE;
 }
-static inline size_t gc_small_write_barrier_card_table_alignment(void) {
+static inline size_t gc_write_barrier_card_table_alignment(void) {
   GC_CRASH();
 }
-static inline size_t gc_small_write_barrier_card_size(void) {
+static inline size_t gc_write_barrier_card_size(void) {
   GC_CRASH();
 }
 

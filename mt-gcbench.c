@@ -144,9 +144,9 @@ static void allocate_garbage(struct thread *t) {
 }
 
 static void set_field(Node *obj, Node **field, Node *val) {
-  gc_small_write_barrier(gc_ref_from_heap_object(obj),
-                         gc_edge(field),
-                         gc_ref_from_heap_object(val));
+  gc_write_barrier(gc_ref_from_heap_object(obj), sizeof(Node),
+                   gc_edge(field),
+                   gc_ref_from_heap_object(val));
   *field = val;
 }
 

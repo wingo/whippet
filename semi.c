@@ -375,6 +375,10 @@ void gc_collect(struct gc_mutator *mut) {
   collect(mut, 0);
 }
 
+void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
+                             struct gc_edge edge, struct gc_ref new_val) {
+}
+
 static void collect_for_large_alloc(struct gc_mutator *mut, size_t npages) {
   collect_for_alloc(mut, npages * mutator_semi_space(mut)->page_size);
 }

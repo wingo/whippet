@@ -115,6 +115,10 @@ void gc_collect(struct gc_mutator *mut) {
   GC_gcollect();
 }
 
+void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
+                             struct gc_edge edge, struct gc_ref new_val) {
+}
+
 // In BDW-GC, we can't hook into the mark phase to call
 // gc_trace_ephemerons_for_object, so the advertised ephemeron strategy
 // doesn't really work.  The primitives that we have are mark functions,

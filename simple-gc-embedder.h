@@ -86,6 +86,25 @@ static inline void gc_object_forward_nonatomic(struct gc_ref ref,
   *tag_word(ref) = gc_ref_value(new_ref);
 }
 
+static inline void gc_object_set_remembered(struct gc_ref ref) {
+  uintptr_t *loc = tag_word(ref);
+  uintptr_t tag = *loc;
+  while (!(tag & gcobj_remembered_bit))
+    atomic_compare_exchange_weak(loc, &tag, tag | gcobj_remembered_bit);
+}
+
+static inline int gc_object_is_remembered_nonatomic(struct gc_ref ref) {
+  uintptr_t *loc = tag_word(ref);
+  uintptr_t tag = *loc;
+  return tag & gcobj_remembered_bit;
+}
+
+static inline void gc_object_clear_remembered_nonatomic(struct gc_ref ref) {
+  uintptr_t *loc = tag_word(ref);
+  uintptr_t tag = *loc;
+  *loc = tag & ~(uintptr_t)gcobj_remembered_bit;
+}
+
 static inline struct gc_atomic_forward
 gc_atomic_forward_begin(struct gc_ref ref) {
   uintptr_t tag = atomic_load_explicit(tag_word(ref), memory_order_acquire);
