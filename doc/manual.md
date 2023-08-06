@@ -51,7 +51,7 @@ itself.  This is the *embedder API*, and this document describes what
 Whippet requires from a program.
 
 A program should provide a header file implementing the API in
-[`gc-embedder-api.h`](./gc-embedder-api.h).  This header should only be
+[`gc-embedder-api.h`](../api/gc-embedder-api.h).  This header should only be
 included when compiling Whippet itself; it is not part of the API that
 Whippet exposes to the program.
 
@@ -83,7 +83,7 @@ Most kinds of GC-managed object are defined by the program, but the GC
 itself has support for a specific object kind: ephemerons.  If the
 program allocates ephemerons, it should trace them in the
 `gc_trace_object` function by calling `gc_trace_ephemeron` from
-[`gc-ephemerons.h`](./gc-ephemerons.h).
+[`gc-ephemerons.h`](../api/gc-ephemerons.h).
 
 ### Remembered-set bits
 
@@ -91,7 +91,7 @@ When built to support generational garbage collection, Whippet requires
 that all "large" or potentially large objects have a flag bit reserved
 for use of the garbage collector.  A large object is one whose size
 exceeds the `gc_allocator_large_threshold()` (see
-[`gc-attrs.h`](./gc-attrs.h)), which is a collector-specific value.
+[`gc-attrs.h`](../api/gc-attrs.h)), which is a collector-specific value.
 Currently the only generational collector is the in-place Whippet
 collector, whose large object threshold is 4096 bytes.  The
 `gc_object_set_remembered`, `gc_object_is_remembered_nonatomic`, and
@@ -116,7 +116,7 @@ The atomic API is gnarly.  It is used by parallel collectors, in which
 multiple collector threads can race to evacuate an object.
 
 There is a state machine associated with the `gc_atomic_forward`
-structure from [`gc-forwarding.h`](./gc-forwarding.h); the embedder API
+structure from [`gc-forwarding.h`](../api/gc-forwarding.h); the embedder API
 implements the state changes.  The collector calls
 `gc_atomic_forward_begin` on an object to begin a forwarding attempt,
 and the resulting `gc_atomic_forward` can be in the `NOT_FORWARDED`,
@@ -379,7 +379,7 @@ program?  No, because your program isn't written yet?  Well this section
 is for you: we describe the user-facing API of Whippet, where "user" in
 this case denotes the embedding program.
 
-What is the API, you ask?  It is in [`gc-api.h`](./gc-api.h).
+What is the API, you ask?  It is in [`gc-api.h`](../api/gc-api.h).
 
 ### Heaps and mutators
 
@@ -442,7 +442,7 @@ defined for all collectors:
    processors, with a maximum of 8.
 
 You can set these options via `gc_option_set_int` and so on; see
-[`gc-options.h`](./gc-options.h).  Or, you can parse options from
+[`gc-options.h`](../api/gc-options.h).  Or, you can parse options from
 strings: `heap-size-policy`, `heap-size`, `maximum-heap-size`, and so
 on.  Use `gc_option_from_string` to determine if a string is really an
 option.  Use `gc_option_parse_and_set` to parse a value for an option.
@@ -519,7 +519,7 @@ Whippet supports ephemerons, first-class objects that weakly associate
 keys with values.  If the an ephemeron's key ever becomes unreachable,
 the ephemeron becomes dead and loses its value.
 
-The user-facing API is in [`gc-ephemeron.h`](./gc-ephemeron.h).  To
+The user-facing API is in [`gc-ephemeron.h`](../api/gc-ephemeron.h).  To
 allocate an ephemeron, call `gc_allocate_ephemeron`, then initialize its
 key and value via `gc_ephemeron_init`.  Get the key and value via
 `gc_ephemeron_key` and `gc_ephemeron_value`, respectively.
