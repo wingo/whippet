@@ -31,7 +31,8 @@ CC=gcc
 CFLAGS=-Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(BUILD_CFLAGS)
 CPPFLAGS=-Iapi
 LDFLAGS=-lpthread -flto
-OUTPUT_OPTION=-MMD -MP -o $@
+DEPFLAGS=-MMD -MP -MF $(@:%.o=.deps/%.d)
+OUTPUT_OPTION=$(DEPFLAGS) -o $@
 COMPILE=$(CC) $(CFLAGS) $(CPPFLAGS) $(OUTPUT_OPTION)
 LINK=$(CC) $(LDFLAGS) -o $@
 PLATFORM=gnu-linux
@@ -39,6 +40,14 @@ PLATFORM=gnu-linux
 ALL_TESTS=$(foreach COLLECTOR,$(COLLECTORS),$(addsuffix .$(COLLECTOR),$(TESTS)))
 
 all: $(ALL_TESTS)
+
+OBJS=gc-platform.o gc-stack.o gc-options.o
+OBJS+=$(foreach TEST,$(TESTS),$(TEST).gc-ephemeron.o)
+OBJS+=$(foreach TEST,$(ALL_TESTS),$(TEST).gc.o $(TEST).o)
+DEPS=$(OBJS:%.o=.deps/%.d)
+$(OBJS): | .deps
+.deps: ; mkdir -p .deps
+-include $(DEPS)
 
 gc-platform.o: src/gc-platform.h src/gc-platform-$(PLATFORM).c api/gc-visibility.h
 	$(COMPILE) -c src/gc-platform-$(PLATFORM).c
@@ -150,11 +159,7 @@ gc-options.o: src/gc-options.c api/gc-options.h src/gc-options-internal.h
 %.heap-conservative-parallel-generational-whippet: %.heap-conservative-parallel-generational-whippet.o %.heap-conservative-parallel-generational-whippet.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) $^
 
--include gc-platform.d gc-stack.d gc-options.d
--include $(foreach COLLECTOR,$(COLLECTORS),gc-ephemeron-$(COLLECTOR).d)
--include $(foreach TEST,$(ALL_TESTS),$(TEST).gc.d $(TEST).d)
-
-.PRECIOUS: $(ALL_TESTS) $(foreach TEST,$(ALL_TESTS),$(TEST).gc.o $(TEST).o)
+.PRECIOUS: $(ALL_TESTS) $(OBJS)
 
 clean:
-	rm -f $(ALL_TESTS) *.d *.o
+	rm -f $(ALL_TESTS) $(OBJS) $(DEPS)

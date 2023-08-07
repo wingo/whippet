@@ -1,4 +1,3 @@
-/*.d
 /*.o
 /*.bdw
 /*.semi
@@ -14,3 +13,4 @@
 /*.heap-conservative-generational-whippet
 /*.heap-conservative-parallel-whippet
 /*.heap-conservative-parallel-generational-whippet
+/.deps/
