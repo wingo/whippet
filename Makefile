@@ -47,114 +47,111 @@ OBJS+=$(foreach TEST,$(ALL_TESTS),$(TEST).gc.o $(TEST).o)
 DEPS=$(OBJS:%.o=.deps/%.d)
 $(OBJS): | .deps
 .deps: ; mkdir -p .deps
--include $(DEPS)
+include $(wildcard $(DEPS))
 
-gc-platform.o: src/gc-platform.h src/gc-platform-$(PLATFORM).c api/gc-visibility.h
-	$(COMPILE) -c src/gc-platform-$(PLATFORM).c
-
+gc-platform.o: src/gc-platform-$(PLATFORM).c
+	$(COMPILE) -c $<
 gc-stack.o: src/gc-stack.c
 	$(COMPILE) -c $<
-
-gc-options.o: src/gc-options.c api/gc-options.h src/gc-options-internal.h
+gc-options.o: src/gc-options.c
 	$(COMPILE) -c $<
-
-%.gc-ephemeron.o: src/gc-ephemeron.c api/gc-ephemeron.h src/gc-ephemeron-internal.h benchmarks/%-embedder.h
+%.gc-ephemeron.o: src/gc-ephemeron.c
 	$(COMPILE) -include benchmarks/$*-embedder.h -c $<
 
-%.bdw.gc.o: src/bdw.c benchmarks/%-embedder.h benchmarks/%.c
+%.bdw.gc.o: src/bdw.c
 	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 `pkg-config --cflags bdw-gc` -include benchmarks/$*-embedder.h -c src/bdw.c
-%.bdw.o: src/bdw.c benchmarks/%.c
+%.bdw.o: benchmarks/%.c
 	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include api/bdw-attrs.h -c benchmarks/$*.c
 %.bdw: %.bdw.o %.bdw.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) `pkg-config --libs bdw-gc` $^
 
-%.semi.gc.o: src/semi.c benchmarks/%-embedder.h
+%.semi.gc.o: src/semi.c
 	$(COMPILE) -DGC_PRECISE_ROOTS=1 -include benchmarks/$*-embedder.h -c src/semi.c
-%.semi.o: src/semi.c benchmarks/%.c
+%.semi.o: benchmarks/%.c
 	$(COMPILE) -DGC_PRECISE_ROOTS=1 -include api/semi-attrs.h -c benchmarks/$*.c
 %.semi: %.semi.o %.semi.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) $^
 
-%.whippet.gc.o: src/whippet.c benchmarks/%-embedder.h
+%.whippet.gc.o: src/whippet.c
 	$(COMPILE) -DGC_PRECISE_ROOTS=1 -include benchmarks/$*-embedder.h -c src/whippet.c
-%.whippet.o: src/whippet.c benchmarks/%.c
+%.whippet.o: benchmarks/%.c
 	$(COMPILE) -DGC_PRECISE_ROOTS=1 -include api/whippet-attrs.h -c benchmarks/$*.c
 %.whippet: %.whippet.o %.whippet.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) $^
 
-%.stack-conservative-whippet.gc.o: src/whippet.c benchmarks/%-embedder.h
+%.stack-conservative-whippet.gc.o: src/whippet.c
 	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -include benchmarks/$*-embedder.h -c src/whippet.c
-%.stack-conservative-whippet.o: src/whippet.c benchmarks/%.c
+%.stack-conservative-whippet.o: benchmarks/%.c
 	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -include api/whippet-attrs.h -c benchmarks/$*.c
 %.stack-conservative-whippet: %.stack-conservative-whippet.o %.stack-conservative-whippet.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) $^
 
-%.heap-conservative-whippet.gc.o: src/whippet.c benchmarks/%-embedder.h
+%.heap-conservative-whippet.gc.o: src/whippet.c
 	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include benchmarks/$*-embedder.h -c src/whippet.c
-%.heap-conservative-whippet.o: src/whippet.c benchmarks/%.c
+%.heap-conservative-whippet.o: benchmarks/%.c
 	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include api/whippet-attrs.h -c benchmarks/$*.c
 %.heap-conservative-whippet: %.heap-conservative-whippet.o %.heap-conservative-whippet.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) $^
 
-%.parallel-whippet.gc.o: src/whippet.c benchmarks/%-embedder.h
+%.parallel-whippet.gc.o: src/whippet.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_PRECISE_ROOTS=1 -include benchmarks/$*-embedder.h -c src/whippet.c
-%.parallel-whippet.o: src/whippet.c benchmarks/%.c
+%.parallel-whippet.o: benchmarks/%.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_PRECISE_ROOTS=1 -include api/whippet-attrs.h -c benchmarks/$*.c
 %.parallel-whippet: %.parallel-whippet.o %.parallel-whippet.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) $^
 
-%.stack-conservative-parallel-whippet.gc.o: src/whippet.c benchmarks/%-embedder.h
+%.stack-conservative-parallel-whippet.gc.o: src/whippet.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -include benchmarks/$*-embedder.h -c src/whippet.c
-%.stack-conservative-parallel-whippet.o: src/whippet.c benchmarks/%.c
+%.stack-conservative-parallel-whippet.o: benchmarks/%.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -include api/whippet-attrs.h -c benchmarks/$*.c
 %.stack-conservative-parallel-whippet: %.stack-conservative-parallel-whippet.o %.stack-conservative-parallel-whippet.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) $^
 
-%.heap-conservative-parallel-whippet.gc.o: src/whippet.c benchmarks/%-embedder.h
+%.heap-conservative-parallel-whippet.gc.o: src/whippet.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include benchmarks/$*-embedder.h -c src/whippet.c
-%.heap-conservative-parallel-whippet.o: src/whippet.c benchmarks/%.c
+%.heap-conservative-parallel-whippet.o: benchmarks/%.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -DGC_FULLY_CONSERVATIVE=1 -include api/whippet-attrs.h -c benchmarks/$*.c
 %.heap-conservative-parallel-whippet: %.heap-conservative-parallel-whippet.o %.heap-conservative-parallel-whippet.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) $^
 
-%.generational-whippet.gc.o: src/whippet.c benchmarks/%-embedder.h
+%.generational-whippet.gc.o: src/whippet.c
 	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1 -include benchmarks/$*-embedder.h -c src/whippet.c
-%.generational-whippet.o: src/whippet.c benchmarks/%.c
+%.generational-whippet.o: benchmarks/%.c
 	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1 -include api/whippet-attrs.h -c benchmarks/$*.c
 %.generational-whippet: %.generational-whippet.o %.generational-whippet.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) $^
 
-%.stack-conservative-generational-whippet.gc.o: src/whippet.c benchmarks/%-embedder.h
+%.stack-conservative-generational-whippet.gc.o: src/whippet.c
 	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -include benchmarks/$*-embedder.h -c src/whippet.c
-%.stack-conservative-generational-whippet.o: src/whippet.c benchmarks/%.c
+%.stack-conservative-generational-whippet.o: benchmarks/%.c
 	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -include api/whippet-attrs.h -c benchmarks/$*.c
 %.stack-conservative-generational-whippet: %.stack-conservative-generational-whippet.o %.stack-conservative-generational-whippet.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) $^
 
-%.heap-conservative-generational-whippet.gc.o: src/whippet.c benchmarks/%-embedder.h
+%.heap-conservative-generational-whippet.gc.o: src/whippet.c
 	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include benchmarks/$*-embedder.h -c src/whippet.c
-%.heap-conservative-generational-whippet.o: src/whippet.c benchmarks/%.c
+%.heap-conservative-generational-whippet.o: benchmarks/%.c
 	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include api/whippet-attrs.h -c benchmarks/$*.c
 %.heap-conservative-generational-whippet: %.heap-conservative-generational-whippet.o %.heap-conservative-generational-whippet.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) $^
 
-%.parallel-generational-whippet.gc.o: src/whippet.c benchmarks/%-embedder.h
+%.parallel-generational-whippet.gc.o: src/whippet.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1 -include benchmarks/$*-embedder.h -c src/whippet.c
-%.parallel-generational-whippet.o: src/whippet.c benchmarks/%.c
+%.parallel-generational-whippet.o: benchmarks/%.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1 -include api/whippet-attrs.h -c benchmarks/$*.c
 %.parallel-generational-whippet: %.parallel-generational-whippet.o %.parallel-generational-whippet.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) $^
 
-%.stack-conservative-parallel-generational-whippet.gc.o: src/whippet.c benchmarks/%-embedder.h
+%.stack-conservative-parallel-generational-whippet.gc.o: src/whippet.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -include benchmarks/$*-embedder.h -c src/whippet.c
-%.stack-conservative-parallel-generational-whippet.o: src/whippet.c benchmarks/%.c
+%.stack-conservative-parallel-generational-whippet.o: benchmarks/%.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -include api/whippet-attrs.h -c benchmarks/$*.c
 %.stack-conservative-parallel-generational-whippet: %.stack-conservative-parallel-generational-whippet.o %.stack-conservative-parallel-generational-whippet.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) $^
 
-%.heap-conservative-parallel-generational-whippet.gc.o: src/whippet.c benchmarks/%-embedder.h
+%.heap-conservative-parallel-generational-whippet.gc.o: src/whippet.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include benchmarks/$*-embedder.h -c src/whippet.c
-%.heap-conservative-parallel-generational-whippet.o: src/whippet.c benchmarks/%.c
+%.heap-conservative-parallel-generational-whippet.o: benchmarks/%.c
 	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include api/whippet-attrs.h -c benchmarks/$*.c
 %.heap-conservative-parallel-generational-whippet: %.heap-conservative-parallel-generational-whippet.o %.heap-conservative-parallel-generational-whippet.gc.o gc-stack.o gc-options.o gc-platform.o %.gc-ephemeron.o
 	$(LINK) $^
