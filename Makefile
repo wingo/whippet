@@ -66,41 +66,38 @@ GC_LIBS_bdw=`pkg-config --libs bdw-gc`
 GC_STEM_semi=semi
 GC_CFLAGS_semi=-DGC_PRECISE_ROOTS=1
 
-GC_STEM_whippet=whippet
-GC_CFLAGS_whippet=-DGC_PRECISE_ROOTS=1
+define whippet_variant
+GC_STEM_$(1)=whippet
+GC_CFLAGS_$(1)=$(2)
+endef
 
-GC_STEM_stack_conservative_whippet=whippet
-GC_CFLAGS_stack_conservative_whippet=-DGC_CONSERVATIVE_ROOTS=1
+$(eval $(call whippet_variant,whippet,\
+              -DGC_PRECISE_ROOTS=1))
+$(eval $(call whippet_variant,stack_conservative_whippet,\
+              -DGC_CONSERVATIVE_ROOTS=1))
+$(eval $(call whippet_variant,heap_conservative_whippet,\
+              -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1))
 
-GC_STEM_heap_conservative_whippet=whippet
-GC_CFLAGS_heap_conservative_whippet=-DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
+$(eval $(call whippet_variant,parallel_whippet,\
+              -DGC_PARALLEL=1 -DGC_PRECISE_ROOTS=1))
+$(eval $(call whippet_variant,stack_conservative_parallel_whippet,\
+              -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1))
+$(eval $(call whippet_variant,heap_conservative_parallel_whippet,\
+              -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1))
 
-GC_STEM_parallel_whippet=whippet
-GC_CFLAGS_parallel_whippet=-DGC_PARALLEL=1 -DGC_PRECISE_ROOTS=1
+$(eval $(call whippet_variant,generational_whippet,\
+              -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1))
+$(eval $(call whippet_variant,stack_conservative_generational_whippet,\
+              -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1))
+$(eval $(call whippet_variant,heap_conservative_generational_whippet,\
+              -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1))
 
-GC_STEM_stack_conservative_parallel_whippet=whippet
-GC_CFLAGS_stack_conservative_parallel_whippet=-DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1
-
-GC_STEM_heap_conservative_parallel_whippet=whippet
-GC_CFLAGS_heap_conservative_parallel_whippet=-DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
-
-GC_STEM_generational_whippet=whippet
-GC_CFLAGS_generational_whippet=-DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1
-
-GC_STEM_stack_conservative_generational_whippet=whippet
-GC_CFLAGS_stack_conservative_generational_whippet=-DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1
-
-GC_STEM_heap_conservative_generational_whippet=whippet
-GC_CFLAGS_heap_conservative_generational_whippet=-DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
-
-GC_STEM_parallel_generational_whippet=whippet
-GC_CFLAGS_parallel_generational_whippet=-DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1
-
-GC_STEM_stack_conservative_parallel_generational_whippet=whippet
-GC_CFLAGS_stack_conservative_parallel_generational_whippet=-DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1
-
-GC_STEM_heap_conservative_parallel_generational_whippet=whippet
-GC_CFLAGS_heap_conservative_parallel_generational_whippet=-DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
+$(eval $(call whippet_variant,parallel_generational_whippet,\
+              -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1))
+$(eval $(call whippet_variant,stack_conservative_parallel_generational_whippet,\
+              -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1))
+$(eval $(call whippet_variant,heap_conservative_parallel_generational_whippet,\
+              -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1))
 
 # $(1) is the benchmark, $(2) is the collector configuration
 # gc_stem for bdw: bdw
