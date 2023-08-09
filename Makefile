@@ -32,8 +32,7 @@ CFLAGS=-Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(BUILD_
 CPPFLAGS=-Iapi
 LDFLAGS=-lpthread -flto
 DEPFLAGS=-MMD -MP -MF $(@:%.o=.deps/%.d)
-OUTPUT_OPTION=$(DEPFLAGS) -o $@
-COMPILE=$(CC) $(CFLAGS) $(CPPFLAGS) $(OUTPUT_OPTION)
+COMPILE=$(CC) $(CFLAGS) $(CPPFLAGS) $(DEPFLAGS) -o $@
 LINK=$(CC) $(LDFLAGS) -o $@
 PLATFORM=gnu-linux
 
@@ -71,42 +70,32 @@ GC_STEM_$(1)=whippet
 GC_CFLAGS_$(1)=$(2)
 endef
 
-$(eval $(call whippet_variant,whippet,\
-              -DGC_PRECISE_ROOTS=1))
-$(eval $(call whippet_variant,stack_conservative_whippet,\
-              -DGC_CONSERVATIVE_ROOTS=1))
-$(eval $(call whippet_variant,heap_conservative_whippet,\
-              -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1))
+define generational_whippet_variants
+$(call whippet_variant,$(1)whippet,$(2))
+$(call whippet_variant,$(1)generational_whippet,$(2) -DGC_GENERATIONAL=1)
+endef
 
-$(eval $(call whippet_variant,parallel_whippet,\
-              -DGC_PARALLEL=1 -DGC_PRECISE_ROOTS=1))
-$(eval $(call whippet_variant,stack_conservative_parallel_whippet,\
-              -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1))
-$(eval $(call whippet_variant,heap_conservative_parallel_whippet,\
-              -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1))
+define parallel_whippet_variants
+$(call generational_whippet_variants,$(1),$(2))
+$(call generational_whippet_variants,$(1)parallel_,$(2) -DGC_PARALLEL=1)
+endef
 
-$(eval $(call whippet_variant,generational_whippet,\
-              -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1))
-$(eval $(call whippet_variant,stack_conservative_generational_whippet,\
-              -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1))
-$(eval $(call whippet_variant,heap_conservative_generational_whippet,\
-              -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1))
+define trace_whippet_variants
+$(call parallel_whippet_variants,,-DGC_PRECISE_ROOTS=1)
+$(call parallel_whippet_variants,stack_conservative_,-DGC_CONSERVATIVE_ROOTS=1)
+$(call parallel_whippet_variants,heap_conservative_,-DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1)
+endef
 
-$(eval $(call whippet_variant,parallel_generational_whippet,\
-              -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1))
-$(eval $(call whippet_variant,stack_conservative_parallel_generational_whippet,\
-              -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1))
-$(eval $(call whippet_variant,heap_conservative_parallel_generational_whippet,\
-              -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1))
+$(eval $(call trace_whippet_variants))
 
 # $(1) is the benchmark, $(2) is the collector configuration
 # gc_stem for bdw: bdw
-make_gc_var=$$($(1)$(subst -,_,$(2)))
-gc_impl=$(call make_gc_var,GC_STEM_,$(1)).c
-gc_attrs=$(call make_gc_var,GC_STEM_,$(1))-attrs.h
-gc_cflags=$(call make_gc_var,GC_CFLAGS_,$(1))
-gc_impl_cflags=$(call make_gc_var,GC_IMPL_CFLAGS_,$(1))
-gc_libs=$(call make_gc_var,GC_LIBS_,$(1))
+make_gc_var    = $$($(1)$(subst -,_,$(2)))
+gc_impl        = $(call make_gc_var,GC_STEM_,$(1)).c
+gc_attrs       = $(call make_gc_var,GC_STEM_,$(1))-attrs.h
+gc_cflags      = $(call make_gc_var,GC_CFLAGS_,$(1))
+gc_impl_cflags = $(call make_gc_var,GC_IMPL_CFLAGS_,$(1))
+gc_libs        = $(call make_gc_var,GC_LIBS_,$(1))
 define benchmark_template
 $(1).$(2).gc.o: src/$(call gc_impl,$(2))
 	$$(COMPILE) $(call gc_cflags,$(2)) $(call gc_impl_cflags,$(2)) -include benchmarks/$(1)-embedder.h -c $$<
@@ -124,3 +113,8 @@ $(foreach BENCHMARK,$(TESTS),\
 
 clean:
 	rm -f $(ALL_TESTS) $(OBJS) $(DEPS)
+
+.SUFFIXES:
+.SECONDARY:
+%.c:;
+Makefile:;
