@@ -10,22 +10,22 @@ GC_BUILD_CFLAGS = $(BUILD_CFLAGS_$(or $(GC_BUILD),$(DEFAULT_BUILD)))
 
 GC_CC       = gcc
 GC_CFLAGS   = -Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(GC_BUILD_CFLAGS)
-GC_CPPFLAGS = -I$(here)/api
+GC_CPPFLAGS = -I$(WHIPPET)api
 GC_LDFLAGS  = -lpthread -flto
-GC_DEPFLAGS = -MMD -MP -MF $(@:obj/%.o=.deps/%.d)
+GC_DEPFLAGS = 
 GC_COMPILE  = $(GC_CC) $(GC_CFLAGS) $(GC_CPPFLAGS) $(GC_DEPFLAGS) -o $@
-GC_LINK     = $(CC) $(LDFLAGS) -o $@
+GC_LINK     = $(GC_CC) $(GC_LDFLAGS) -o $@
 GC_PLATFORM = gnu-linux
 GC_OBJDIR   =
 
-$(GC_OBJDIR)gc-platform.o: src/gc-platform-$(PLATFORM).c
+$(GC_OBJDIR)gc-platform.o: $(WHIPPET)src/gc-platform-$(GC_PLATFORM).c
 	$(GC_COMPILE) -c $<
-$(GC_OBJDIR)gc-stack.o: src/gc-stack.c
+$(GC_OBJDIR)gc-stack.o: $(WHIPPET)src/gc-stack.c
 	$(GC_COMPILE) -c $<
-$(GC_OBJDIR)gc-options.o: src/gc-options.c
-	$(GC_COMPILE) -c $<
-$(GC_OBJDIR)gc-ephemeron.o: src/gc-ephemeron.c
-	$(GC_COMPILE) -include $(GC_EMBEDDER_H) -c $<
+$(GC_OBJDIR)gc-options.o: $(WHIPPET)src/gc-options.c
+	$(GC_COMPILE) -c $(WHIPPET)$<
+$(GC_OBJDIR)gc-ephemeron.o: $(WHIPPET)src/gc-ephemeron.c
+	$(GC_COMPILE) $(EMBEDDER_TO_GC_CFLAGS) -c $<
 
 GC_STEM_bdw   	   = bdw
 GC_CFLAGS_bdw 	   = -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
@@ -68,11 +68,11 @@ gc_libs        = $(call gc_var,GC_LIBS_,$(1))
 GC_IMPL        	    = $(call gc_impl,$(GC_COLLECTOR))
 GC_CFLAGS      	   += $(call gc_cflags,$(GC_COLLECTOR))
 GC_IMPL_CFLAGS 	    = $(call gc_impl_cflags,$(GC_COLLECTOR))
-GC_EMBEDDER_CFLAGS  = -include $(here)api/$(GC_IMPL)-attrs.h
-GC_ATTRS            = $(call gc_attrs,$(GC_COLLECTOR))
+GC_ATTRS            = $(WHIPPET)api/$(call gc_attrs,$(GC_COLLECTOR))
+GC_TO_EMBEDDER_CFLAGS = -include $(GC_ATTRS)
 GC_LIBS             = $(call gc_libs,$(GC_COLLECTOR))
 
-$(GC_OBJDIR)gc-impl.o: src/$(call gc_impl,$(GC_COLLECTOR))
-	$(GC_COMPILE) $(GC_IMPL_CFLAGS) -include $(GC_EMBEDDER_H) -c $<
+$(GC_OBJDIR)gc-impl.o: $(WHIPPET)src/$(call gc_impl,$(GC_COLLECTOR))
+	$(GC_COMPILE) $(GC_IMPL_CFLAGS) $(EMBEDDER_TO_GC_CFLAGS) -c $<
 
-GC_OBJS=$(foreach O,gc-platform.o gc-stack.o gc-options.o gc-ephemeron.o gc-impl.o,$(GC_OBJDIR)/$(O))
+GC_OBJS=$(foreach O,gc-platform.o gc-stack.o gc-options.o gc-ephemeron.o gc-impl.o,$(GC_OBJDIR)$(O))
