@@ -23,7 +23,7 @@ $(GC_OBJDIR)gc-platform.o: $(WHIPPET)src/gc-platform-$(GC_PLATFORM).c
 $(GC_OBJDIR)gc-stack.o: $(WHIPPET)src/gc-stack.c
 	$(GC_COMPILE) -c $<
 $(GC_OBJDIR)gc-options.o: $(WHIPPET)src/gc-options.c
-	$(GC_COMPILE) -c $(WHIPPET)$<
+	$(GC_COMPILE) -c $<
 $(GC_OBJDIR)gc-ephemeron.o: $(WHIPPET)src/gc-ephemeron.c
 	$(GC_COMPILE) $(EMBEDDER_TO_GC_CFLAGS) -c $<
 
