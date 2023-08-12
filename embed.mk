@@ -8,13 +8,17 @@ BUILD_CFLAGS_debug    = -O0 -g -DGC_DEBUG=1
 
 GC_BUILD_CFLAGS = $(BUILD_CFLAGS_$(or $(GC_BUILD),$(DEFAULT_BUILD)))
 
+v_0 = @
+v_1 =
+
+GC_V        = $(v_$(V))
 GC_CC       = gcc
 GC_CFLAGS   = -Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(GC_BUILD_CFLAGS)
 GC_CPPFLAGS = -I$(WHIPPET)api
 GC_LDFLAGS  = -lpthread -flto
 GC_DEPFLAGS = 
-GC_COMPILE  = $(GC_CC) $(GC_CFLAGS) $(GC_CPPFLAGS) $(GC_DEPFLAGS) -o $@
-GC_LINK     = $(GC_CC) $(GC_LDFLAGS) -o $@
+GC_COMPILE  = $(GC_V)$(GC_CC) $(GC_CFLAGS) $(GC_CPPFLAGS) $(GC_DEPFLAGS) -o $@
+GC_LINK     = $(GC_V)$(GC_CC) $(GC_LDFLAGS) -o $@
 GC_PLATFORM = gnu-linux
 GC_OBJDIR   =
 
