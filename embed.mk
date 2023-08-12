@@ -8,6 +8,7 @@ BUILD_CFLAGS_debug    = -O0 -g -DGC_DEBUG=1
 
 GC_BUILD_CFLAGS = $(BUILD_CFLAGS_$(or $(GC_BUILD),$(DEFAULT_BUILD)))
 
+V ?= 1
 v_0 = @
 v_1 =
 
