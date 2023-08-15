@@ -163,6 +163,19 @@ embedder should return 1 only if the displacement is 0, but if the
 program allows low-bit tagged pointers, then it should also return 1 for
 those pointer tags.
 
+### External objects
+
+Sometimes a system will allocate objects outside the GC, for example on
+the stack or in static data sections.  To support this use case, Whippet
+allows the embedder to provide a `struct gc_extern_space`
+implementation.  Whippet will call `gc_extern_space_start_gc` at the
+start of each collection, and `gc_extern_space_finish_gc` at the end.
+External objects will be visited by `gc_extern_space_mark`, which should
+return nonzero if the object hasn't been seen before and needs to be
+traced via `gc_trace_object` (coloring the object grey).  Note,
+`gc_extern_space_mark` may be called concurrently from many threads; be
+prepared!
+
 ## Configuration, compilation, and linking
 
 To the user, Whippet presents an abstract API that does not encode the

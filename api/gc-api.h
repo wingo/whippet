@@ -34,6 +34,10 @@ struct gc_heap_roots;
 GC_API_ void gc_heap_set_roots(struct gc_heap *heap,
                                struct gc_heap_roots *roots);
 
+struct gc_extern_space;
+GC_API_ void gc_heap_set_extern_space(struct gc_heap *heap,
+                                      struct gc_extern_space *space);
+
 GC_API_ struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *base,
                                               struct gc_heap *heap);
 GC_API_ void gc_finish_for_thread(struct gc_mutator *mut);

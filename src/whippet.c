@@ -300,6 +300,7 @@ enum gc_kind {
 struct gc_heap {
   struct mark_space mark_space;
   struct large_object_space large_object_space;
+  struct gc_extern_space *extern_space;
   size_t large_object_pages;
   pthread_mutex_t lock;
   pthread_cond_t collector_cond;
@@ -359,6 +360,9 @@ static inline struct mark_space* heap_mark_space(struct gc_heap *heap) {
 }
 static inline struct large_object_space* heap_large_object_space(struct gc_heap *heap) {
   return &heap->large_object_space;
+}
+static inline struct gc_extern_space* heap_extern_space(struct gc_heap *heap) {
+  return heap->extern_space;
 }
 static inline struct gc_heap* mutator_heap(struct gc_mutator *mutator) {
   return mutator->heap;
@@ -667,7 +671,7 @@ static inline int do_trace(struct gc_heap *heap, struct gc_edge edge,
     return large_object_space_mark_object(heap_large_object_space(heap),
                                           ref);
   else
-    GC_CRASH();
+    return gc_extern_space_mark(heap_extern_space(heap), ref);
 }
 
 static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge) {
@@ -1077,6 +1081,10 @@ void gc_mutator_set_roots(struct gc_mutator *mut,
 }
 void gc_heap_set_roots(struct gc_heap *heap, struct gc_heap_roots *roots) {
   heap->roots = roots;
+}
+void gc_heap_set_extern_space(struct gc_heap *heap,
+                              struct gc_extern_space *space) {
+  heap->extern_space = space;
 }
 
 static void trace_and_enqueue_locally(struct gc_edge edge,
@@ -1803,6 +1811,7 @@ static void collect(struct gc_mutator *mut) {
   struct gc_heap *heap = mutator_heap(mut);
   struct mark_space *space = heap_mark_space(heap);
   struct large_object_space *lospace = heap_large_object_space(heap);
+  struct gc_extern_space *exspace = heap_extern_space(heap);
   if (maybe_grow_heap(heap)) {
     DEBUG("grew heap instead of collecting #%ld:\n", heap->count);
     return;
@@ -1811,6 +1820,7 @@ static void collect(struct gc_mutator *mut) {
   enum gc_kind gc_kind = determine_collection_kind(heap);
   update_mark_patterns(space, !(gc_kind & GC_KIND_FLAG_MINOR));
   large_object_space_start_gc(lospace, gc_kind & GC_KIND_FLAG_MINOR);
+  gc_extern_space_start_gc(exspace, gc_kind & GC_KIND_FLAG_MINOR);
   resolve_ephemerons_lazily(heap);
   tracer_prepare(heap);
   request_mutators_to_stop(heap);
@@ -1832,6 +1842,7 @@ static void collect(struct gc_mutator *mut) {
   tracer_release(heap);
   mark_space_finish_gc(space, gc_kind);
   large_object_space_finish_gc(lospace, gc_kind & GC_KIND_FLAG_MINOR);
+  gc_extern_space_finish_gc(exspace, gc_kind & GC_KIND_FLAG_MINOR);
   heap->count++;
   heap->last_collection_was_minor = gc_kind & GC_KIND_FLAG_MINOR;
   if (heap->last_collection_was_minor)

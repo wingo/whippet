@@ -325,6 +325,9 @@ void gc_mutator_set_roots(struct gc_mutator *mut,
 }
 void gc_heap_set_roots(struct gc_heap *heap, struct gc_heap_roots *roots) {
 }
+void gc_heap_set_extern_space(struct gc_heap *heap,
+                              struct gc_extern_space *space) {
+}
 
 void gc_print_stats(struct gc_heap *heap) {
   printf("Completed %ld collections\n", (long)GC_get_gc_no());

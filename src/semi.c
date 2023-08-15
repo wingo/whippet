@@ -37,12 +37,14 @@ struct gc_heap {
   struct semi_space semi_space;
   struct large_object_space large_object_space;
   struct gc_pending_ephemerons *pending_ephemerons;
+  struct gc_extern_space *extern_space;
   double pending_ephemerons_size_factor;
   double pending_ephemerons_size_slop;
   size_t size;
   long count;
   int check_pending_ephemerons;
   const struct gc_options *options;
+  struct gc_heap_roots *roots;
 };
 // One mutator per space, can just store the heap in the mutator.
 struct gc_mutator {
@@ -195,6 +197,17 @@ static int semi_space_contains(struct semi_space *space, struct gc_ref ref) {
   return region_contains(&space->from_space, addr);
 }
 
+static void visit_external_object(struct gc_heap *heap,
+                                  struct gc_extern_space *space,
+                                  struct gc_ref ref) {
+  if (gc_extern_space_mark(space, ref)) {
+    if (GC_UNLIKELY(heap->check_pending_ephemerons))
+      gc_resolve_pending_ephemerons(ref, heap);
+
+    gc_trace_object(ref, trace, heap, NULL, NULL);
+  }
+}
+
 static void visit(struct gc_edge edge, struct gc_heap *heap) {
   struct gc_ref ref = gc_edge_ref(edge);
   if (!gc_ref_is_heap_object(ref))
@@ -204,7 +217,7 @@ static void visit(struct gc_edge edge, struct gc_heap *heap) {
   else if (large_object_space_contains(heap_large_object_space(heap), ref))
     visit_large_object_space(heap, heap_large_object_space(heap), ref);
   else
-    GC_CRASH();
+    visit_external_object(heap, heap->extern_space, ref);
 }
 
 struct gc_pending_ephemerons *
@@ -329,10 +342,13 @@ static void collect(struct gc_mutator *mut, size_t for_alloc) {
   struct large_object_space *large = heap_large_object_space(heap);
   // fprintf(stderr, "start collect #%ld:\n", space->count);
   large_object_space_start_gc(large, 0);
+  gc_extern_space_start_gc(heap->extern_space, 0);
   flip(semi);
   heap->count++;
   heap->check_pending_ephemerons = 0;
   uintptr_t grey = semi->hp;
+  if (heap->roots)
+    gc_trace_heap_roots(heap->roots, trace, heap, NULL);
   if (mut->roots)
     gc_trace_mutator_roots(mut->roots, trace, heap, NULL);
   // fprintf(stderr, "pushed %zd bytes in roots\n", space->hp - grey);
@@ -344,6 +360,7 @@ static void collect(struct gc_mutator *mut, size_t for_alloc) {
     while(grey < semi->hp)
       grey = scan(heap, gc_ref(grey));
   large_object_space_finish_gc(large, 0);
+  gc_extern_space_finish_gc(heap->extern_space, 0);
   semi_space_finish_gc(semi, large->live_pages_at_last_collection);
   gc_sweep_pending_ephemerons(heap->pending_ephemerons, 0, 1);
   adjust_heap_size_and_limits(heap, for_alloc);
@@ -485,11 +502,13 @@ unsigned gc_heap_ephemeron_trace_epoch(struct gc_heap *heap) {
 }
 
 static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
+  heap->extern_space = NULL;
   heap->pending_ephemerons_size_factor = 0.01;
   heap->pending_ephemerons_size_slop = 0.5;
   heap->count = 0;
   heap->options = options;
   heap->size = options->common.heap_size;
+  heap->roots = NULL;
 
   return heap_prepare_pending_ephemerons(heap);
 }
@@ -559,7 +578,11 @@ void gc_mutator_set_roots(struct gc_mutator *mut,
   mut->roots = roots;
 }
 void gc_heap_set_roots(struct gc_heap *heap, struct gc_heap_roots *roots) {
-  GC_CRASH();
+  heap->roots = roots;
+}
+void gc_heap_set_extern_space(struct gc_heap *heap,
+                              struct gc_extern_space *space) {
+  heap->extern_space = space;
 }
 
 struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *base,
