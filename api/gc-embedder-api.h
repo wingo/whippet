@@ -21,8 +21,9 @@ struct gc_extern_space;
 
 GC_EMBEDDER_API inline int gc_is_valid_conservative_ref_displacement(uintptr_t displacement);
 
-GC_EMBEDDER_API inline int gc_extern_space_mark(struct gc_extern_space *space,
-                                                struct gc_ref ref) GC_ALWAYS_INLINE;
+GC_EMBEDDER_API inline int gc_extern_space_visit(struct gc_extern_space *space,
+                                                 struct gc_edge edge,
+                                                 struct gc_ref ref) GC_ALWAYS_INLINE;
 GC_EMBEDDER_API inline void gc_extern_space_start_gc(struct gc_extern_space *space,
                                                      int is_minor_gc);
 GC_EMBEDDER_API inline void gc_extern_space_finish_gc(struct gc_extern_space *space,

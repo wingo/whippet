@@ -19,8 +19,9 @@ gc_is_valid_conservative_ref_displacement(uintptr_t displacement) {
 }
 
 // No external objects in simple benchmarks.
-static inline int gc_extern_space_mark(struct gc_extern_space *space,
-                                       struct gc_ref ref) {
+static inline int gc_extern_space_visit(struct gc_extern_space *space,
+                                        struct gc_edge edge,
+                                        struct gc_ref ref) {
   GC_CRASH();
 }
 static inline void gc_extern_space_start_gc(struct gc_extern_space *space,

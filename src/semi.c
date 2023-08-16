@@ -199,12 +199,13 @@ static int semi_space_contains(struct semi_space *space, struct gc_ref ref) {
 
 static void visit_external_object(struct gc_heap *heap,
                                   struct gc_extern_space *space,
-                                  struct gc_ref ref) {
-  if (gc_extern_space_mark(space, ref)) {
+                                  struct gc_edge edge,
+                                  struct gc_ref old_ref) {
+  if (gc_extern_space_visit(space, edge, old_ref)) {
     if (GC_UNLIKELY(heap->check_pending_ephemerons))
-      gc_resolve_pending_ephemerons(ref, heap);
+      gc_resolve_pending_ephemerons(old_ref, heap);
 
-    gc_trace_object(ref, trace, heap, NULL, NULL);
+    gc_trace_object(gc_edge_ref(edge), trace, heap, NULL, NULL);
   }
 }
 
@@ -217,7 +218,7 @@ static void visit(struct gc_edge edge, struct gc_heap *heap) {
   else if (large_object_space_contains(heap_large_object_space(heap), ref))
     visit_large_object_space(heap, heap_large_object_space(heap), ref);
   else
-    visit_external_object(heap, heap->extern_space, ref);
+    visit_external_object(heap, heap->extern_space, edge, ref);
 }
 
 struct gc_pending_ephemerons *
