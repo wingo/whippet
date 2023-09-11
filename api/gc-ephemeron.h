@@ -18,7 +18,7 @@ struct gc_mutator;
 struct gc_ephemeron;
 
 GC_API_ size_t gc_ephemeron_size(void);
-GC_API_ struct gc_ref gc_allocate_ephemeron(struct gc_mutator *mut);
+GC_API_ struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut);
 GC_API_ void gc_ephemeron_init(struct gc_mutator *mut,
                                struct gc_ephemeron *ephemeron,
                                struct gc_ref key, struct gc_ref value);

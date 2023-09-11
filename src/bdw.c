@@ -131,9 +131,8 @@ void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
 
 static int ephemeron_gc_kind;
 
-struct gc_ref gc_allocate_ephemeron(struct gc_mutator *mut) {
-  void *ret = GC_generic_malloc(gc_ephemeron_size(), ephemeron_gc_kind);
-  return gc_ref_from_heap_object(ret);
+struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {
+  return GC_generic_malloc(gc_ephemeron_size(), ephemeron_gc_kind);
 }
 
 unsigned gc_heap_ephemeron_trace_epoch(struct gc_heap *heap) {

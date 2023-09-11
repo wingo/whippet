@@ -445,8 +445,8 @@ void* gc_allocate_pointerless(struct gc_mutator *mut, size_t size) {
   return gc_allocate(mut, size);
 }
 
-struct gc_ref gc_allocate_ephemeron(struct gc_mutator *mut) {
-  return gc_ref_from_heap_object(gc_allocate(mut, gc_ephemeron_size()));
+struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {
+  return gc_allocate(mut, gc_ephemeron_size());
 }
 
 void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,

@@ -25,9 +25,9 @@ static Box* allocate_box(struct gc_mutator *mut) {
 }
 
 static struct gc_ephemeron* allocate_ephemeron(struct gc_mutator *mut) {
-  struct gc_ref ret = gc_allocate_ephemeron(mut);
-  *tag_word(ret) = tag_live(ALLOC_KIND_EPHEMERON);
-  return gc_ref_heap_object(ret);
+  struct gc_ephemeron *ret = gc_allocate_ephemeron(mut);
+  *tag_word(gc_ref_from_heap_object(ret)) = tag_live(ALLOC_KIND_EPHEMERON);
+  return ret;
 }
 
 /* Get the current time in microseconds */
