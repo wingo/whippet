@@ -50,13 +50,16 @@
 #define GC_INLINE_FREELIST_COUNT (256U / GC_INLINE_GRANULE_BYTES)
 
 struct gc_heap {
+  struct gc_heap *freelist; // see mark_heap
   pthread_mutex_t lock;
   int multithreaded;
+  struct gc_heap_roots *roots;
 };
 
 struct gc_mutator {
   void *freelists[GC_INLINE_FREELIST_COUNT];
   struct gc_heap *heap;
+  struct gc_mutator_roots *roots;
 };
 
 static inline size_t gc_inline_bytes_to_freelist_index(size_t bytes) {
@@ -119,6 +122,25 @@ void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
                              struct gc_edge edge, struct gc_ref new_val) {
 }
 
+struct bdw_mark_state {
+  struct GC_ms_entry *mark_stack_ptr;
+  struct GC_ms_entry *mark_stack_limit;
+};
+
+static void bdw_mark_edge(struct gc_edge edge, struct gc_heap *heap,
+                          void *visit_data) {
+  struct bdw_mark_state *state = visit_data;
+  uintptr_t addr = gc_ref_value(gc_edge_ref(edge));
+  state->mark_stack_ptr = GC_MARK_AND_PUSH ((void *) addr,
+                                            state->mark_stack_ptr,
+                                            state->mark_stack_limit,
+                                            NULL);
+}
+
+static int heap_gc_kind;
+static int mutator_gc_kind;
+static int ephemeron_gc_kind;
+
 // In BDW-GC, we can't hook into the mark phase to call
 // gc_trace_ephemerons_for_object, so the advertised ephemeron strategy
 // doesn't really work.  The primitives that we have are mark functions,
@@ -128,8 +150,6 @@ void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
 // stop-the-world phase.  It does not appear to be possible to implement
 // ephemerons using these primitives.  Instead fall back to weak-key
 // tables.
-
-static int ephemeron_gc_kind;
 
 struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {
   return GC_generic_malloc(gc_ephemeron_size(), ephemeron_gc_kind);
@@ -148,31 +168,17 @@ void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
   }
 }
 
-struct ephemeron_mark_state {
-  struct GC_ms_entry *mark_stack_ptr;
-  struct GC_ms_entry *mark_stack_limit;
-};
-
 int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
   // Pretend the key is traced, to avoid adding this ephemeron to the
   // global table.
   return 1;
-}
-static void trace_ephemeron_edge(struct gc_edge edge, struct gc_heap *heap,
-                                 void *visit_data) {
-  struct ephemeron_mark_state *state = visit_data;
-  uintptr_t addr = gc_ref_value(gc_edge_ref(edge));
-  state->mark_stack_ptr = GC_MARK_AND_PUSH ((void *) addr,
-                                            state->mark_stack_ptr,
-                                            state->mark_stack_limit,
-                                            NULL);
 }
 
 static struct GC_ms_entry *
 mark_ephemeron(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
                struct GC_ms_entry *mark_stack_limit, GC_word env) {
 
-  struct ephemeron_mark_state state = {
+  struct bdw_mark_state state = {
     mark_stack_ptr,
     mark_stack_limit,
   };
@@ -182,7 +188,7 @@ mark_ephemeron(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
   // If this ephemeron is on a freelist, its first word will be a
   // freelist link and everything else will be NULL.
   if (!gc_ref_value(gc_edge_ref(gc_ephemeron_value_edge(ephemeron)))) {
-    trace_ephemeron_edge(gc_edge(addr), NULL, &state);
+    bdw_mark_edge(gc_edge(addr), NULL, &state);
     return state.mark_stack_ptr;
   }
 
@@ -192,19 +198,74 @@ mark_ephemeron(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
     gc_ephemeron_mark_dead(ephemeron);
   }
 
-  gc_trace_ephemeron(ephemeron, trace_ephemeron_edge, NULL, &state);
+  gc_trace_ephemeron(ephemeron, bdw_mark_edge, NULL, &state);
+
+  return state.mark_stack_ptr;
+}
+
+static struct GC_ms_entry *
+mark_heap(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
+          struct GC_ms_entry *mark_stack_limit, GC_word env) {
+  struct bdw_mark_state state = {
+    mark_stack_ptr,
+    mark_stack_limit,
+  };
+  
+  struct gc_heap *heap = (struct gc_heap*) addr;
+
+  // If this heap is on a freelist... well probably we are screwed, BDW
+  // isn't really made to do multiple heaps in a process.  But still, in
+  // this case, the first word is the freelist and the rest are null.
+  if (heap->freelist) {
+    bdw_mark_edge(gc_edge(addr), NULL, &state);
+    return state.mark_stack_ptr;
+  }
+
+  if (heap->roots)
+    gc_trace_heap_roots(heap->roots, bdw_mark_edge, heap, &state);
+
+  return state.mark_stack_ptr;
+}
+
+static struct GC_ms_entry *
+mark_mutator(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
+             struct GC_ms_entry *mark_stack_limit, GC_word env) {
+  struct bdw_mark_state state = {
+    mark_stack_ptr,
+    mark_stack_limit,
+  };
+  
+  struct gc_mutator *mut = (struct gc_mutator*) addr;
+
+  // If this mutator is on a freelist, its first word will be a
+  // freelist link and everything else will be NULL.
+  if (!mut->heap) {
+    bdw_mark_edge(gc_edge(addr), NULL, &state);
+    return state.mark_stack_ptr;
+  }
+
+  for (int i; i < GC_INLINE_FREELIST_COUNT; i++)
+    state.mark_stack_ptr = GC_MARK_AND_PUSH (mut->freelists[i],
+                                             state.mark_stack_ptr,
+                                             state.mark_stack_limit,
+                                             NULL);
+
+  state.mark_stack_ptr = GC_MARK_AND_PUSH (mut->heap,
+                                           state.mark_stack_ptr,
+                                           state.mark_stack_limit,
+                                           NULL);
+
+  if (mut->roots)
+    gc_trace_mutator_roots(mut->roots, bdw_mark_edge, mut->heap, &state);
 
   return state.mark_stack_ptr;
 }
 
 static inline struct gc_mutator *add_mutator(struct gc_heap *heap) {
-  struct gc_mutator *ret = GC_malloc(sizeof(struct gc_mutator));
+  struct gc_mutator *ret =
+    GC_generic_malloc(sizeof(struct gc_mutator), mutator_gc_kind);
   ret->heap = heap;
   return ret;
-}
-
-static inline struct gc_heap *mutator_heap(struct gc_mutator *mutator) {
-  return mutator->heap;
 }
 
 struct gc_options {
@@ -281,17 +342,25 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   if (options->common.heap_size > current_heap_size)
     GC_expand_hp(options->common.heap_size - current_heap_size);
   GC_allow_register_threads();
-  *heap = GC_malloc(sizeof(struct gc_heap));
-  pthread_mutex_init(&(*heap)->lock, NULL);
-  *mutator = add_mutator(*heap);
 
   {
-    GC_word descriptor = GC_MAKE_PROC(GC_new_proc(mark_ephemeron), 0);
     int add_size_to_descriptor = 0;
     int clear_memory = 1;
-    ephemeron_gc_kind = GC_new_kind(GC_new_free_list(), descriptor,
+
+    heap_gc_kind = GC_new_kind(GC_new_free_list(),
+                               GC_MAKE_PROC(GC_new_proc(mark_heap), 0),
+                               add_size_to_descriptor, clear_memory);
+    mutator_gc_kind = GC_new_kind(GC_new_free_list(),
+                                  GC_MAKE_PROC(GC_new_proc(mark_mutator), 0),
+                                  add_size_to_descriptor, clear_memory);
+    ephemeron_gc_kind = GC_new_kind(GC_new_free_list(),
+                                    GC_MAKE_PROC(GC_new_proc(mark_ephemeron), 0),
                                     add_size_to_descriptor, clear_memory);
   }
+
+  *heap = GC_generic_malloc(sizeof(struct gc_heap), heap_gc_kind);
+  pthread_mutex_init(&(*heap)->lock, NULL);
+  *mutator = add_mutator(*heap);
 
   return 1;
 }
@@ -321,8 +390,10 @@ void* gc_call_without_gc(struct gc_mutator *mut,
 
 void gc_mutator_set_roots(struct gc_mutator *mut,
                           struct gc_mutator_roots *roots) {
+  mut->roots = roots;
 }
 void gc_heap_set_roots(struct gc_heap *heap, struct gc_heap_roots *roots) {
+  heap->roots = roots;
 }
 void gc_heap_set_extern_space(struct gc_heap *heap,
                               struct gc_extern_space *space) {
