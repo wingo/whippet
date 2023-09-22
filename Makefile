@@ -30,7 +30,7 @@ BUILD_CFLAGS = $(BUILD_CFLAGS_$(or $(BUILD),$(DEFAULT_BUILD)))
 CC       = gcc
 CFLAGS   = -Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(BUILD_CFLAGS)
 CPPFLAGS = -Iapi
-LDFLAGS  = -lpthread -flto
+LDFLAGS  = -lpthread -flto=auto
 DEPFLAGS = -MMD -MP -MF $(@:obj/%.o=.deps/%.d)
 COMPILE  = $(CC) $(CFLAGS) $(CPPFLAGS) $(DEPFLAGS) -o $@
 LINK     = $(CC) $(LDFLAGS) -o $@

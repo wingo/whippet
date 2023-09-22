@@ -16,7 +16,7 @@ GC_V        = $(v_$(V))
 GC_CC       = gcc
 GC_CFLAGS   = -Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(GC_BUILD_CFLAGS)
 GC_CPPFLAGS = -I$(WHIPPET)api
-GC_LDFLAGS  = -lpthread -flto
+GC_LDFLAGS  = -lpthread -flto=auto
 GC_DEPFLAGS = 
 GC_COMPILE  = $(GC_V)$(GC_CC) $(GC_CFLAGS) $(GC_CPPFLAGS) $(GC_DEPFLAGS) -o $@
 GC_LINK     = $(GC_V)$(GC_CC) $(GC_LDFLAGS) -o $@
