@@ -244,7 +244,7 @@ mark_mutator(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
     return state.mark_stack_ptr;
   }
 
-  for (int i; i < GC_INLINE_FREELIST_COUNT; i++)
+  for (int i = 0; i < GC_INLINE_FREELIST_COUNT; i++)
     state.mark_stack_ptr = GC_MARK_AND_PUSH (mut->freelists[i],
                                              state.mark_stack_ptr,
                                              state.mark_stack_limit,
