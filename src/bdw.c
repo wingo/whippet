@@ -52,14 +52,16 @@
 struct gc_heap {
   struct gc_heap *freelist; // see mark_heap
   pthread_mutex_t lock;
-  int multithreaded;
   struct gc_heap_roots *roots;
+  struct gc_mutator *mutators;
 };
 
 struct gc_mutator {
   void *freelists[GC_INLINE_FREELIST_COUNT];
   struct gc_heap *heap;
   struct gc_mutator_roots *roots;
+  struct gc_mutator *next; // with heap lock
+  struct gc_mutator **prev; // with heap lock
 };
 
 static inline size_t gc_inline_bytes_to_freelist_index(size_t bytes) {
@@ -224,6 +226,11 @@ mark_heap(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
   if (heap->roots)
     gc_trace_heap_roots(heap->roots, bdw_mark_edge, heap, &state);
 
+  state.mark_stack_ptr = GC_MARK_AND_PUSH (heap->mutators,
+                                           state.mark_stack_ptr,
+                                           state.mark_stack_limit,
+                                           NULL);
+
   return state.mark_stack_ptr;
 }
 
@@ -258,6 +265,11 @@ mark_mutator(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
   if (mut->roots)
     gc_trace_mutator_roots(mut->roots, bdw_mark_edge, mut->heap, &state);
 
+  state.mark_stack_ptr = GC_MARK_AND_PUSH (mut->next,
+                                           state.mark_stack_ptr,
+                                           state.mark_stack_limit,
+                                           NULL);
+
   return state.mark_stack_ptr;
 }
 
@@ -265,6 +277,15 @@ static inline struct gc_mutator *add_mutator(struct gc_heap *heap) {
   struct gc_mutator *ret =
     GC_generic_malloc(sizeof(struct gc_mutator), mutator_gc_kind);
   ret->heap = heap;
+
+  pthread_mutex_lock(&heap->lock);
+  ret->next = heap->mutators;
+  ret->prev = &heap->mutators;
+  if (ret->next)
+    ret->next->prev = &ret->next;
+  heap->mutators = ret;
+  pthread_mutex_unlock(&heap->lock);
+
   return ret;
 }
 
@@ -295,11 +316,22 @@ int gc_options_parse_and_set(struct gc_options *options, int option,
   return gc_common_options_parse_and_set(&options->common, option, value);
 }
 
+struct gc_pending_ephemerons *
+gc_heap_pending_ephemerons(struct gc_heap *heap) {
+  GC_CRASH();
+  return NULL;
+}
+
 int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
             struct gc_heap **heap, struct gc_mutator **mutator) {
+  // Root the heap, which will also cause all mutators to be marked.
+  static struct gc_heap *the_heap;
+
   GC_ASSERT_EQ(gc_allocator_small_granule_size(), GC_INLINE_GRANULE_BYTES);
   GC_ASSERT_EQ(gc_allocator_large_threshold(),
                GC_INLINE_FREELIST_COUNT * GC_INLINE_GRANULE_BYTES);
+
+  GC_ASSERT_EQ(the_heap, NULL);
 
   if (!options) options = gc_allocate_options();
 
@@ -362,23 +394,24 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   pthread_mutex_init(&(*heap)->lock, NULL);
   *mutator = add_mutator(*heap);
 
+  the_heap = *heap;
+
   return 1;
 }
 
 struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *stack_base,
                                       struct gc_heap *heap) {
-  pthread_mutex_lock(&heap->lock);
-  if (!heap->multithreaded) {
-    GC_allow_register_threads();
-    heap->multithreaded = 1;
-  }
-  pthread_mutex_unlock(&heap->lock);
-
   struct GC_stack_base base = { stack_base };
   GC_register_my_thread(&base);
   return add_mutator(heap);
 }
 void gc_finish_for_thread(struct gc_mutator *mut) {
+  pthread_mutex_lock(&mut->heap->lock);
+  *mut->prev = mut->next;
+  if (mut->next)
+    mut->next->prev = mut->prev;
+  pthread_mutex_unlock(&mut->heap->lock);
+
   GC_unregister_my_thread();
 }
 
