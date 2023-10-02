@@ -257,11 +257,6 @@ mark_mutator(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
                                              state.mark_stack_limit,
                                              NULL);
 
-  state.mark_stack_ptr = GC_MARK_AND_PUSH (mut->heap,
-                                           state.mark_stack_ptr,
-                                           state.mark_stack_limit,
-                                           NULL);
-
   if (mut->roots)
     gc_trace_mutator_roots(mut->roots, bdw_mark_edge, mut->heap, &state);
 
@@ -322,16 +317,16 @@ gc_heap_pending_ephemerons(struct gc_heap *heap) {
   return NULL;
 }
 
+struct gc_heap *__the_bdw_gc_heap;
+
 int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
             struct gc_heap **heap, struct gc_mutator **mutator) {
   // Root the heap, which will also cause all mutators to be marked.
-  static struct gc_heap *the_heap;
-
   GC_ASSERT_EQ(gc_allocator_small_granule_size(), GC_INLINE_GRANULE_BYTES);
   GC_ASSERT_EQ(gc_allocator_large_threshold(),
                GC_INLINE_FREELIST_COUNT * GC_INLINE_GRANULE_BYTES);
 
-  GC_ASSERT_EQ(the_heap, NULL);
+  GC_ASSERT_EQ(__the_bdw_gc_heap, NULL);
 
   if (!options) options = gc_allocate_options();
 
@@ -394,7 +389,11 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   pthread_mutex_init(&(*heap)->lock, NULL);
   *mutator = add_mutator(*heap);
 
-  the_heap = *heap;
+  __the_bdw_gc_heap = *heap;
+
+  // Sanity check.
+  if (!GC_is_visible (&__the_bdw_gc_heap))
+    abort ();
 
   return 1;
 }
