@@ -57,4 +57,8 @@ static inline size_t gc_write_barrier_card_size(void) {
   return 256;
 }
 
+static inline enum gc_safepoint_mechanism gc_safepoint_mechanism(void) {
+  return GC_SAFEPOINT_MECHANISM_COOPERATIVE;
+}
+
 #endif // WHIPPET_ATTRS_H

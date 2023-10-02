@@ -50,4 +50,8 @@ static inline size_t gc_write_barrier_card_size(void) {
   GC_CRASH();
 }
 
+static inline enum gc_safepoint_mechanism gc_safepoint_mechanism(void) {
+  return GC_SAFEPOINT_MECHANISM_SIGNAL;
+}
+
 #endif // BDW_ATTRS_H

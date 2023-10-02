@@ -37,4 +37,10 @@ static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) 
 static inline size_t gc_write_barrier_card_table_alignment(void) GC_ALWAYS_INLINE;
 static inline size_t gc_write_barrier_card_size(void) GC_ALWAYS_INLINE;
 
+enum gc_safepoint_mechanism {
+  GC_SAFEPOINT_MECHANISM_COOPERATIVE,
+  GC_SAFEPOINT_MECHANISM_SIGNAL,
+};
+static inline enum gc_safepoint_mechanism gc_safepoint_mechanism(void) GC_ALWAYS_INLINE;
+
 #endif // GC_ATTRS_H
