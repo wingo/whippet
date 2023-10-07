@@ -359,6 +359,8 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
       return 0;
   }
 
+  GC_set_all_interior_pointers (0);
+
   // Not part of 7.3, sigh.  Have to set an env var.
   // GC_set_markers_count(options->common.parallelism);
   char markers[21] = {0,}; // 21 bytes enough for 2**64 in decimal + NUL.
