@@ -15,7 +15,7 @@
 #include "gc-stack.h"
 
 static uintptr_t current_thread_hot_stack_addr(void) {
-#ifdef __GCC__
+#ifdef __GNUC__
   return (uintptr_t)__builtin_frame_address(0);
 #else
   uintptr_t local;
