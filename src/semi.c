@@ -578,10 +578,8 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
     fprintf(stderr, "adaptive heap size is currently unimplemented\n");
     return 0;
   }
-  if (options->common.parallelism != 1) {
-    fprintf(stderr, "parallelism unimplemented in semispace copying collector\n");
-    return 0;
-  }
+  if (options->common.parallelism != 1)
+    fprintf(stderr, "warning: parallelism unimplemented in semispace copying collector\n");
 
   *mut = calloc(1, sizeof(struct gc_mutator));
   if (!*mut) GC_CRASH();
