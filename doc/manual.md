@@ -401,10 +401,12 @@ just one heap.  A heap has one or more associated *mutators*.  A mutator
 is a thread-specific handle on the heap.  Allocating objects requires a
 mutator.
 
-The initial heap and mutator are created via `gc_init`, which takes two
-input parameters: the *options*, and a stack base address.  The options
-specify the initial heap size and so on.  `gc_init` returns the new heap
-as an out parameter, and also returns a mutator for the current thread.
+The initial heap and mutator are created via `gc_init`, which takes
+three logical input parameters: the *options*, a stack base address, and
+an *event listener*.  The options specify the initial heap size and so
+on.  The event listener is mostly for gathering statistics; see below
+for more.  `gc_init` returns the new heap as an out parameter, and also
+returns a mutator for the current thread.
 
 To make a new mutator for a new thread, use `gc_init_for_thread`.  When
 a thread is finished with its mutator, call `gc_finish_for_thread`.
@@ -522,9 +524,109 @@ BDW.
 Sometimes a program would like some information from the GC: how many
 bytes and objects have been allocated?  How much time has been spent in
 the GC?  How many times has GC run, and how many of those were minor
-collections?  What's the maximum pause time?  Stuff like that.  Whippet
-doesn't collect very much info right now, and this should probably
-change.  For the moment, all you get is `gc_print_stats`.
+collections?  What's the maximum pause time?  Stuff like that.
+
+Instead of collecting a fixed set of information, Whippet emits
+callbacks when the collector reaches specific states.  The embedder
+provides a *listener* for these events when initializing the collector.
+
+The listener interface is defined in
+[`gc-event-listener.h`](../api/gc-event-listener.h).  Whippet ships with
+two listener implementations, `GC_NULL_EVENT_LISTENER`, and
+`GC_BASIC_STATS`.  Most embedders will want their own listener, but
+starting with the basic stats listener is not a bad option:
+
+```
+#include "gc-api.h"
+#include "gc-basic-stats.h"
+#include <stdio.h>
+
+int main() {
+  struct gc_options *options = NULL;
+  struct gc_heap *heap;
+  struct gc_mutator *mut;
+  struct gc_basic_stats stats;
+  gc_init(options, NULL, &heap, &mut, GC_BASIC_STATS, &stats);
+  // ...
+  gc_basic_stats_finish(&stats);
+  gc_basic_stats_print(&stats, stdout);
+}
+```
+
+As you can see, `GC_BASIC_STATS` expands to a `struct gc_event_listener`
+definition.  We pass an associated pointer to a `struct gc_basic_stats`
+instance which will be passed to the listener at every event.
+
+The output of this program might be something like:
+
+```
+Completed 19 major collections (0 minor).
+654.597 ms total time (385.235 stopped).
+Heap size is 167.772 MB (max 167.772 MB); peak live data 55.925 MB.
+```
+
+There are currently three different sorts of events: heap events to
+track heap growth, collector events to time different parts of
+collection, and mutator events to indicate when specific mutators are
+stopped.
+
+There are three heap events:
+
+ * `init(void* data, size_t heap_size)`: Called during `gc_init`, to
+   allow the listener to initialize its associated state.
+ * `heap_resized(void* data, size_t new_size)`: Called if the heap grows
+   or shrinks.
+ * `live_data_size(void* data, size_t size)`: Called periodically when
+   the collector learns about live data size.
+ 
+The collection events form a kind of state machine, and are called in
+this order:
+
+ * `prepare_gc(void* data, int is_minor, int is_compacting)`: Called at
+   the beginning of GC.  Some mutators may still be active.
+ * `requesting_stop(void* data)`: Called when the collector asks
+   mutators to stop.
+ * `waiting_for_stop(void* data)`: Called when the collector has done
+   all the pre-stop work that it is able to and is just waiting on
+   mutators to stop.
+ * `mutators_stopped(void* data)`: Called when all mutators have
+   stopped; the trace phase follows.
+ * `roots_traced(void* data)`: Called when roots have been visited.
+ * `heap_traced(void* data)`: Called when the whole heap has been
+   traced.
+ * `ephemerons_traced(void* data)`: Called when the [ephemeron
+   fixpoint](https://wingolog.org/archives/2023/01/24/parallel-ephemeron-tracing)
+   has been reached.
+ * `restarting_mutators(void* data)`: Called right before the collector
+   restarts mutators.
+
+The collectors in Whippet will call all of these event handlers, but it
+may be that they are called conservatively: for example, the
+single-mutator, single-collector semi-space collector will never have to
+wait for mutators to stop.  It will still call the functions, though!
+
+Finally, there are the mutator events:
+ * `mutator_added(void* data) -> void*`: The only event handler that
+   returns a value, called when a new mutator is added.  The parameter
+   is the overall event listener data, and the result is
+   mutator-specific data.  The rest of the mutator events pass this
+   mutator-specific data instead.
+ * `mutator_cause_gc(void* mutator_data)`: Called when a mutator causes
+   GC, either via allocation or an explicit `gc_collect` call.
+ * `mutator_stopping(void* mutator_data)`: Called when a mutator has
+   received the signal to stop.  It may perform some marking work before
+   it stops.
+ * `mutator_stopped(void* mutator_data)`: Called when a mutator parks
+   itself.
+ * `mutator_restarted(void* mutator_data)`: Called when a mutator
+   restarts.
+ * `mutator_removed(void* mutator_data)`: Called when a mutator goes
+   away.
+
+Note that these events handlers shouldn't really do much.  In
+particular, they shouldn't call into the Whippet API, and they shouldn't
+even access GC-managed objects.  Event listeners are really about
+statistics and profiling and aren't a place to mutate the object graph.
 
 ### Ephemerons
 
