@@ -7,6 +7,7 @@
 
 #include "assert.h"
 #include "gc-api.h"
+#include "gc-basic-stats.h"
 #include "gc-ephemeron.h"
 #include "simple-roots-api.h"
 #include "ephemerons-types.h"
@@ -231,15 +232,14 @@ int main(int argc, char *argv[]) {
 
   struct gc_heap *heap;
   struct gc_mutator *mut;
-  if (!gc_init(options, NULL, &heap, &mut)) {
+  struct gc_basic_stats stats;
+  if (!gc_init(options, NULL, &heap, &mut, GC_BASIC_STATS, &stats)) {
     fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
             (size_t)heap_size);
     return 1;
   }
   struct thread main_thread = { mut, };
   gc_mutator_set_roots(mut, &main_thread.roots);
-
-  unsigned long test_start = current_time();
 
   pthread_t threads[MAX_THREAD_COUNT];
   // Run one of the threads in the main thread.
@@ -262,9 +262,9 @@ int main(int argc, char *argv[]) {
     }
   }
   
-  print_elapsed("test", test_start);
-
-  gc_print_stats(heap);
+  gc_basic_stats_finish(&stats);
+  fputs("\n", stdout);
+  gc_basic_stats_print(&stats, stdout);
 
   return 0;
 }

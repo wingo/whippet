@@ -45,12 +45,20 @@ struct gc_heap {
   int check_pending_ephemerons;
   const struct gc_options *options;
   struct gc_heap_roots *roots;
+  struct gc_event_listener event_listener;
+  void *event_listener_data;
 };
 // One mutator per space, can just store the heap in the mutator.
 struct gc_mutator {
   struct gc_heap heap;
   struct gc_mutator_roots *roots;
+  void *event_listener_data;
 };
+
+#define HEAP_EVENT(heap, event, ...)                                    \
+  (heap)->event_listener.event((heap)->event_listener_data, ##__VA_ARGS__)
+#define MUTATOR_EVENT(mut, event, ...)                                  \
+  (mut)->heap->event_listener.event((mut)->event_listener_data, ##__VA_ARGS__)
 
 static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
@@ -284,6 +292,8 @@ static size_t compute_new_heap_size(struct gc_heap *heap, size_t for_alloc) {
   live_bytes += large->live_pages_at_last_collection * semi->page_size;
   live_bytes += for_alloc;
 
+  HEAP_EVENT(heap, live_data_size, live_bytes);
+
   size_t new_heap_size = heap->size;
   switch (heap->options->common.heap_size_policy) {
     case GC_HEAP_SIZE_FIXED:
@@ -324,7 +334,10 @@ static void adjust_heap_size_and_limits(struct gc_heap *heap,
   new_region_size = min_size(new_region_size,
                              min_size(semi->to_space.mapped_size,
                                       semi->from_space.mapped_size));
+  size_t old_heap_size = heap->size;
   heap->size = new_region_size * 2;
+  if (heap->size != old_heap_size)
+    HEAP_EVENT(heap, heap_resized, heap->size);
   size_t stolen = align_up(semi->stolen_pages, 2) * semi->page_size;
   GC_ASSERT(new_region_size > stolen/2);
   size_t new_active_region_size = new_region_size - stolen/2;
@@ -339,6 +352,14 @@ static void adjust_heap_size_and_limits(struct gc_heap *heap,
 
 static void collect(struct gc_mutator *mut, size_t for_alloc) {
   struct gc_heap *heap = mutator_heap(mut);
+  int is_minor = 0;
+  int is_compacting = 1;
+  HEAP_EVENT(heap, prepare_gc, is_minor, is_compacting);
+
+  HEAP_EVENT(heap, requesting_stop);
+  HEAP_EVENT(heap, waiting_for_stop);
+  HEAP_EVENT(heap, mutators_stopped);
+
   struct semi_space *semi = heap_semi_space(heap);
   struct large_object_space *large = heap_large_object_space(heap);
   // fprintf(stderr, "start collect #%ld:\n", space->count);
@@ -352,20 +373,24 @@ static void collect(struct gc_mutator *mut, size_t for_alloc) {
     gc_trace_heap_roots(heap->roots, trace, heap, NULL);
   if (mut->roots)
     gc_trace_mutator_roots(mut->roots, trace, heap, NULL);
+  HEAP_EVENT(heap, roots_traced);
   // fprintf(stderr, "pushed %zd bytes in roots\n", space->hp - grey);
   while(grey < semi->hp)
     grey = scan(heap, gc_ref(grey));
+  HEAP_EVENT(heap, heap_traced);
   gc_scan_pending_ephemerons(heap->pending_ephemerons, heap, 0, 1);
   heap->check_pending_ephemerons = 1;
   while (gc_pop_resolved_ephemerons(heap, trace, NULL))
     while(grey < semi->hp)
       grey = scan(heap, gc_ref(grey));
+  HEAP_EVENT(heap, ephemerons_traced);
   large_object_space_finish_gc(large, 0);
   gc_extern_space_finish_gc(heap->extern_space, 0);
   semi_space_finish_gc(semi, large->live_pages_at_last_collection);
   gc_sweep_pending_ephemerons(heap->pending_ephemerons, 0, 1);
   adjust_heap_size_and_limits(heap, for_alloc);
 
+  HEAP_EVENT(heap, restarting_mutators);
   // fprintf(stderr, "%zd bytes copied\n", (space->size>>1)-(space->limit-space->hp));
 }
 
@@ -539,7 +564,9 @@ int gc_options_parse_and_set(struct gc_options *options, int option,
 }
 
 int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
-            struct gc_heap **heap, struct gc_mutator **mut) {
+            struct gc_heap **heap, struct gc_mutator **mut,
+            struct gc_event_listener event_listener,
+            void *event_listener_data) {
   GC_ASSERT_EQ(gc_allocator_allocation_pointer_offset(),
                offsetof(struct semi_space, hp));
   GC_ASSERT_EQ(gc_allocator_allocation_limit_offset(),
@@ -563,6 +590,10 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   if (!heap_init(*heap, options))
     return 0;
 
+  (*heap)->event_listener = event_listener;
+  (*heap)->event_listener_data = event_listener_data;
+  HEAP_EVENT(*heap, init, (*heap)->size);
+
   if (!semi_space_init(heap_semi_space(*heap), *heap))
     return 0;
   if (!large_object_space_init(heap_large_object_space(*heap), *heap))
@@ -570,6 +601,9 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   
   // Ignore stack base, as we are precise.
   (*mut)->roots = NULL;
+
+  (*mut)->event_listener_data =
+    event_listener.mutator_added(event_listener_data);
 
   return 1;
 }
@@ -599,9 +633,4 @@ void* gc_call_without_gc(struct gc_mutator *mut, void* (*f)(void*),
                          void *data) {
   // Can't be threads, then there won't be collection.
   return f(data);
-}
-
-void gc_print_stats(struct gc_heap *heap) {
-  printf("Completed %ld collections\n", heap->count);
-  printf("Heap size is %zd\n", heap->size);
 }

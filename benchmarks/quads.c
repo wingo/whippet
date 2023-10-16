@@ -5,6 +5,7 @@
 
 #include "assert.h"
 #include "gc-api.h"
+#include "gc-basic-stats.h"
 #include "simple-roots-api.h"
 #include "quads-types.h"
 #include "simple-allocator.h"
@@ -118,7 +119,6 @@ int main(int argc, char *argv[]) {
   size_t tree_bytes = nquads * sizeof(Quad);
   size_t heap_size = tree_bytes * multiplier;
 
-  unsigned long gc_start = current_time();
   printf("Allocating heap of %.3fGB (%.2f multiplier of live data).\n",
          heap_size / 1e9, multiplier);
 
@@ -134,7 +134,8 @@ int main(int argc, char *argv[]) {
 
   struct gc_heap *heap;
   struct gc_mutator *mut;
-  if (!gc_init(options, NULL, &heap, &mut)) {
+  struct gc_basic_stats stats;
+  if (!gc_init(options, NULL, &heap, &mut, GC_BASIC_STATS, &stats)) {
     fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
             heap_size);
     return 1;
@@ -169,9 +170,10 @@ int main(int argc, char *argv[]) {
     validate_tree(HANDLE_REF(quad), depth);
   }
   print_elapsed("allocation loop", garbage_start);
-  print_elapsed("quads test", gc_start);
 
-  gc_print_stats(heap);
+  gc_basic_stats_finish(&stats);
+  fputs("\n", stdout);
+  gc_basic_stats_print(&stats, stdout);
 
   POP_HANDLE(&t);
   return 0;

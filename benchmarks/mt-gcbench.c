@@ -46,6 +46,7 @@
 
 #include "assert.h"
 #include "gc-api.h"
+#include "gc-basic-stats.h"
 #include "mt-gcbench-types.h"
 #include "simple-roots-api.h"
 #include "simple-allocator.h"
@@ -362,7 +363,8 @@ int main(int argc, char *argv[]) {
 
   struct gc_heap *heap;
   struct gc_mutator *mut;
-  if (!gc_init(options, NULL, &heap, &mut)) {
+  struct gc_basic_stats stats;
+  if (!gc_init(options, NULL, &heap, &mut, GC_BASIC_STATS, &stats)) {
     fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
             heap_size);
     return 1;
@@ -373,8 +375,6 @@ int main(int argc, char *argv[]) {
   printf("Garbage Collector Test\n");
   printf(" Live storage will peak at %zd bytes.\n\n", heap_max_live);
 
-  unsigned long start = current_time();
-        
   pthread_t threads[MAX_THREAD_COUNT];
   // Run one of the threads in the main thread.
   for (size_t i = 1; i < nthreads; i++) {
@@ -396,6 +396,7 @@ int main(int argc, char *argv[]) {
     }
   }
   
-  printf("Completed in %.3f msec\n", elapsed_millis(start));
-  gc_print_stats(heap);
+  gc_basic_stats_finish(&stats);
+  fputs("\n", stdout);
+  gc_basic_stats_print(&stats, stdout);
 }

@@ -54,6 +54,8 @@ struct gc_heap {
   pthread_mutex_t lock;
   struct gc_heap_roots *roots;
   struct gc_mutator *mutators;
+  struct gc_event_listener event_listener;
+  void *event_listener_data;
 };
 
 struct gc_mutator {
@@ -62,7 +64,14 @@ struct gc_mutator {
   struct gc_mutator_roots *roots;
   struct gc_mutator *next; // with heap lock
   struct gc_mutator **prev; // with heap lock
+  void *event_listener_data;
 };
+
+struct gc_heap *__the_bdw_gc_heap;
+#define HEAP_EVENT(event, ...)                                    \
+  __the_bdw_gc_heap->event_listener.event(__the_bdw_gc_heap->event_listener_data, ##__VA_ARGS__)
+#define MUTATOR_EVENT(mut, event, ...)                                  \
+  __the_bdw_gc_heap->event_listener.event(mut->event_listener_data, ##__VA_ARGS__)
 
 static inline size_t gc_inline_bytes_to_freelist_index(size_t bytes) {
   return (bytes - 1U) / GC_INLINE_GRANULE_BYTES;
@@ -272,6 +281,7 @@ static inline struct gc_mutator *add_mutator(struct gc_heap *heap) {
   struct gc_mutator *ret =
     GC_generic_malloc(sizeof(struct gc_mutator), mutator_gc_kind);
   ret->heap = heap;
+  ret->event_listener_data = HEAP_EVENT(mutator_added);
 
   pthread_mutex_lock(&heap->lock);
   ret->next = heap->mutators;
@@ -317,10 +327,56 @@ gc_heap_pending_ephemerons(struct gc_heap *heap) {
   return NULL;
 }
 
-struct gc_heap *__the_bdw_gc_heap;
+static void on_collection_event(GC_EventType event) {
+  switch (event) {
+  case GC_EVENT_START: {
+    int is_minor = 0;
+    int is_compacting = 0;
+    HEAP_EVENT(prepare_gc, is_minor, is_compacting);
+    HEAP_EVENT(requesting_stop);
+    HEAP_EVENT(waiting_for_stop);
+    break;
+  }
+  case GC_EVENT_MARK_START:
+    HEAP_EVENT(mutators_stopped);
+    break;
+  case GC_EVENT_MARK_END:
+    HEAP_EVENT(roots_traced);
+    HEAP_EVENT(heap_traced);
+    break;
+  case GC_EVENT_RECLAIM_START:
+    break;
+  case GC_EVENT_RECLAIM_END:
+    // Sloppily attribute finalizers and eager reclamation to
+    // ephemerons.
+    HEAP_EVENT(ephemerons_traced);
+    HEAP_EVENT(live_data_size, GC_get_heap_size() - GC_get_free_bytes());
+    break;
+  case GC_EVENT_END:
+    HEAP_EVENT(restarting_mutators);
+    break;
+  case GC_EVENT_PRE_START_WORLD:
+  case GC_EVENT_POST_STOP_WORLD:
+    // Can't rely on these, as they are only fired when threads are
+    // enabled.
+    break;
+  case GC_EVENT_THREAD_SUSPENDED:
+  case GC_EVENT_THREAD_UNSUSPENDED:
+    // No nice way to map back to the mutator.
+    break;
+  default:
+    break;
+  }
+}
+
+static void on_heap_resize(GC_word size) {
+  HEAP_EVENT(heap_resized, size);
+}
 
 int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
-            struct gc_heap **heap, struct gc_mutator **mutator) {
+            struct gc_heap **heap, struct gc_mutator **mutator,
+            struct gc_event_listener event_listener,
+            void *event_listener_data) {
   // Root the heap, which will also cause all mutators to be marked.
   GC_ASSERT_EQ(gc_allocator_small_granule_size(), GC_INLINE_GRANULE_BYTES);
   GC_ASSERT_EQ(gc_allocator_large_threshold(),
@@ -389,9 +445,16 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
 
   *heap = GC_generic_malloc(sizeof(struct gc_heap), heap_gc_kind);
   pthread_mutex_init(&(*heap)->lock, NULL);
-  *mutator = add_mutator(*heap);
+
+  (*heap)->event_listener = event_listener;
+  (*heap)->event_listener_data = event_listener_data;
 
   __the_bdw_gc_heap = *heap;
+  HEAP_EVENT(init, GC_get_heap_size());
+  GC_set_on_collection_event(on_collection_event);
+  GC_set_on_heap_resize(on_heap_resize);
+
+  *mutator = add_mutator(*heap);
 
   // Sanity check.
   if (!GC_is_visible (&__the_bdw_gc_heap))
@@ -408,6 +471,7 @@ struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *stack_base,
 }
 void gc_finish_for_thread(struct gc_mutator *mut) {
   pthread_mutex_lock(&mut->heap->lock);
+  MUTATOR_EVENT(mut, mutator_removed);
   *mut->prev = mut->next;
   if (mut->next)
     mut->next->prev = mut->prev;
@@ -431,9 +495,4 @@ void gc_heap_set_roots(struct gc_heap *heap, struct gc_heap_roots *roots) {
 }
 void gc_heap_set_extern_space(struct gc_heap *heap,
                               struct gc_extern_space *space) {
-}
-
-void gc_print_stats(struct gc_heap *heap) {
-  printf("Completed %ld collections\n", (long)GC_get_gc_no());
-  printf("Heap size is %ld\n", (long)GC_get_heap_size());
 }

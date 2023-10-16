@@ -5,6 +5,7 @@
 #include "gc-assert.h"
 #include "gc-attrs.h"
 #include "gc-edge.h"
+#include "gc-event-listener.h"
 #include "gc-inline.h"
 #include "gc-options.h"
 #include "gc-ref.h"
@@ -24,7 +25,9 @@ GC_API_ void* gc_call_with_stack_addr(void* (*f)(struct gc_stack_addr *,
 
 GC_API_ int gc_init(const struct gc_options *options,
                     struct gc_stack_addr *base, struct gc_heap **heap,
-                    struct gc_mutator **mutator);
+                    struct gc_mutator **mutator,
+                    struct gc_event_listener event_listener,
+                    void *event_listener_data);
 
 struct gc_mutator_roots;
 GC_API_ void gc_mutator_set_roots(struct gc_mutator *mut,
@@ -43,7 +46,6 @@ GC_API_ struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *base,
 GC_API_ void gc_finish_for_thread(struct gc_mutator *mut);
 GC_API_ void* gc_call_without_gc(struct gc_mutator *mut, void* (*f)(void*),
                                  void *data) GC_NEVER_INLINE;
-GC_API_ void gc_print_stats(struct gc_heap *heap);
 
 GC_API_ void gc_collect(struct gc_mutator *mut);
 

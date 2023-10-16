@@ -1,0 +1,130 @@
+#ifndef GC_BASIC_STATS_H
+#define GC_BASIC_STATS_H
+
+#include "gc-event-listener.h"
+
+#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/time.h>
+
+struct gc_basic_stats {
+  uint64_t major_collection_count;
+  uint64_t minor_collection_count;
+  uint64_t last_time_usec;
+  uint64_t elapsed_mutator_usec;
+  uint64_t elapsed_collector_usec;
+  size_t heap_size;
+  size_t max_heap_size;
+  size_t max_live_data_size;
+};
+
+static inline uint64_t gc_basic_stats_now(void) {
+  struct timeval tv;
+  if (gettimeofday(&tv, NULL) != 0) GC_CRASH();
+  uint64_t ret = tv.tv_sec;
+  ret *= 1000 * 1000;
+  ret += tv.tv_usec;
+  return ret;
+}
+
+static inline void gc_basic_stats_init(void *data, size_t heap_size) {
+  struct gc_basic_stats *stats = data;
+  memset(stats, 0, sizeof(*stats));
+  stats->last_time_usec = gc_basic_stats_now();
+  stats->heap_size = stats->max_heap_size = heap_size;
+}
+
+static inline void gc_basic_stats_prepare_gc(void *data,
+                                             int is_minor,
+                                             int is_compacting) {
+  struct gc_basic_stats *stats = data;
+  if (is_minor)
+    stats->minor_collection_count++;
+  else
+    stats->major_collection_count++;
+  uint64_t now = gc_basic_stats_now();
+  stats->elapsed_mutator_usec += now - stats->last_time_usec;
+  stats->last_time_usec = now;
+}
+
+static inline void gc_basic_stats_requesting_stop(void *data) {}
+static inline void gc_basic_stats_waiting_for_stop(void *data) {}
+static inline void gc_basic_stats_mutators_stopped(void *data) {}
+static inline void gc_basic_stats_roots_traced(void *data) {}
+static inline void gc_basic_stats_heap_traced(void *data) {}
+static inline void gc_basic_stats_ephemerons_traced(void *data) {}
+
+static inline void gc_basic_stats_restarting_mutators(void *data) {
+  struct gc_basic_stats *stats = data;
+  uint64_t now = gc_basic_stats_now();
+  stats->elapsed_collector_usec += now - stats->last_time_usec;
+  stats->last_time_usec = now;
+}
+
+static inline void* gc_basic_stats_mutator_added(void *data) {
+  return NULL;
+}
+static inline void gc_basic_stats_mutator_cause_gc(void *mutator_data) {}
+static inline void gc_basic_stats_mutator_stopping(void *mutator_data) {}
+static inline void gc_basic_stats_mutator_stopped(void *mutator_data) {}
+static inline void gc_basic_stats_mutator_restarted(void *mutator_data) {}
+static inline void gc_basic_stats_mutator_removed(void *mutator_data) {}
+
+static inline void gc_basic_stats_heap_resized(void *data, size_t size) {
+  struct gc_basic_stats *stats = data;
+  stats->heap_size = size;
+  if (size > stats->max_heap_size)
+    stats->max_heap_size = size;
+}
+
+static inline void gc_basic_stats_live_data_size(void *data, size_t size) {
+  struct gc_basic_stats *stats = data;
+  if (size > stats->max_live_data_size)
+    stats->max_live_data_size = size;
+}
+
+#define GC_BASIC_STATS                                                  \
+  ((struct gc_event_listener) {                                         \
+    gc_basic_stats_init,                                                \
+    gc_basic_stats_prepare_gc,                                          \
+    gc_basic_stats_requesting_stop,                                     \
+    gc_basic_stats_waiting_for_stop,                                    \
+    gc_basic_stats_mutators_stopped,                                    \
+    gc_basic_stats_roots_traced,                                        \
+    gc_basic_stats_heap_traced,                                         \
+    gc_basic_stats_ephemerons_traced,                                   \
+    gc_basic_stats_restarting_mutators,                                 \
+    gc_basic_stats_mutator_added,                                       \
+    gc_basic_stats_mutator_cause_gc,                                    \
+    gc_basic_stats_mutator_stopping,                                    \
+    gc_basic_stats_mutator_stopped,                                     \
+    gc_basic_stats_mutator_restarted,                                   \
+    gc_basic_stats_mutator_removed,                                     \
+    gc_basic_stats_heap_resized,                                        \
+    gc_basic_stats_live_data_size,                                      \
+  })
+
+static inline void gc_basic_stats_finish(struct gc_basic_stats *stats) {
+  uint64_t now = gc_basic_stats_now();
+  stats->elapsed_mutator_usec += stats->last_time_usec - now;
+  stats->last_time_usec = now;
+}
+
+static inline void gc_basic_stats_print(struct gc_basic_stats *stats, FILE *f) {
+  fprintf(f, "Completed %" PRIu64 " major collections (%" PRIu64 " minor).\n",
+          stats->major_collection_count, stats->minor_collection_count);
+  uint64_t stopped = stats->elapsed_collector_usec;
+  uint64_t elapsed = stats->elapsed_mutator_usec + stopped;
+  uint64_t ms = 1000; // per usec
+  fprintf(f, "%" PRIu64 ".%.3" PRIu64 " ms total time "
+          "(%" PRIu64 ".%.3" PRIu64 " stopped).\n",
+          elapsed / ms, elapsed % ms, stopped / ms, stopped % ms);
+  double MB = 1e6;
+  fprintf(f, "Heap size is %.3f MB (max %.3f MB); peak live data %.3f MB.\n",
+          stats->heap_size / MB, stats->max_heap_size / MB,
+          stats->max_live_data_size / MB);
+}
+
+#endif // GC_BASIC_STATS_H_

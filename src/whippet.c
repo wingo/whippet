@@ -328,7 +328,14 @@ struct gc_heap {
   double minimum_major_gc_yield_threshold;
   double pending_ephemerons_size_factor;
   double pending_ephemerons_size_slop;
+  struct gc_event_listener event_listener;
+  void *event_listener_data;
 };
+
+#define HEAP_EVENT(heap, event, ...)                                    \
+  (heap)->event_listener.event((heap)->event_listener_data, ##__VA_ARGS__)
+#define MUTATOR_EVENT(mut, event, ...)                                  \
+  (mut)->heap->event_listener.event((mut)->event_listener_data, ##__VA_ARGS__)
 
 struct gc_mutator_mark_buf {
   size_t size;
@@ -345,6 +352,7 @@ struct gc_mutator {
   struct gc_stack stack;
   struct gc_mutator_roots *roots;
   struct gc_mutator_mark_buf mark_buf;
+  void *event_listener_data;
   // Three uses for this in-object linked-list pointer:
   //  - inactive (blocked in syscall) mutators
   //  - grey objects when stopping active mutators for mark-in-place
@@ -855,6 +863,8 @@ static inline void heap_unlock(struct gc_heap *heap) {
 
 static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->heap = heap;
+  mut->event_listener_data =
+    heap->event_listener.mutator_added(heap->event_listener_data);
   heap_lock(heap);
   // We have no roots.  If there is a GC currently in progress, we have
   // nothing to add.  Just wait until it's done.
@@ -868,6 +878,7 @@ static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
 }
 
 static void remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
+  MUTATOR_EVENT(mut, mutator_removed);
   mut->heap = NULL;
   heap_lock(heap);
   heap->active_mutator_count--;
@@ -1416,10 +1427,13 @@ static void trace_generational_roots(struct gc_heap *heap) {
   }
 }
 
-static void pause_mutator_for_collection(struct gc_heap *heap) GC_NEVER_INLINE;
-static void pause_mutator_for_collection(struct gc_heap *heap) {
+static void pause_mutator_for_collection(struct gc_heap *heap,
+                                         struct gc_mutator *mut) GC_NEVER_INLINE;
+static void pause_mutator_for_collection(struct gc_heap *heap,
+                                         struct gc_mutator *mut) {
   GC_ASSERT(mutators_are_stopping(heap));
   GC_ASSERT(heap->active_mutator_count);
+  MUTATOR_EVENT(mut, mutator_stopped);
   heap->active_mutator_count--;
   if (heap->active_mutator_count == 0)
     pthread_cond_signal(&heap->collector_cond);
@@ -1436,6 +1450,7 @@ static void pause_mutator_for_collection(struct gc_heap *heap) {
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
   while (mutators_are_stopping(heap) && heap->count == epoch);
 
+  MUTATOR_EVENT(mut, mutator_restarted);
   heap->active_mutator_count++;
 }
 
@@ -1443,6 +1458,7 @@ static void pause_mutator_for_collection_with_lock(struct gc_mutator *mut) GC_NE
 static void pause_mutator_for_collection_with_lock(struct gc_mutator *mut) {
   struct gc_heap *heap = mutator_heap(mut);
   GC_ASSERT(mutators_are_stopping(heap));
+  MUTATOR_EVENT(mut, mutator_stopping);
   finish_sweeping_in_block(mut);
   gc_stack_capture_hot(&mut->stack);
   if (mutator_should_mark_while_stopping(mut))
@@ -1450,20 +1466,21 @@ static void pause_mutator_for_collection_with_lock(struct gc_mutator *mut) {
     trace_mutator_roots_with_lock(mut);
   else
     enqueue_mutator_for_tracing(mut);
-  pause_mutator_for_collection(heap);
+  pause_mutator_for_collection(heap, mut);
 }
 
 static void pause_mutator_for_collection_without_lock(struct gc_mutator *mut) GC_NEVER_INLINE;
 static void pause_mutator_for_collection_without_lock(struct gc_mutator *mut) {
   struct gc_heap *heap = mutator_heap(mut);
   GC_ASSERT(mutators_are_stopping(heap));
+  MUTATOR_EVENT(mut, mutator_stopping);
   finish_sweeping(mut);
   gc_stack_capture_hot(&mut->stack);
   if (mutator_should_mark_while_stopping(mut))
     trace_stopping_mutator_roots(mut);
   enqueue_mutator_for_tracing(mut);
   heap_lock(heap);
-  pause_mutator_for_collection(heap);
+  pause_mutator_for_collection(heap, mut);
   heap_unlock(heap);
   release_stopping_mutator_roots(mut);
 }
@@ -1816,28 +1833,38 @@ static void collect(struct gc_mutator *mut) {
     DEBUG("grew heap instead of collecting #%ld:\n", heap->count);
     return;
   }
+  MUTATOR_EVENT(mut, mutator_cause_gc);
   DEBUG("start collect #%ld:\n", heap->count);
   enum gc_kind gc_kind = determine_collection_kind(heap);
+  HEAP_EVENT(heap, prepare_gc, gc_kind & GC_KIND_FLAG_MINOR,
+             gc_kind & GC_KIND_FLAG_EVACUATING);
   update_mark_patterns(space, !(gc_kind & GC_KIND_FLAG_MINOR));
   large_object_space_start_gc(lospace, gc_kind & GC_KIND_FLAG_MINOR);
   gc_extern_space_start_gc(exspace, gc_kind & GC_KIND_FLAG_MINOR);
   resolve_ephemerons_lazily(heap);
   tracer_prepare(heap);
+  HEAP_EVENT(heap, requesting_stop);
   request_mutators_to_stop(heap);
   trace_mutator_roots_with_lock_before_stop(mut);
   finish_sweeping(mut);
+  HEAP_EVENT(heap, waiting_for_stop);
   wait_for_mutators_to_stop(heap);
+  HEAP_EVENT(heap, mutators_stopped);
   double yield = heap_last_gc_yield(heap);
   double fragmentation = heap_fragmentation(heap);
+  HEAP_EVENT(heap, live_data_size, heap->size * (1 - yield));
   fprintf(stderr, "last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
   detect_out_of_memory(heap);
   trace_pinned_roots_after_stop(heap);
   prepare_for_evacuation(heap);
   trace_roots_after_stop(heap);
+  HEAP_EVENT(heap, roots_traced);
   tracer_trace(heap);
+  HEAP_EVENT(heap, heap_traced);
   resolve_ephemerons_eagerly(heap);
   while (enqueue_resolved_ephemerons(heap))
     tracer_trace(heap);
+  HEAP_EVENT(heap, ephemerons_traced);
   sweep_ephemerons(heap);
   tracer_release(heap);
   mark_space_finish_gc(space, gc_kind);
@@ -1848,6 +1875,7 @@ static void collect(struct gc_mutator *mut) {
   if (heap->last_collection_was_minor)
     heap->minor_count++;
   heap_reset_large_object_pages(heap, lospace->live_pages_at_last_collection);
+  HEAP_EVENT(heap, restarting_mutators);
   allow_mutators_to_continue(heap);
   DEBUG("collect done\n");
 }
@@ -2345,7 +2373,9 @@ static int mark_space_init(struct mark_space *space, struct gc_heap *heap) {
 }
 
 int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
-            struct gc_heap **heap, struct gc_mutator **mut) {
+            struct gc_heap **heap, struct gc_mutator **mut,
+            struct gc_event_listener event_listener,
+            void *event_listener_data) {
   GC_ASSERT_EQ(gc_allocator_small_granule_size(), GRANULE_SIZE);
   GC_ASSERT_EQ(gc_allocator_large_threshold(), LARGE_OBJECT_THRESHOLD);
   GC_ASSERT_EQ(gc_allocator_allocation_pointer_offset(),
@@ -2371,6 +2401,10 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
 
   if (!heap_init(*heap, options))
     GC_CRASH();
+
+  (*heap)->event_listener = event_listener;
+  (*heap)->event_listener_data = event_listener_data;
+  HEAP_EVENT(*heap, init, (*heap)->size);
 
   struct mark_space *space = heap_mark_space(*heap);
   if (!mark_space_init(space, *heap)) {
@@ -2438,11 +2472,4 @@ void* gc_call_without_gc(struct gc_mutator *mut,
   void *ret = f(data);
   reactivate_mutator(heap, mut);
   return ret;
-}
-
-void gc_print_stats(struct gc_heap *heap) {
-  printf("Completed %ld collections (%ld major)\n",
-         heap->count, heap->count - heap->minor_count);
-  printf("Heap size with overhead is %zd (%zu slabs)\n",
-         heap->size, heap_mark_space(heap)->nslabs);
 }
