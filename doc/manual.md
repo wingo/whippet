@@ -532,9 +532,11 @@ provides a *listener* for these events when initializing the collector.
 
 The listener interface is defined in
 [`gc-event-listener.h`](../api/gc-event-listener.h).  Whippet ships with
-two listener implementations, `GC_NULL_EVENT_LISTENER`, and
-`GC_BASIC_STATS`.  Most embedders will want their own listener, but
-starting with the basic stats listener is not a bad option:
+two listener implementations,
+[`GC_NULL_EVENT_LISTENER`](../api/gc-null-event-listener.h), and
+[`GC_BASIC_STATS`](../api/gc-basic-stats.h).  Most embedders will want
+their own listener, but starting with the basic stats listener is not a
+bad option:
 
 ```
 #include "gc-api.h"
