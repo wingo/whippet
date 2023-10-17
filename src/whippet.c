@@ -2386,8 +2386,8 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(), METADATA_BYTE_YOUNG);
   GC_ASSERT_EQ(gc_allocator_alloc_table_end_pattern(), METADATA_BYTE_END);
   if (GC_GENERATIONAL) {
-    GC_ASSERT_EQ(gc_small_write_barrier_card_table_alignment(), SLAB_SIZE);
-    GC_ASSERT_EQ(gc_small_write_barrier_card_size(),
+    GC_ASSERT_EQ(gc_write_barrier_card_table_alignment(), SLAB_SIZE);
+    GC_ASSERT_EQ(gc_write_barrier_card_size(),
                  BLOCK_SIZE / REMSET_BYTES_PER_BLOCK);
   }
 

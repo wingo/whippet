@@ -179,12 +179,6 @@ static inline void* gc_allocate(struct gc_mutator *mut, size_t size) {
 // FIXME: remove :P
 GC_API_ void* gc_allocate_pointerless(struct gc_mutator *mut, size_t bytes);
 
-static inline void gc_small_write_barrier(struct gc_ref obj, struct gc_edge edge,
-                                          struct gc_ref new_val) GC_ALWAYS_INLINE;
-static inline void gc_small_write_barrier(struct gc_ref obj, struct gc_edge edge,
-                                          struct gc_ref new_val) {
-}
-
 GC_API_ void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
                                      struct gc_edge edge, struct gc_ref new_val) GC_NEVER_INLINE;
 
