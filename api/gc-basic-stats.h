@@ -37,9 +37,10 @@ static inline void gc_basic_stats_init(void *data, size_t heap_size) {
 }
 
 static inline void gc_basic_stats_prepare_gc(void *data,
-                                             enum gc_collection_kind kind) {
+                                             int is_minor,
+                                             int is_compacting) {
   struct gc_basic_stats *stats = data;
-  if (kind == GC_COLLECTION_MINOR)
+  if (is_minor)
     stats->minor_collection_count++;
   else
     stats->major_collection_count++;
