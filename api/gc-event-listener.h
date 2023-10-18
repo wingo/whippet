@@ -1,9 +1,11 @@
 #ifndef GC_EVENT_LISTENER_H
 #define GC_EVENT_LISTENER_H
 
+#include "gc-collection-kind.h"
+
 struct gc_event_listener {
   void (*init)(void *data, size_t heap_size);
-  void (*prepare_gc)(void *data, int is_minor, int is_compacting);
+  void (*prepare_gc)(void *data, enum gc_collection_kind kind);
   void (*requesting_stop)(void *data);
   void (*waiting_for_stop)(void *data);
   void (*mutators_stopped)(void *data);

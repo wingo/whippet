@@ -5,8 +5,7 @@
 
 static inline void gc_null_event_listener_init(void *data, size_t size) {}
 static inline void gc_null_event_listener_prepare_gc(void *data,
-                                               int is_minor,
-                                               int is_compacting) {}
+                                                     enum gc_collection_kind) {}
 static inline void gc_null_event_listener_requesting_stop(void *data) {}
 static inline void gc_null_event_listener_waiting_for_stop(void *data) {}
 static inline void gc_null_event_listener_mutators_stopped(void *data) {}
