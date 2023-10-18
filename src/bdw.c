@@ -125,8 +125,22 @@ void* gc_allocate_pointerless(struct gc_mutator *mut,
   return GC_malloc_atomic(size);
 }
 
-void gc_collect(struct gc_mutator *mut) {
-  GC_gcollect();
+void gc_collect(struct gc_mutator *mut,
+                enum gc_collection_kind requested_kind) {
+  switch (requested_kind) {
+  case GC_COLLECTION_MINOR:
+    GC_collect_a_little();
+    break;
+  case GC_COLLECTION_ANY:
+  case GC_COLLECTION_MAJOR:
+    GC_gcollect();
+    break;
+  case GC_COLLECTION_COMPACTING:
+    GC_gcollect_and_unmap();
+    break;
+  default:
+    GC_CRASH();
+  }
 }
 
 void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
@@ -330,9 +344,7 @@ gc_heap_pending_ephemerons(struct gc_heap *heap) {
 static void on_collection_event(GC_EventType event) {
   switch (event) {
   case GC_EVENT_START: {
-    int is_minor = 0;
-    int is_compacting = 0;
-    HEAP_EVENT(prepare_gc, is_minor, is_compacting);
+    HEAP_EVENT(prepare_gc, GC_COLLECTION_MAJOR);
     HEAP_EVENT(requesting_stop);
     HEAP_EVENT(waiting_for_stop);
     break;

@@ -288,15 +288,6 @@ struct mark_space {
   uintptr_t fragmentation_granules_since_last_collection; // atomically
 };
 
-enum gc_kind {
-  GC_KIND_FLAG_MINOR = GC_GENERATIONAL, // 0 or 1
-  GC_KIND_FLAG_EVACUATING = 0x2,
-  GC_KIND_MINOR_IN_PLACE = GC_KIND_FLAG_MINOR,
-  GC_KIND_MINOR_EVACUATING = GC_KIND_FLAG_MINOR | GC_KIND_FLAG_EVACUATING,
-  GC_KIND_MAJOR_IN_PLACE = 0,
-  GC_KIND_MAJOR_EVACUATING = GC_KIND_FLAG_EVACUATING,
-};
-
 struct gc_heap {
   struct mark_space mark_space;
   struct large_object_space large_object_space;
@@ -310,14 +301,13 @@ struct gc_heap {
   int mark_while_stopping;
   int check_pending_ephemerons;
   struct gc_pending_ephemerons *pending_ephemerons;
-  enum gc_kind gc_kind;
+  enum gc_collection_kind gc_kind;
   int multithreaded;
   size_t active_mutator_count;
   size_t mutator_count;
   struct gc_heap_roots *roots;
   struct gc_mutator *mutator_trace_list;
   long count;
-  long minor_count;
   uint8_t last_collection_was_minor;
   struct gc_mutator *deactivated_mutators;
   struct tracer tracer;
@@ -380,7 +370,8 @@ static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
 }
 
-static void collect(struct gc_mutator *mut) GC_NEVER_INLINE;
+static void collect(struct gc_mutator *mut,
+                    enum gc_collection_kind requested_kind) GC_NEVER_INLINE;
 
 static inline uint64_t load_eight_aligned_bytes(uint8_t *mark) {
   GC_ASSERT(((uintptr_t)mark & 7) == 0);
@@ -1416,7 +1407,7 @@ void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
 
 static void trace_generational_roots(struct gc_heap *heap) {
   // TODO: Add lospace nursery.
-  if (atomic_load(&heap->gc_kind) & GC_KIND_FLAG_MINOR) {
+  if (atomic_load(&heap->gc_kind) == GC_COLLECTION_MINOR) {
     mark_space_trace_remembered_set(heap_mark_space(heap), heap);
     large_object_space_trace_remembered_set(heap_large_object_space(heap),
                                             enqueue_generational_root,
@@ -1427,14 +1418,16 @@ static void trace_generational_roots(struct gc_heap *heap) {
   }
 }
 
-static void pause_mutator_for_collection(struct gc_heap *heap,
-                                         struct gc_mutator *mut) GC_NEVER_INLINE;
-static void pause_mutator_for_collection(struct gc_heap *heap,
-                                         struct gc_mutator *mut) {
+static enum gc_collection_kind
+pause_mutator_for_collection(struct gc_heap *heap,
+                             struct gc_mutator *mut) GC_NEVER_INLINE;
+static enum gc_collection_kind
+pause_mutator_for_collection(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mutators_are_stopping(heap));
   GC_ASSERT(heap->active_mutator_count);
   MUTATOR_EVENT(mut, mutator_stopped);
   heap->active_mutator_count--;
+  enum gc_collection_kind collection_kind = heap->gc_kind;
   if (heap->active_mutator_count == 0)
     pthread_cond_signal(&heap->collector_cond);
 
@@ -1452,10 +1445,13 @@ static void pause_mutator_for_collection(struct gc_heap *heap,
 
   MUTATOR_EVENT(mut, mutator_restarted);
   heap->active_mutator_count++;
+  return collection_kind;
 }
 
-static void pause_mutator_for_collection_with_lock(struct gc_mutator *mut) GC_NEVER_INLINE;
-static void pause_mutator_for_collection_with_lock(struct gc_mutator *mut) {
+static enum gc_collection_kind
+pause_mutator_for_collection_with_lock(struct gc_mutator *mut) GC_NEVER_INLINE;
+static enum gc_collection_kind
+pause_mutator_for_collection_with_lock(struct gc_mutator *mut) {
   struct gc_heap *heap = mutator_heap(mut);
   GC_ASSERT(mutators_are_stopping(heap));
   MUTATOR_EVENT(mut, mutator_stopping);
@@ -1466,7 +1462,7 @@ static void pause_mutator_for_collection_with_lock(struct gc_mutator *mut) {
     trace_mutator_roots_with_lock(mut);
   else
     enqueue_mutator_for_tracing(mut);
-  pause_mutator_for_collection(heap, mut);
+  return pause_mutator_for_collection(heap, mut);
 }
 
 static void pause_mutator_for_collection_without_lock(struct gc_mutator *mut) GC_NEVER_INLINE;
@@ -1580,25 +1576,32 @@ static double clamp_major_gc_yield_threshold(struct gc_heap *heap,
   return threshold;
 }
 
-static enum gc_kind determine_collection_kind(struct gc_heap *heap) {
+static enum gc_collection_kind
+determine_collection_kind(struct gc_heap *heap,
+                          enum gc_collection_kind requested) {
   struct mark_space *mark_space = heap_mark_space(heap);
-  enum gc_kind previous_gc_kind = atomic_load(&heap->gc_kind);
-  enum gc_kind gc_kind;
+  enum gc_collection_kind previous_gc_kind = atomic_load(&heap->gc_kind);
+  enum gc_collection_kind gc_kind;
   int mark_while_stopping = 1;
   double yield = heap_last_gc_yield(heap);
   double fragmentation = heap_fragmentation(heap);
   ssize_t pending = atomic_load_explicit(&mark_space->pending_unavailable_bytes,
                                          memory_order_acquire);
 
+  DEBUG("hiiiiii\n");
+
   if (heap->count == 0) {
     DEBUG("first collection is always major\n");
-    gc_kind = GC_KIND_MAJOR_IN_PLACE;
+    gc_kind = GC_COLLECTION_MAJOR;
+  } else if (requested != GC_COLLECTION_ANY) {
+    DEBUG("user specifically requested collection kind %d\n", (int)requested);
+    gc_kind = requested;
   } else if (pending > 0) {
     DEBUG("evacuating due to need to reclaim %zd bytes\n", pending);
     // During the last cycle, a large allocation could not find enough
     // free blocks, and we decided not to expand the heap.  Let's do an
     // evacuating major collection to maximize the free block yield.
-    gc_kind = GC_KIND_MAJOR_EVACUATING;
+    gc_kind = GC_COLLECTION_COMPACTING;
 
     // Generally speaking, we allow mutators to mark their own stacks
     // before pausing.  This is a limited form of concurrent marking, as
@@ -1610,7 +1613,7 @@ static enum gc_kind determine_collection_kind(struct gc_heap *heap) {
     // marking.  Of course if the mutator has conservative roots we will
     // have pinning anyway and might as well allow ragged stops.
     mark_while_stopping = gc_has_conservative_roots();
-  } else if (previous_gc_kind == GC_KIND_MAJOR_EVACUATING
+  } else if (previous_gc_kind == GC_COLLECTION_COMPACTING
              && fragmentation >= heap->fragmentation_low_threshold) {
     DEBUG("continuing evacuation due to fragmentation %.2f%% > %.2f%%\n",
           fragmentation * 100.,
@@ -1618,46 +1621,50 @@ static enum gc_kind determine_collection_kind(struct gc_heap *heap) {
     // For some reason, we already decided to compact in the past,
     // and fragmentation hasn't yet fallen below a low-water-mark.
     // Keep going.
-    gc_kind = GC_KIND_MAJOR_EVACUATING;
+    gc_kind = GC_COLLECTION_COMPACTING;
   } else if (fragmentation > heap->fragmentation_high_threshold) {
     // Switch to evacuation mode if the heap is too fragmented.
     DEBUG("triggering compaction due to fragmentation %.2f%% > %.2f%%\n",
           fragmentation * 100.,
           heap->fragmentation_high_threshold * 100.);
-    gc_kind = GC_KIND_MAJOR_EVACUATING;
-  } else if (previous_gc_kind == GC_KIND_MAJOR_EVACUATING) {
+    gc_kind = GC_COLLECTION_COMPACTING;
+  } else if (previous_gc_kind == GC_COLLECTION_COMPACTING) {
     // We were evacuating, but we're good now.  Go back to minor
     // collections.
     DEBUG("returning to in-place collection, fragmentation %.2f%% < %.2f%%\n",
           fragmentation * 100.,
           heap->fragmentation_low_threshold * 100.);
-    gc_kind = GC_KIND_MINOR_IN_PLACE;
-  } else if (previous_gc_kind != GC_KIND_MINOR_IN_PLACE) {
-    DEBUG("returning to minor collection after major collection\n");
+    gc_kind = GC_GENERATIONAL ? GC_COLLECTION_MINOR : GC_COLLECTION_MAJOR;
+  } else if (!GC_GENERATIONAL) {
+    DEBUG("keeping on with major in-place GC\n");
+    GC_ASSERT(previous_gc_kind == GC_COLLECTION_MAJOR);
+    gc_kind = GC_COLLECTION_MAJOR;
+  } else if (previous_gc_kind != GC_COLLECTION_MINOR) {
+    DEBUG("returning to minor collection\n");
     // Go back to minor collections.
-    gc_kind = GC_KIND_MINOR_IN_PLACE;
+    gc_kind = GC_COLLECTION_MINOR;
   } else if (yield < heap->major_gc_yield_threshold) {
     DEBUG("collection yield too low, triggering major collection\n");
     // Nursery is getting tight; trigger a major GC.
-    gc_kind = GC_KIND_MAJOR_IN_PLACE;
+    gc_kind = GC_COLLECTION_MAJOR;
   } else {
     DEBUG("keeping on with minor GC\n");
     // Nursery has adequate space; keep trucking with minor GCs.
-    GC_ASSERT(previous_gc_kind == GC_KIND_MINOR_IN_PLACE);
-    gc_kind = GC_KIND_MINOR_IN_PLACE;
+    GC_ASSERT(previous_gc_kind == GC_COLLECTION_MINOR);
+    gc_kind = GC_COLLECTION_MINOR;
   }
 
   if (gc_has_conservative_intraheap_edges() &&
-      (gc_kind & GC_KIND_FLAG_EVACUATING)) {
+      gc_kind == GC_COLLECTION_COMPACTING) {
     DEBUG("welp.  conservative heap scanning, no evacuation for you\n");
-    gc_kind = GC_KIND_MAJOR_IN_PLACE;
+    gc_kind = GC_COLLECTION_MAJOR;
     mark_while_stopping = 1;
   }
 
   // If this is the first in a series of minor collections, reset the
   // threshold at which we should do a major GC.
-  if ((gc_kind & GC_KIND_FLAG_MINOR) &&
-      (previous_gc_kind & GC_KIND_FLAG_MINOR) != GC_KIND_FLAG_MINOR) {
+  if (gc_kind == GC_COLLECTION_MINOR &&
+      previous_gc_kind != GC_COLLECTION_MINOR) {
     double yield = heap_last_gc_yield(heap);
     double threshold = yield * heap->minor_gc_yield_threshold;
     double clamped = clamp_major_gc_yield_threshold(heap, threshold);
@@ -1687,7 +1694,7 @@ static void release_evacuation_target_blocks(struct mark_space *space) {
 static void prepare_for_evacuation(struct gc_heap *heap) {
   struct mark_space *space = heap_mark_space(heap);
 
-  if ((heap->gc_kind & GC_KIND_FLAG_EVACUATING) == 0) {
+  if (heap->gc_kind != GC_COLLECTION_COMPACTING) {
     space->evacuating = 0;
     space->evacuation_reserve = space->evacuation_minimum_reserve;
     return;
@@ -1796,7 +1803,7 @@ static void trace_roots_after_stop(struct gc_heap *heap) {
 }
 
 static void mark_space_finish_gc(struct mark_space *space,
-                                 enum gc_kind gc_kind) {
+                                 enum gc_collection_kind gc_kind) {
   space->evacuating = 0;
   reset_sweeper(space);
   update_mark_patterns(space, 0);
@@ -1824,7 +1831,8 @@ static void sweep_ephemerons(struct gc_heap *heap) {
   return gc_sweep_pending_ephemerons(heap->pending_ephemerons, 0, 1);
 }
 
-static void collect(struct gc_mutator *mut) {
+static void collect(struct gc_mutator *mut,
+                    enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
   struct mark_space *space = heap_mark_space(heap);
   struct large_object_space *lospace = heap_large_object_space(heap);
@@ -1835,12 +1843,13 @@ static void collect(struct gc_mutator *mut) {
   }
   MUTATOR_EVENT(mut, mutator_cause_gc);
   DEBUG("start collect #%ld:\n", heap->count);
-  enum gc_kind gc_kind = determine_collection_kind(heap);
-  HEAP_EVENT(heap, prepare_gc, gc_kind & GC_KIND_FLAG_MINOR,
-             gc_kind & GC_KIND_FLAG_EVACUATING);
-  update_mark_patterns(space, !(gc_kind & GC_KIND_FLAG_MINOR));
-  large_object_space_start_gc(lospace, gc_kind & GC_KIND_FLAG_MINOR);
-  gc_extern_space_start_gc(exspace, gc_kind & GC_KIND_FLAG_MINOR);
+  enum gc_collection_kind gc_kind =
+    determine_collection_kind(heap, requested_kind);
+  int is_minor = gc_kind == GC_COLLECTION_MINOR;
+  HEAP_EVENT(heap, prepare_gc, gc_kind);
+  update_mark_patterns(space, !is_minor);
+  large_object_space_start_gc(lospace, is_minor);
+  gc_extern_space_start_gc(exspace, is_minor);
   resolve_ephemerons_lazily(heap);
   tracer_prepare(heap);
   HEAP_EVENT(heap, requesting_stop);
@@ -1868,12 +1877,10 @@ static void collect(struct gc_mutator *mut) {
   sweep_ephemerons(heap);
   tracer_release(heap);
   mark_space_finish_gc(space, gc_kind);
-  large_object_space_finish_gc(lospace, gc_kind & GC_KIND_FLAG_MINOR);
-  gc_extern_space_finish_gc(exspace, gc_kind & GC_KIND_FLAG_MINOR);
+  large_object_space_finish_gc(lospace, is_minor);
+  gc_extern_space_finish_gc(exspace, is_minor);
   heap->count++;
-  heap->last_collection_was_minor = gc_kind & GC_KIND_FLAG_MINOR;
-  if (heap->last_collection_was_minor)
-    heap->minor_count++;
+  heap->last_collection_was_minor = is_minor;
   heap_reset_large_object_pages(heap, lospace->live_pages_at_last_collection);
   HEAP_EVENT(heap, restarting_mutators);
   allow_mutators_to_continue(heap);
@@ -2153,18 +2160,20 @@ static void finish_sweeping(struct gc_mutator *mut) {
     finish_hole(mut);
 }
 
-static void trigger_collection(struct gc_mutator *mut) {
+static void trigger_collection(struct gc_mutator *mut,
+                               enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
+  int prev_kind = -1;
   heap_lock(heap);
-  if (mutators_are_stopping(heap))
-    pause_mutator_for_collection_with_lock(mut);
-  else
-    collect(mut);
+  while (mutators_are_stopping(heap))
+    prev_kind = pause_mutator_for_collection_with_lock(mut);
+  if (prev_kind < (int)requested_kind)
+    collect(mut, requested_kind);
   heap_unlock(heap);
 }
 
-void gc_collect(struct gc_mutator *mut) {
-  trigger_collection(mut);
+void gc_collect(struct gc_mutator *mut, enum gc_collection_kind kind) {
+  trigger_collection(mut, kind);
 }
 
 static void* allocate_large(struct gc_mutator *mut, size_t size) {
@@ -2177,7 +2186,7 @@ static void* allocate_large(struct gc_mutator *mut, size_t size) {
                                     npages << space->page_size_log2);
 
   while (!sweep_until_memory_released(mut))
-    trigger_collection(mut);
+    trigger_collection(mut, GC_COLLECTION_COMPACTING);
   atomic_fetch_add(&heap->large_object_pages, npages);
 
   void *ret = large_object_space_alloc(space, npages);
@@ -2215,7 +2224,7 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
         break;
       }
       if (!hole)
-        trigger_collection(mut);
+        trigger_collection(mut, GC_COLLECTION_ANY);
     }
     ret = gc_ref(mut->alloc);
     mut->alloc += size;

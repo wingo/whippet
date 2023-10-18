@@ -354,7 +354,7 @@ static void collect(struct gc_mutator *mut, size_t for_alloc) {
   struct gc_heap *heap = mutator_heap(mut);
   int is_minor = 0;
   int is_compacting = 1;
-  HEAP_EVENT(heap, prepare_gc, is_minor, is_compacting);
+  HEAP_EVENT(heap, prepare_gc, GC_COLLECTION_COMPACTING);
 
   HEAP_EVENT(heap, requesting_stop);
   HEAP_EVENT(heap, waiting_for_stop);
@@ -414,7 +414,9 @@ static void collect_for_alloc(struct gc_mutator *mut, size_t bytes) {
   GC_CRASH();
 }
 
-void gc_collect(struct gc_mutator *mut) {
+void gc_collect(struct gc_mutator *mut,
+                enum gc_collection_kind requested_kind) {
+  // Ignore requested kind, because we always compact.
   collect(mut, 0);
 }
 

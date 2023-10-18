@@ -105,7 +105,8 @@ static double heap_multiplier;
 static size_t nthreads;
 
 static void cause_gc(struct gc_mutator *mut) {
-  gc_collect(mut);
+  // Doing a full collection lets us reason precisely about liveness.
+  gc_collect(mut, GC_COLLECTION_MAJOR);
 }
 
 static void make_ephemeron_chain(struct thread *t, EphemeronHandle *head,
