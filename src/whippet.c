@@ -1410,7 +1410,7 @@ static void mark_space_clear_remembered_set(struct mark_space *space) {
 
 void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
                              struct gc_edge edge, struct gc_ref new_val) {
-  GC_ASSERT(size > gc_allocator_large_threshold());
+  GC_ASSERT(obj_size > gc_allocator_large_threshold());
   gc_object_set_remembered(obj);
 }
 

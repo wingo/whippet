@@ -205,14 +205,14 @@ static Node* make_tree(struct thread *t, int depth) {
 
 static void validate_tree(Node *tree, int depth) {
 #ifndef NDEBUG
-  ASSERT_EQ(tree->i, 0);
-  ASSERT_EQ(tree->j, depth);
+  GC_ASSERT_EQ(tree->i, 0);
+  GC_ASSERT_EQ(tree->j, depth);
   if (depth == 0) {
-    ASSERT(!tree->left);
-    ASSERT(!tree->right);
+    GC_ASSERT(!tree->left);
+    GC_ASSERT(!tree->right);
   } else {
-    ASSERT(tree->left);
-    ASSERT(tree->right);
+    GC_ASSERT(tree->left);
+    GC_ASSERT(tree->right);
     validate_tree(tree->left, depth - 1);
     validate_tree(tree->right, depth - 1);
   }
