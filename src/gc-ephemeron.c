@@ -238,7 +238,6 @@ enum {
 struct gc_ephemeron {
   GC_EMBEDDER_EPHEMERON_HEADER
   uint8_t state;
-  uint8_t is_dead;
   unsigned epoch;
   struct gc_ephemeron *chain;
   struct gc_ephemeron *pending;
@@ -264,7 +263,7 @@ static struct gc_ephemeron** ephemeron_chain(struct gc_ephemeron *e) {
   return &e->chain;
 }
 static int ephemeron_is_dead(struct gc_ephemeron *e) {
-  return atomic_load_explicit(&e->is_dead, memory_order_acquire);
+  return !atomic_load_explicit(&e->key.value, memory_order_acquire);
 }
 static int ephemeron_is_not_dead(struct gc_ephemeron *e) {
   return !ephemeron_is_dead(e);
@@ -284,7 +283,7 @@ struct gc_ephemeron* gc_ephemeron_chain_next(struct gc_ephemeron *e) {
   return follow_chain(ephemeron_chain(e));
 }
 void gc_ephemeron_mark_dead(struct gc_ephemeron *e) {
-  atomic_store_explicit(&e->is_dead, 1, memory_order_release);
+  atomic_store_explicit(&e->key.value, 0, memory_order_release);
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -327,7 +326,7 @@ static struct gc_ephemeron* pop_resolved(struct gc_ephemeron **loc) {
 ////////////////////////////////////////////////////////////////////////
 
 struct gc_ref gc_ephemeron_key(struct gc_ephemeron *e) {
-  return ephemeron_is_dead(e) ? gc_ref_null() : e->key;
+  return gc_ref(atomic_load_explicit(&e->key.value, memory_order_acquire));
 }
 
 struct gc_ref gc_ephemeron_value(struct gc_ephemeron *e) {
@@ -471,7 +470,7 @@ void gc_trace_ephemeron(struct gc_ephemeron *e,
   // as dead and here; the consequence would be that we treat an
   // ephemeron as live when it's not, but only for this cycle.  No big
   // deal.
-  if (atomic_load_explicit(&e->is_dead, memory_order_acquire)) {
+  if (ephemeron_is_dead(e)) {
     // CLAIMED[epoch] -> TRACED[epoch].
     atomic_store_explicit(&e->state, EPHEMERON_STATE_TRACED,
                           memory_order_release);
@@ -553,7 +552,7 @@ gc_sweep_pending_ephemerons(struct gc_pending_ephemerons *state,
          e;
          e = follow_pending(&e->pending)) {
       // PENDING -> TRACED, but dead.
-      atomic_store_explicit(&e->is_dead, 1, memory_order_release);
+      atomic_store_explicit(&e->key.value, 0, memory_order_release);
       atomic_store_explicit(&e->state, EPHEMERON_STATE_TRACED,
                             memory_order_release);
     }
@@ -572,7 +571,6 @@ void gc_ephemeron_init_internal(struct gc_heap *heap,
   // assumption is that the ephemeron is younger than the key and the
   // value.
   ephemeron->state = EPHEMERON_STATE_TRACED;
-  ephemeron->is_dead = 0;
   ephemeron->epoch = gc_heap_ephemeron_trace_epoch(heap) - 1;
   ephemeron->chain = NULL;
   ephemeron->pending = NULL;

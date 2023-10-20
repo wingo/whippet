@@ -181,7 +181,7 @@ struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {
 }
 
 unsigned gc_heap_ephemeron_trace_epoch(struct gc_heap *heap) {
-  return 0;
+  return GC_get_gc_no();
 }
 
 void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
