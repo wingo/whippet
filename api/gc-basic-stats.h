@@ -107,7 +107,7 @@ static inline void gc_basic_stats_live_data_size(void *data, size_t size) {
 
 static inline void gc_basic_stats_finish(struct gc_basic_stats *stats) {
   uint64_t now = gc_basic_stats_now();
-  stats->elapsed_mutator_usec += stats->last_time_usec - now;
+  stats->elapsed_mutator_usec += now - stats->last_time_usec;
   stats->last_time_usec = now;
 }
 
