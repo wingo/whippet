@@ -232,13 +232,18 @@ trace_deque_steal(struct trace_deque *q) {
   }
 }
 
-static int
-trace_deque_can_steal(struct trace_deque *q) {
+static ssize_t
+trace_deque_size(struct trace_deque *q) {
   size_t t = LOAD_ACQUIRE(&q->top);
   atomic_thread_fence(memory_order_seq_cst);
   size_t b = LOAD_ACQUIRE(&q->bottom);
   ssize_t size = b - t;
-  return size > 0;
+  return size;
+}
+
+static int
+trace_deque_can_steal(struct trace_deque *q) {
+  return trace_deque_size(q) > 0;
 }
 
 #undef LOAD_RELAXED
@@ -283,6 +288,19 @@ local_trace_queue_push(struct local_trace_queue *q, struct gc_ref v) {
 static inline struct gc_ref
 local_trace_queue_pop(struct local_trace_queue *q) {
   return q->data[q->read++ & LOCAL_TRACE_QUEUE_MASK];
+}
+
+static inline size_t
+local_trace_queue_pop_many(struct local_trace_queue *q, struct gc_ref **objv,
+                           size_t limit) {
+  size_t avail = local_trace_queue_size(q);
+  size_t read = q->read & LOCAL_TRACE_QUEUE_MASK;
+  size_t contig = LOCAL_TRACE_QUEUE_SIZE - read;
+  if (contig < avail) avail = contig;
+  if (limit < avail) avail = limit;
+  *objv = q->data + read;
+  q->read += avail;
+  return avail;
 }
 
 enum trace_worker_state {
@@ -460,8 +478,13 @@ static inline int trace_edge(struct gc_heap *heap,
 static inline void
 tracer_share(struct local_tracer *trace) {
   DEBUG("tracer #%zu: sharing\n", trace->worker->id);
-  for (size_t i = 0; i < LOCAL_TRACE_QUEUE_SHARE_AMOUNT; i++)
-    trace_deque_push(trace->share_deque, local_trace_queue_pop(&trace->local));
+  size_t to_share = LOCAL_TRACE_QUEUE_SHARE_AMOUNT;
+  while (to_share) {
+    struct gc_ref *objv;
+    size_t count = local_trace_queue_pop_many(&trace->local, &objv, to_share);
+    trace_deque_push_many(trace->share_deque, objv, count);
+    to_share -= count;
+  }
 }
 
 static inline void
