@@ -96,7 +96,7 @@ obj/$(1).$(2).gc.o: src/$(call gc_impl,$(2)) | .deps obj
 obj/$(1).$(2).o: benchmarks/$(1).c | .deps obj
 	$$(COMPILE) $(call gc_cflags,$(2)) -include api/$(call gc_attrs,$(2)) -c $$<
 bin/$(1).$(2): obj/$(1).$(2).gc.o obj/$(1).$(2).o obj/gc-stack.o obj/gc-options.o obj/gc-platform.o obj/$(1).gc-ephemeron.o | bin
-	$$(LINK) $(call gc_libs,$(2)) $$^
+	$$(LINK) $$^ $(call gc_libs,$(2))
 endef
 
 $(foreach BENCHMARK,$(TESTS),\
