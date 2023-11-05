@@ -1862,7 +1862,7 @@ static void collect(struct gc_mutator *mut,
   double yield = heap_last_gc_yield(heap);
   double fragmentation = heap_fragmentation(heap);
   HEAP_EVENT(heap, live_data_size, heap->size * (1 - yield));
-  fprintf(stderr, "last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
+  DEBUG(stderr, "last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
   detect_out_of_memory(heap);
   trace_pinned_roots_after_stop(heap);
   prepare_for_evacuation(heap);
