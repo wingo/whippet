@@ -303,13 +303,14 @@ struct gc_heap {
   struct gc_pending_ephemerons *pending_ephemerons;
   enum gc_collection_kind gc_kind;
   int multithreaded;
-  size_t active_mutator_count;
   size_t mutator_count;
+  size_t paused_mutator_count;
+  size_t inactive_mutator_count;
   struct gc_heap_roots *roots;
   struct gc_mutator *mutator_trace_list;
   long count;
   uint8_t last_collection_was_minor;
-  struct gc_mutator *deactivated_mutators;
+  struct gc_mutator *inactive_mutators;
   struct tracer tracer;
   double fragmentation_low_threshold;
   double fragmentation_high_threshold;
@@ -852,6 +853,12 @@ static inline void heap_unlock(struct gc_heap *heap) {
   pthread_mutex_unlock(&heap->lock);
 }
 
+// with heap lock
+static inline int all_mutators_stopped(struct gc_heap *heap) {
+  return heap->mutator_count ==
+    heap->paused_mutator_count + heap->inactive_mutator_count;
+}
+
 static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->heap = heap;
   mut->event_listener_data =
@@ -863,7 +870,6 @@ static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
   if (heap->mutator_count == 1)
     heap->multithreaded = 1;
-  heap->active_mutator_count++;
   heap->mutator_count++;
   heap_unlock(heap);
 }
@@ -872,11 +878,10 @@ static void remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   MUTATOR_EVENT(mut, mutator_removed);
   mut->heap = NULL;
   heap_lock(heap);
-  heap->active_mutator_count--;
   heap->mutator_count--;
   // We have no roots.  If there is a GC stop currently in progress,
   // maybe tell the controller it can continue.
-  if (mutators_are_stopping(heap) && heap->active_mutator_count == 0)
+  if (mutators_are_stopping(heap) && all_mutators_stopped(heap))
     pthread_cond_signal(&heap->collector_cond);
   heap_unlock(heap);
 }
@@ -888,8 +893,8 @@ static void request_mutators_to_stop(struct gc_heap *heap) {
 
 static void allow_mutators_to_continue(struct gc_heap *heap) {
   GC_ASSERT(mutators_are_stopping(heap));
-  GC_ASSERT(heap->active_mutator_count == 0);
-  heap->active_mutator_count++;
+  GC_ASSERT(all_mutators_stopped(heap));
+  heap->paused_mutator_count = 0;
   atomic_store_explicit(&heap->collecting, 0, memory_order_relaxed);
   GC_ASSERT(!mutators_are_stopping(heap));
   pthread_cond_broadcast(&heap->mutator_cond);
@@ -921,7 +926,7 @@ static uintptr_t pop_empty_block(struct mark_space *space) {
 static int maybe_push_evacuation_target(struct mark_space *space,
                                         uintptr_t block, double reserve) {
   GC_ASSERT(!block_summary_has_flag(block_summary_for_addr(block),
-                                 BLOCK_NEEDS_SWEEP));
+                                    BLOCK_NEEDS_SWEEP));
   size_t targets = atomic_load_explicit(&space->evacuation_targets.count,
                                         memory_order_acquire);
   size_t total = space->nslabs * NONMETA_BLOCKS_PER_SLAB;
@@ -948,7 +953,7 @@ static int push_evacuation_target_if_possible(struct mark_space *space,
 
 static void push_empty_block(struct mark_space *space, uintptr_t block) {
   GC_ASSERT(!block_summary_has_flag(block_summary_for_addr(block),
-                                 BLOCK_NEEDS_SWEEP));
+                                    BLOCK_NEEDS_SWEEP));
   push_block(&space->empty, block);
 }
 
@@ -1291,8 +1296,8 @@ static void release_stopping_mutator_roots(struct gc_mutator *mut) {
 }
 
 static void wait_for_mutators_to_stop(struct gc_heap *heap) {
-  heap->active_mutator_count--;
-  while (heap->active_mutator_count)
+  heap->paused_mutator_count++;
+  while (!all_mutators_stopped(heap))
     pthread_cond_wait(&heap->collector_cond, &heap->lock);
 }
 
@@ -1307,7 +1312,7 @@ static void trace_mutator_conservative_roots_after_stop(struct gc_heap *heap) {
          mut = mut->next)
       trace_mutator_conservative_roots_with_lock(mut);
 
-  for (struct gc_mutator *mut = heap->deactivated_mutators;
+  for (struct gc_mutator *mut = heap->inactive_mutators;
        mut;
        mut = mut->next)
     trace_mutator_conservative_roots_with_lock(mut);
@@ -1331,7 +1336,7 @@ static void trace_mutator_roots_after_stop(struct gc_heap *heap) {
   }
   atomic_store(&heap->mutator_trace_list, NULL);
 
-  for (struct gc_mutator *mut = heap->deactivated_mutators; mut; mut = mut->next) {
+  for (struct gc_mutator *mut = heap->inactive_mutators; mut; mut = mut->next) {
     finish_sweeping_in_block(mut);
     trace_mutator_roots_with_lock(mut);
   }
@@ -1424,11 +1429,11 @@ pause_mutator_for_collection(struct gc_heap *heap,
 static enum gc_collection_kind
 pause_mutator_for_collection(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mutators_are_stopping(heap));
-  GC_ASSERT(heap->active_mutator_count);
+  GC_ASSERT(!all_mutators_stopped(heap));
   MUTATOR_EVENT(mut, mutator_stopped);
-  heap->active_mutator_count--;
+  heap->paused_mutator_count++;
   enum gc_collection_kind collection_kind = heap->gc_kind;
-  if (heap->active_mutator_count == 0)
+  if (all_mutators_stopped(heap))
     pthread_cond_signal(&heap->collector_cond);
 
   // Go to sleep and wake up when the collector is done.  Note,
@@ -1444,7 +1449,6 @@ pause_mutator_for_collection(struct gc_heap *heap, struct gc_mutator *mut) {
   while (mutators_are_stopping(heap) && heap->count == epoch);
 
   MUTATOR_EVENT(mut, mutator_restarted);
-  heap->active_mutator_count++;
   return collection_kind;
 }
 
@@ -1587,8 +1591,6 @@ determine_collection_kind(struct gc_heap *heap,
   double fragmentation = heap_fragmentation(heap);
   ssize_t pending = atomic_load_explicit(&mark_space->pending_unavailable_bytes,
                                          memory_order_acquire);
-
-  DEBUG("hiiiiii\n");
 
   if (heap->count == 0) {
     DEBUG("first collection is always major\n");
@@ -1920,7 +1922,6 @@ static void collect(struct gc_mutator *mut,
   heap_reset_large_object_pages(heap, lospace->live_pages_at_last_collection);
   HEAP_EVENT(heap, restarting_mutators);
   allow_mutators_to_continue(heap);
-  DEBUG("collect done\n");
 }
 
 static int sweep_byte(uint8_t *loc, uintptr_t sweep_mask) {
@@ -2485,11 +2486,11 @@ void gc_finish_for_thread(struct gc_mutator *mut) {
 static void deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mut->next == NULL);
   heap_lock(heap);
-  mut->next = heap->deactivated_mutators;
-  heap->deactivated_mutators = mut;
-  heap->active_mutator_count--;
+  mut->next = heap->inactive_mutators;
+  heap->inactive_mutators = mut;
+  heap->inactive_mutator_count++;
   gc_stack_capture_hot(&mut->stack);
-  if (!heap->active_mutator_count && mutators_are_stopping(heap))
+  if (all_mutators_stopped(heap))
     pthread_cond_signal(&heap->collector_cond);
   heap_unlock(heap);
 }
@@ -2498,12 +2499,12 @@ static void reactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   heap_lock(heap);
   while (mutators_are_stopping(heap))
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
-  struct gc_mutator **prev = &heap->deactivated_mutators;
+  struct gc_mutator **prev = &heap->inactive_mutators;
   while (*prev != mut)
     prev = &(*prev)->next;
   *prev = mut->next;
   mut->next = NULL;
-  heap->active_mutator_count++;
+  heap->inactive_mutator_count--;
   heap_unlock(heap);
 }
 
