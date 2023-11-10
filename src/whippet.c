@@ -1802,6 +1802,40 @@ static void trace_roots_after_stop(struct gc_heap *heap) {
   trace_generational_roots(heap);
 }
 
+static void verify_mark_space_before_restart(struct mark_space *space) {
+  // Iterate objects in each block, verifying that the END bytes correspond to
+  // the measured object size.
+  for (size_t slab = 0; slab < space->nslabs; slab++) {
+    for (size_t block = 0; block < NONMETA_BLOCKS_PER_SLAB; block++) {
+      struct block_summary *summary = &space->slabs[slab].summaries[block];
+      if (block_summary_has_flag(summary, BLOCK_UNAVAILABLE))
+        continue;
+
+      uintptr_t addr = (uintptr_t)space->slabs[slab].blocks[block].data;
+      uintptr_t limit = addr + BLOCK_SIZE;
+      uint8_t *meta = metadata_byte_for_addr(addr);
+      while (addr < limit) {
+        if (meta[0] & space->live_mask) {
+          struct gc_ref obj = gc_ref(addr);
+          size_t obj_bytes = 0;
+          gc_trace_object(gc_ref(addr), NULL, NULL, NULL, &obj_bytes);
+          size_t granules = size_to_granules(obj_bytes);
+          GC_ASSERT(granules);
+          for (size_t granule = 0; granule < granules - 1; granule++)
+            GC_ASSERT(!(meta[granule] & METADATA_BYTE_END));
+          GC_ASSERT(meta[granules - 1] & METADATA_BYTE_END);
+          meta += granules;
+          addr += granules * GRANULE_SIZE;
+        } else {
+          meta++;
+          addr += GRANULE_SIZE;
+        }
+      }
+      GC_ASSERT(addr == limit);
+    }
+  }
+}
+
 static void mark_space_finish_gc(struct mark_space *space,
                                  enum gc_collection_kind gc_kind) {
   space->evacuating = 0;
@@ -1809,6 +1843,8 @@ static void mark_space_finish_gc(struct mark_space *space,
   update_mark_patterns(space, 0);
   reset_statistics(space);
   release_evacuation_target_blocks(space);
+  if (GC_DEBUG)
+    verify_mark_space_before_restart(space);
 }
 
 static void resolve_ephemerons_lazily(struct gc_heap *heap) {
