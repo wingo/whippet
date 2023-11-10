@@ -2185,15 +2185,13 @@ static size_t next_hole(struct gc_mutator *mut) {
 }
 
 static void finish_sweeping_in_block(struct gc_mutator *mut) {
-  while (next_hole_in_block(mut))
-    finish_hole(mut);
+  do { finish_hole(mut); } while (next_hole_in_block(mut));
 }
 
 // Another thread is triggering GC.  Before we stop, finish clearing the
 // dead mark bytes for the mutator's block, and release the block.
 static void finish_sweeping(struct gc_mutator *mut) {
-  while (next_hole(mut))
-    finish_hole(mut);
+  while (next_hole(mut)) {}
 }
 
 static void trigger_collection(struct gc_mutator *mut,
