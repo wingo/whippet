@@ -30,13 +30,6 @@ static inline uint64_t gc_histogram_bucket_min_val(uint64_t precision,
   return min_val;
 }
 
-static inline void gc_histogram_record(uint32_t *buckets,
-                                       uint64_t max_value_bits,
-                                       uint64_t precision,
-                                       uint64_t val) {
-  buckets[gc_histogram_bucket(max_value_bits, precision, val)]++;
-}
-
 #define GC_DEFINE_HISTOGRAM(name, max_value_bits, precision)            \
   struct name { uint32_t buckets[((max_value_bits) << (precision)) + 1]; }; \
   static inline size_t name##_size(void) {                              \
