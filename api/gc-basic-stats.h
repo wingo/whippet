@@ -2,12 +2,15 @@
 #define GC_BASIC_STATS_H
 
 #include "gc-event-listener.h"
+#include "gc-histogram.h"
 
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
+
+GC_DEFINE_HISTOGRAM(gc_latency, 25, 4);
 
 struct gc_basic_stats {
   uint64_t major_collection_count;
@@ -18,6 +21,7 @@ struct gc_basic_stats {
   size_t heap_size;
   size_t max_heap_size;
   size_t max_live_data_size;
+  struct gc_latency pause_times;
 };
 
 static inline uint64_t gc_basic_stats_now(void) {
@@ -58,7 +62,9 @@ static inline void gc_basic_stats_ephemerons_traced(void *data) {}
 static inline void gc_basic_stats_restarting_mutators(void *data) {
   struct gc_basic_stats *stats = data;
   uint64_t now = gc_basic_stats_now();
-  stats->elapsed_collector_usec += now - stats->last_time_usec;
+  uint64_t pause_time = now - stats->last_time_usec;
+  stats->elapsed_collector_usec += pause_time;
+  gc_latency_record(&stats->pause_times, pause_time);
   stats->last_time_usec = now;
 }
 
@@ -120,6 +126,14 @@ static inline void gc_basic_stats_print(struct gc_basic_stats *stats, FILE *f) {
   fprintf(f, "%" PRIu64 ".%.3" PRIu64 " ms total time "
           "(%" PRIu64 ".%.3" PRIu64 " stopped).\n",
           elapsed / ms, elapsed % ms, stopped / ms, stopped % ms);
+  uint64_t pause_median = gc_latency_median(&stats->pause_times);
+  uint64_t pause_p95 = gc_latency_percentile(&stats->pause_times, 0.95);
+  uint64_t pause_max = gc_latency_max(&stats->pause_times);
+  fprintf(f, "%" PRIu64 ".%.3" PRIu64 " ms median pause time, "
+          "%" PRIu64 ".%.3" PRIu64 " p95, "
+          "%" PRIu64 ".%.3" PRIu64 " max.\n",
+          pause_median / ms, pause_median % ms, pause_p95 / ms, pause_p95 % ms,
+          pause_max / ms, pause_max % ms);
   double MB = 1e6;
   fprintf(f, "Heap size is %.3f MB (max %.3f MB); peak live data %.3f MB.\n",
           stats->heap_size / MB, stats->max_heap_size / MB,
