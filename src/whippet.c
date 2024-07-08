@@ -311,7 +311,7 @@ struct gc_heap {
   long count;
   uint8_t last_collection_was_minor;
   struct gc_mutator *inactive_mutators;
-  struct tracer tracer;
+  struct gc_tracer tracer;
   double fragmentation_low_threshold;
   double fragmentation_high_threshold;
   double minor_gc_yield_threshold;
@@ -351,7 +351,7 @@ struct gc_mutator {
   struct gc_mutator *next;
 };
 
-static inline struct tracer* heap_tracer(struct gc_heap *heap) {
+static inline struct gc_tracer* heap_tracer(struct gc_heap *heap) {
   return &heap->tracer;
 }
 static inline struct mark_space* heap_mark_space(struct gc_heap *heap) {
@@ -1126,7 +1126,7 @@ static void trace_and_enqueue_globally(struct gc_edge edge,
                                        struct gc_heap *heap,
                                        void *unused) {
   if (trace_edge(heap, edge))
-    tracer_enqueue_root(&heap->tracer, gc_edge_ref(edge));
+    gc_tracer_enqueue_root(&heap->tracer, gc_edge_ref(edge));
 }
 
 static inline void do_trace_conservative_ref_and_enqueue_globally(struct gc_conservative_ref ref,
@@ -1135,7 +1135,7 @@ static inline void do_trace_conservative_ref_and_enqueue_globally(struct gc_cons
                                                                   int possibly_interior) {
   struct gc_ref object = trace_conservative_ref(heap, ref, possibly_interior);
   if (gc_ref_is_heap_object(object))
-    tracer_enqueue_root(&heap->tracer, object);
+    gc_tracer_enqueue_root(&heap->tracer, object);
 }
 
 static void trace_possibly_interior_conservative_ref_and_enqueue_globally(struct gc_conservative_ref ref,
@@ -1177,7 +1177,7 @@ static inline void tracer_trace_conservative_ref(struct gc_conservative_ref ref,
   int possibly_interior = 0;
   struct gc_ref resolved = trace_conservative_ref(heap, ref, possibly_interior);
   if (gc_ref_is_heap_object(resolved))
-    tracer_enqueue(resolved, heap, data);
+    gc_tracer_enqueue(resolved, heap, data);
 }
 
 static inline void trace_one_conservatively(struct gc_ref ref,
@@ -1325,8 +1325,8 @@ static void trace_mutator_roots_after_stop(struct gc_heap *heap) {
     // Also collect any already-marked grey objects and put them on the
     // global trace queue.
     if (active_mutators_already_marked)
-      tracer_enqueue_roots(&heap->tracer, mut->mark_buf.objects,
-                           mut->mark_buf.size);
+      gc_tracer_enqueue_roots(&heap->tracer, mut->mark_buf.objects,
+                              mut->mark_buf.size);
     else
       trace_mutator_roots_with_lock(mut);
     // Also unlink mutator_trace_list chain.
@@ -1349,7 +1349,7 @@ static void trace_global_conservative_roots(struct gc_heap *heap) {
 }
 
 static void enqueue_generational_root(struct gc_ref ref, struct gc_heap *heap) {
-  tracer_enqueue_root(&heap->tracer, ref);
+  gc_tracer_enqueue_root(&heap->tracer, ref);
 }
 
 // Note that it's quite possible (and even likely) that any given remset
@@ -1889,7 +1889,7 @@ static void collect(struct gc_mutator *mut,
   large_object_space_start_gc(lospace, is_minor);
   gc_extern_space_start_gc(exspace, is_minor);
   resolve_ephemerons_lazily(heap);
-  tracer_prepare(heap);
+  gc_tracer_prepare(heap);
   HEAP_EVENT(heap, requesting_stop);
   request_mutators_to_stop(heap);
   trace_mutator_roots_with_lock_before_stop(mut);
@@ -1906,14 +1906,14 @@ static void collect(struct gc_mutator *mut,
   prepare_for_evacuation(heap);
   trace_roots_after_stop(heap);
   HEAP_EVENT(heap, roots_traced);
-  tracer_trace(heap);
+  gc_tracer_trace(heap);
   HEAP_EVENT(heap, heap_traced);
   resolve_ephemerons_eagerly(heap);
   while (enqueue_resolved_ephemerons(heap))
-    tracer_trace(heap);
+    gc_tracer_trace(heap);
   HEAP_EVENT(heap, ephemerons_traced);
   sweep_ephemerons(heap);
-  tracer_release(heap);
+  gc_tracer_release(heap);
   mark_space_finish_gc(space, gc_kind);
   large_object_space_finish_gc(lospace, is_minor);
   gc_extern_space_finish_gc(exspace, is_minor);
@@ -2366,7 +2366,7 @@ static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   pthread_cond_init(&heap->collector_cond, NULL);
   heap->size = options->common.heap_size;
 
-  if (!tracer_init(heap, options->common.parallelism))
+  if (!gc_tracer_init(heap, options->common.parallelism))
     GC_CRASH();
 
   heap->pending_ephemerons_size_factor = 0.005;

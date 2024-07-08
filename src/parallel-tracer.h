@@ -35,7 +35,7 @@ struct trace_worker {
 
 #define TRACE_WORKERS_MAX_COUNT 8
 
-struct tracer {
+struct gc_tracer {
   atomic_size_t active_tracers;
   size_t worker_count;
   long epoch;
@@ -52,7 +52,7 @@ struct local_tracer {
 
 static int
 trace_worker_init(struct trace_worker *worker, struct gc_heap *heap,
-                 struct tracer *tracer, size_t id) {
+                  struct gc_tracer *tracer, size_t id) {
   worker->heap = heap;
   worker->id = id;
   worker->steal_id = 0;
@@ -66,7 +66,7 @@ static void trace_worker_trace(struct trace_worker *worker);
 static void*
 trace_worker_thread(void *data) {
   struct trace_worker *worker = data;
-  struct tracer *tracer = heap_tracer(worker->heap);
+  struct gc_tracer *tracer = heap_tracer(worker->heap);
   long trace_epoch = 0;
 
   pthread_mutex_lock(&worker->lock);
@@ -92,8 +92,8 @@ trace_worker_spawn(struct trace_worker *worker) {
 }
 
 static int
-tracer_init(struct gc_heap *heap, size_t parallelism) {
-  struct tracer *tracer = heap_tracer(heap);
+gc_tracer_init(struct gc_heap *heap, size_t parallelism) {
+  struct gc_tracer *tracer = heap_tracer(heap);
   atomic_init(&tracer->active_tracers, 0);
   tracer->epoch = 0;
   pthread_mutex_init(&tracer->lock, NULL);
@@ -116,19 +116,19 @@ tracer_init(struct gc_heap *heap, size_t parallelism) {
   return 1;
 }
 
-static void tracer_prepare(struct gc_heap *heap) {
-  struct tracer *tracer = heap_tracer(heap);
+static void gc_tracer_prepare(struct gc_heap *heap) {
+  struct gc_tracer *tracer = heap_tracer(heap);
   for (size_t i = 0; i < tracer->worker_count; i++)
     tracer->workers[i].steal_id = 0;
 }
-static void tracer_release(struct gc_heap *heap) {
-  struct tracer *tracer = heap_tracer(heap);
+static void gc_tracer_release(struct gc_heap *heap) {
+  struct gc_tracer *tracer = heap_tracer(heap);
   for (size_t i = 0; i < tracer->worker_count; i++)
     shared_worklist_release(&tracer->workers[i].deque);
 }
 
 static inline void
-tracer_unpark_all_workers(struct tracer *tracer) {
+tracer_unpark_all_workers(struct gc_tracer *tracer) {
   long old_epoch =
     atomic_fetch_add_explicit(&tracer->epoch, 1, memory_order_acq_rel);
   long epoch = old_epoch + 1;
@@ -138,7 +138,7 @@ tracer_unpark_all_workers(struct tracer *tracer) {
 }
 
 static inline void
-tracer_maybe_unpark_workers(struct tracer *tracer) {
+tracer_maybe_unpark_workers(struct gc_tracer *tracer) {
   size_t active =
     atomic_load_explicit(&tracer->active_tracers, memory_order_acquire);
   if (active < tracer->worker_count)
@@ -159,7 +159,7 @@ tracer_share(struct local_tracer *trace) {
 }
 
 static inline void
-tracer_enqueue(struct gc_ref ref, struct gc_heap *heap, void *trace_data) {
+gc_tracer_enqueue(struct gc_ref ref, struct gc_heap *heap, void *trace_data) {
   struct local_tracer *trace = trace_data;
   if (local_worklist_full(&trace->local))
     tracer_share(trace);
@@ -167,19 +167,19 @@ tracer_enqueue(struct gc_ref ref, struct gc_heap *heap, void *trace_data) {
 }
 
 static struct gc_ref
-tracer_steal_from_worker(struct tracer *tracer, size_t id) {
+tracer_steal_from_worker(struct gc_tracer *tracer, size_t id) {
   ASSERT(id < tracer->worker_count);
   return shared_worklist_steal(&tracer->workers[id].deque);
 }
 
 static int
-tracer_can_steal_from_worker(struct tracer *tracer, size_t id) {
+tracer_can_steal_from_worker(struct gc_tracer *tracer, size_t id) {
   ASSERT(id < tracer->worker_count);
   return shared_worklist_can_steal(&tracer->workers[id].deque);
 }
 
 static struct gc_ref
-trace_worker_steal_from_any(struct trace_worker *worker, struct tracer *tracer) {
+trace_worker_steal_from_any(struct trace_worker *worker, struct gc_tracer *tracer) {
   for (size_t i = 0; i < tracer->worker_count; i++) {
     DEBUG("tracer #%zu: stealing from #%zu\n", worker->id, worker->steal_id);
     struct gc_ref obj = tracer_steal_from_worker(tracer, worker->steal_id);
@@ -196,7 +196,7 @@ trace_worker_steal_from_any(struct trace_worker *worker, struct tracer *tracer) 
 
 static int
 trace_worker_can_steal_from_any(struct trace_worker *worker,
-                                struct tracer *tracer) {
+                                struct gc_tracer *tracer) {
   DEBUG("tracer #%zu: checking if any worker has tasks\n", worker->id);
   for (size_t i = 0; i < tracer->worker_count; i++) {
     int res = tracer_can_steal_from_worker(tracer, worker->steal_id);
@@ -217,7 +217,7 @@ trace_worker_should_continue(struct trace_worker *worker) {
   if (worker->id != 0)
     return 0;
 
-  struct tracer *tracer = heap_tracer(worker->heap);
+  struct gc_tracer *tracer = heap_tracer(worker->heap);
 
   for (size_t spin_count = 0;; spin_count++) {
     if (atomic_load_explicit(&tracer->active_tracers,
@@ -248,7 +248,7 @@ trace_worker_should_continue(struct trace_worker *worker) {
 static struct gc_ref
 trace_worker_steal(struct local_tracer *trace) {
   struct trace_worker *worker = trace->worker;
-  struct tracer *tracer = heap_tracer(worker->heap);
+  struct gc_tracer *tracer = heap_tracer(worker->heap);
 
   // It could be that the worker's local trace queue has simply
   // overflowed.  In that case avoid contention by trying to pop
@@ -271,7 +271,7 @@ trace_worker_steal(struct local_tracer *trace) {
 static void
 trace_worker_trace(struct trace_worker *worker) {
   struct gc_heap *heap = worker->heap;
-  struct tracer *tracer = heap_tracer(heap);
+  struct gc_tracer *tracer = heap_tracer(heap);
   atomic_fetch_add_explicit(&tracer->active_tracers, 1, memory_order_acq_rel);
 
   struct local_tracer trace;
@@ -303,21 +303,21 @@ trace_worker_trace(struct trace_worker *worker) {
 }
 
 static inline void
-tracer_enqueue_root(struct tracer *tracer, struct gc_ref ref) {
+gc_tracer_enqueue_root(struct gc_tracer *tracer, struct gc_ref ref) {
   struct shared_worklist *worker0_deque = &tracer->workers[0].deque;
   shared_worklist_push(worker0_deque, ref);
 }
 
 static inline void
-tracer_enqueue_roots(struct tracer *tracer, struct gc_ref *objv,
-                     size_t count) {
+gc_tracer_enqueue_roots(struct gc_tracer *tracer, struct gc_ref *objv,
+                        size_t count) {
   struct shared_worklist *worker0_deque = &tracer->workers[0].deque;
   shared_worklist_push_many(worker0_deque, objv, count);
 }
 
 static inline void
-tracer_trace(struct gc_heap *heap) {
-  struct tracer *tracer = heap_tracer(heap);
+gc_tracer_trace(struct gc_heap *heap) {
+  struct gc_tracer *tracer = heap_tracer(heap);
 
   DEBUG("starting trace; %zu workers\n", tracer->worker_count);
 
