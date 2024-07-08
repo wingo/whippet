@@ -9,59 +9,9 @@
 #include "assert.h"
 #include "debug.h"
 #include "gc-inline.h"
+#include "local-worklist.h"
 #include "shared-worklist.h"
 #include "spin.h"
-
-#define LOCAL_TRACE_QUEUE_SIZE 1024
-#define LOCAL_TRACE_QUEUE_MASK (LOCAL_TRACE_QUEUE_SIZE - 1)
-#define LOCAL_TRACE_QUEUE_SHARE_AMOUNT (LOCAL_TRACE_QUEUE_SIZE * 3 / 4)
-struct local_trace_queue {
-  size_t read;
-  size_t write;
-  struct gc_ref data[LOCAL_TRACE_QUEUE_SIZE];
-};
-
-static inline void
-local_trace_queue_init(struct local_trace_queue *q) {
-  q->read = q->write = 0;
-}
-static inline void
-local_trace_queue_poison(struct local_trace_queue *q) {
-  q->read = 0; q->write = LOCAL_TRACE_QUEUE_SIZE;
-}
-static inline size_t
-local_trace_queue_size(struct local_trace_queue *q) {
-  return q->write - q->read;
-}
-static inline int
-local_trace_queue_empty(struct local_trace_queue *q) {
-  return local_trace_queue_size(q) == 0;
-}
-static inline int
-local_trace_queue_full(struct local_trace_queue *q) {
-  return local_trace_queue_size(q) >= LOCAL_TRACE_QUEUE_SIZE;
-}
-static inline void
-local_trace_queue_push(struct local_trace_queue *q, struct gc_ref v) {
-  q->data[q->write++ & LOCAL_TRACE_QUEUE_MASK] = v;
-}
-static inline struct gc_ref
-local_trace_queue_pop(struct local_trace_queue *q) {
-  return q->data[q->read++ & LOCAL_TRACE_QUEUE_MASK];
-}
-
-static inline size_t
-local_trace_queue_pop_many(struct local_trace_queue *q, struct gc_ref **objv,
-                           size_t limit) {
-  size_t avail = local_trace_queue_size(q);
-  size_t read = q->read & LOCAL_TRACE_QUEUE_MASK;
-  size_t contig = LOCAL_TRACE_QUEUE_SIZE - read;
-  if (contig < avail) avail = contig;
-  if (limit < avail) avail = limit;
-  *objv = q->data + read;
-  q->read += avail;
-  return avail;
-}
 
 enum trace_worker_state {
   TRACE_WORKER_STOPPED,
@@ -96,7 +46,7 @@ struct tracer {
 struct local_tracer {
   struct trace_worker *worker;
   struct shared_worklist *share_deque;
-  struct local_trace_queue local;
+  struct local_worklist local;
 };
 
 struct context;
@@ -209,10 +159,10 @@ static inline int trace_edge(struct gc_heap *heap,
 static inline void
 tracer_share(struct local_tracer *trace) {
   DEBUG("tracer #%zu: sharing\n", trace->worker->id);
-  size_t to_share = LOCAL_TRACE_QUEUE_SHARE_AMOUNT;
+  size_t to_share = LOCAL_WORKLIST_SHARE_AMOUNT;
   while (to_share) {
     struct gc_ref *objv;
-    size_t count = local_trace_queue_pop_many(&trace->local, &objv, to_share);
+    size_t count = local_worklist_pop_many(&trace->local, &objv, to_share);
     shared_worklist_push_many(trace->share_deque, objv, count);
     to_share -= count;
   }
@@ -222,9 +172,9 @@ tracer_share(struct local_tracer *trace) {
 static inline void
 tracer_enqueue(struct gc_ref ref, struct gc_heap *heap, void *trace_data) {
   struct local_tracer *trace = trace_data;
-  if (local_trace_queue_full(&trace->local))
+  if (local_worklist_full(&trace->local))
     tracer_share(trace);
-  local_trace_queue_push(&trace->local, ref);
+  local_worklist_push(&trace->local, ref);
 }
 
 static inline void
@@ -344,7 +294,7 @@ trace_worker_trace(struct trace_worker *worker) {
   struct local_tracer trace;
   trace.worker = worker;
   trace.share_deque = &worker->deque;
-  local_trace_queue_init(&trace.local);
+  local_worklist_init(&trace.local);
 
   size_t n = 0;
   DEBUG("tracer #%zu: running trace loop\n", worker->id);
@@ -352,8 +302,8 @@ trace_worker_trace(struct trace_worker *worker) {
   do {
     while (1) {
       struct gc_ref ref;
-      if (!local_trace_queue_empty(&trace.local)) {
-        ref = local_trace_queue_pop(&trace.local);
+      if (!local_worklist_empty(&trace.local)) {
+        ref = local_worklist_pop(&trace.local);
       } else {
         ref = trace_worker_steal(&trace);
         if (!gc_ref_is_heap_object(ref))
@@ -389,7 +339,7 @@ tracer_trace(struct gc_heap *heap) {
   DEBUG("starting trace; %zu workers\n", tracer->worker_count);
 
   ssize_t parallel_threshold =
-    LOCAL_TRACE_QUEUE_SIZE - LOCAL_TRACE_QUEUE_SHARE_AMOUNT;
+    LOCAL_WORKLIST_SIZE - LOCAL_WORKLIST_SHARE_AMOUNT;
   if (shared_worklist_size(&tracer->workers[0].deque) >= parallel_threshold) {
     DEBUG("waking workers\n");
     tracer_unpark_all_workers(tracer);
