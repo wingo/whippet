@@ -18,7 +18,7 @@ static int
 gc_tracer_init(struct gc_tracer *tracer, struct gc_heap *heap,
                size_t parallelism) {
   tracer->heap = heap;
-  return simple_worklist_init(&heap_tracer(heap)->worklist);
+  return simple_worklist_init(&tracer->worklist);
 }
 static void gc_tracer_prepare(struct gc_tracer *tracer) {}
 static void gc_tracer_release(struct gc_tracer *tracer) {

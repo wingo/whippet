@@ -10,9 +10,6 @@ struct gc_heap;
 /// To be implemented by collector.
 ////////////////////////////////////////////////////////////////////////
 
-// Initialize the tracer when the heap is created.
-static inline struct gc_tracer* heap_tracer(struct gc_heap *heap);
-
 // Visit all fields in an object.
 static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
                              void *trace_data) GC_ALWAYS_INLINE;

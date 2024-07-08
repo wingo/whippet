@@ -351,9 +351,6 @@ struct gc_mutator {
   struct gc_mutator *next;
 };
 
-static inline struct gc_tracer* heap_tracer(struct gc_heap *heap) {
-  return &heap->tracer;
-}
 static inline struct mark_space* heap_mark_space(struct gc_heap *heap) {
   return &heap->mark_space;
 }

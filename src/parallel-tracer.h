@@ -25,6 +25,7 @@ enum trace_worker_state {
 struct gc_heap;
 struct trace_worker {
   struct gc_heap *heap;
+  struct gc_tracer *tracer;
   size_t id;
   size_t steal_id;
   pthread_t thread;
@@ -55,6 +56,7 @@ static int
 trace_worker_init(struct trace_worker *worker, struct gc_heap *heap,
                   struct gc_tracer *tracer, size_t id) {
   worker->heap = heap;
+  worker->tracer = tracer;
   worker->id = id;
   worker->steal_id = 0;
   worker->thread = 0;
@@ -67,7 +69,7 @@ static void trace_worker_trace(struct trace_worker *worker);
 static void*
 trace_worker_thread(void *data) {
   struct trace_worker *worker = data;
-  struct gc_tracer *tracer = heap_tracer(worker->heap);
+  struct gc_tracer *tracer = worker->tracer;
   long trace_epoch = 0;
 
   pthread_mutex_lock(&worker->lock);
@@ -155,7 +157,7 @@ tracer_share(struct local_tracer *trace) {
     shared_worklist_push_many(trace->share_deque, objv, count);
     to_share -= count;
   }
-  tracer_maybe_unpark_workers(heap_tracer(trace->worker->heap));
+  tracer_maybe_unpark_workers(trace->worker->tracer);
 }
 
 static inline void
@@ -218,7 +220,7 @@ trace_worker_should_continue(struct trace_worker *worker) {
   if (worker->id != 0)
     return 0;
 
-  struct gc_tracer *tracer = heap_tracer(worker->heap);
+  struct gc_tracer *tracer = worker->tracer;
 
   for (size_t spin_count = 0;; spin_count++) {
     if (atomic_load_explicit(&tracer->active_tracers,
@@ -249,7 +251,7 @@ trace_worker_should_continue(struct trace_worker *worker) {
 static struct gc_ref
 trace_worker_steal(struct local_tracer *trace) {
   struct trace_worker *worker = trace->worker;
-  struct gc_tracer *tracer = heap_tracer(worker->heap);
+  struct gc_tracer *tracer = worker->tracer;
 
   // It could be that the worker's local trace queue has simply
   // overflowed.  In that case avoid contention by trying to pop
@@ -272,7 +274,7 @@ trace_worker_steal(struct local_tracer *trace) {
 static void
 trace_worker_trace(struct trace_worker *worker) {
   struct gc_heap *heap = worker->heap;
-  struct gc_tracer *tracer = heap_tracer(heap);
+  struct gc_tracer *tracer = worker->tracer;
   atomic_fetch_add_explicit(&tracer->active_tracers, 1, memory_order_acq_rel);
 
   struct local_tracer trace;
