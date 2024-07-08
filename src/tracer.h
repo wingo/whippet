@@ -6,24 +6,28 @@
 
 struct gc_heap;
 
+// Data types to be implemented by tracer.
+struct gc_tracer;
+struct gc_trace_worker;
+// Data types to be implemented by collector.
+struct gc_trace_worker_data;
+
 ////////////////////////////////////////////////////////////////////////
 /// To be implemented by collector.
 ////////////////////////////////////////////////////////////////////////
 
-struct gc_tracer;
-struct gc_trace_worker_data;
 // Visit all fields in an object.
 static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
-                             void *trace_data) GC_ALWAYS_INLINE;
+                             struct gc_trace_worker *worker) GC_ALWAYS_INLINE;
 
 static void
 gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
                                          struct gc_heap *heap,
-                                         struct gc_trace_worker_data *worker_data,
-                                         void *data),
+                                         struct gc_trace_worker *worker,
+                                         struct gc_trace_worker_data *data),
                                struct gc_tracer *tracer,
                                struct gc_heap *heap,
-                               void *data);
+                               struct gc_trace_worker *worker);
 
 ////////////////////////////////////////////////////////////////////////
 /// To be implemented by tracer.
@@ -47,9 +51,8 @@ static inline void gc_tracer_enqueue_roots(struct gc_tracer *tracer,
                                            size_t count);
 
 // Given that an object has been shaded grey, enqueue for tracing.
-static inline void gc_tracer_enqueue(struct gc_tracer *tracer,
-                                     struct gc_ref ref,
-                                     void *trace_data) GC_ALWAYS_INLINE;
+static inline void gc_trace_worker_enqueue(struct gc_trace_worker *worker,
+                                           struct gc_ref ref) GC_ALWAYS_INLINE;
 
 // Run the full trace.
 static inline void gc_tracer_trace(struct gc_tracer *tracer);

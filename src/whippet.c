@@ -1097,20 +1097,21 @@ void gc_heap_set_extern_space(struct gc_heap *heap,
 static void
 gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
                                          struct gc_heap *heap,
-                                         struct gc_trace_worker_data *worker_data,
-                                         void *data),
+                                         struct gc_trace_worker *worker,
+                                         struct gc_trace_worker_data *data),
                                struct gc_tracer *tracer,
                                struct gc_heap *heap,
-                               void *data) {
-  f(tracer, heap, NULL, data);
+                               struct gc_trace_worker *worker) {
+  f(tracer, heap, worker, NULL);
 }
 
 static inline void tracer_visit(struct gc_edge edge, struct gc_heap *heap,
                                 void *trace_data) GC_ALWAYS_INLINE;
 static inline void
 tracer_visit(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
+  struct gc_trace_worker *worker = trace_data;
   if (trace_edge(heap, edge))
-    gc_tracer_enqueue(&heap->tracer, gc_edge_ref(edge), trace_data);
+    gc_trace_worker_enqueue(worker, gc_edge_ref(edge));
 }
 
 static void trace_and_enqueue_locally(struct gc_edge edge,
@@ -1193,15 +1194,16 @@ trace_conservative_edges(uintptr_t low,
 static inline void tracer_trace_conservative_ref(struct gc_conservative_ref ref,
                                                  struct gc_heap *heap,
                                                  void *data) {
+  struct gc_trace_worker *worker = data;
   int possibly_interior = 0;
   struct gc_ref resolved = trace_conservative_ref(heap, ref, possibly_interior);
   if (gc_ref_is_heap_object(resolved))
-    gc_tracer_enqueue(&heap->tracer, resolved, data);
+    gc_trace_worker_enqueue(worker, resolved);
 }
 
 static inline void trace_one_conservatively(struct gc_ref ref,
                                             struct gc_heap *heap,
-                                            void *mark_data) {
+                                            struct gc_trace_worker *worker) {
   size_t bytes;
   if (GC_LIKELY(mark_space_contains(heap_mark_space(heap), ref))) {
     // Generally speaking we trace conservatively and don't allow much
@@ -1211,7 +1213,7 @@ static inline void trace_one_conservatively(struct gc_ref ref,
     uint8_t meta = *metadata_byte_for_addr(gc_ref_value(ref));
     if (GC_UNLIKELY(meta & METADATA_BYTE_EPHEMERON)) {
       gc_trace_ephemeron(gc_ref_heap_object(ref), tracer_visit, heap,
-                         mark_data);
+                         worker);
       return;
     }
     bytes = mark_space_object_size(heap_mark_space(heap), ref);
@@ -1221,15 +1223,15 @@ static inline void trace_one_conservatively(struct gc_ref ref,
   trace_conservative_edges(gc_ref_value(ref),
                            gc_ref_value(ref) + bytes,
                            tracer_trace_conservative_ref, heap,
-                           mark_data);
+                           worker);
 }
 
 static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
-                             void *mark_data) {
+                             struct gc_trace_worker *worker) {
   if (gc_has_conservative_intraheap_edges())
-    trace_one_conservatively(ref, heap, mark_data);
+    trace_one_conservatively(ref, heap, worker);
   else
-    gc_trace_object(ref, tracer_visit, heap, mark_data, NULL);
+    gc_trace_object(ref, tracer_visit, heap, worker, NULL);
 }
 
 static void
