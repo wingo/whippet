@@ -36,6 +36,7 @@ struct trace_worker {
 #define TRACE_WORKERS_MAX_COUNT 8
 
 struct gc_tracer {
+  struct gc_heap *heap;
   atomic_size_t active_tracers;
   size_t worker_count;
   long epoch;
@@ -92,8 +93,9 @@ trace_worker_spawn(struct trace_worker *worker) {
 }
 
 static int
-gc_tracer_init(struct gc_heap *heap, size_t parallelism) {
-  struct gc_tracer *tracer = heap_tracer(heap);
+gc_tracer_init(struct gc_tracer *tracer, struct gc_heap *heap,
+               size_t parallelism) {
+  tracer->heap = heap;
   atomic_init(&tracer->active_tracers, 0);
   tracer->epoch = 0;
   pthread_mutex_init(&tracer->lock, NULL);
@@ -116,13 +118,11 @@ gc_tracer_init(struct gc_heap *heap, size_t parallelism) {
   return 1;
 }
 
-static void gc_tracer_prepare(struct gc_heap *heap) {
-  struct gc_tracer *tracer = heap_tracer(heap);
+static void gc_tracer_prepare(struct gc_tracer *tracer) {
   for (size_t i = 0; i < tracer->worker_count; i++)
     tracer->workers[i].steal_id = 0;
 }
-static void gc_tracer_release(struct gc_heap *heap) {
-  struct gc_tracer *tracer = heap_tracer(heap);
+static void gc_tracer_release(struct gc_tracer *tracer) {
   for (size_t i = 0; i < tracer->worker_count; i++)
     shared_worklist_release(&tracer->workers[i].deque);
 }
@@ -159,7 +159,8 @@ tracer_share(struct local_tracer *trace) {
 }
 
 static inline void
-gc_tracer_enqueue(struct gc_ref ref, struct gc_heap *heap, void *trace_data) {
+gc_tracer_enqueue(struct gc_tracer *tracer, struct gc_ref ref,
+                  void *trace_data) {
   struct local_tracer *trace = trace_data;
   if (local_worklist_full(&trace->local))
     tracer_share(trace);
@@ -316,9 +317,7 @@ gc_tracer_enqueue_roots(struct gc_tracer *tracer, struct gc_ref *objv,
 }
 
 static inline void
-gc_tracer_trace(struct gc_heap *heap) {
-  struct gc_tracer *tracer = heap_tracer(heap);
-
+gc_tracer_trace(struct gc_tracer *tracer) {
   DEBUG("starting trace; %zu workers\n", tracer->worker_count);
 
   ssize_t parallel_threshold =

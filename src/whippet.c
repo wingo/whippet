@@ -674,6 +674,9 @@ static inline int do_trace(struct gc_heap *heap, struct gc_edge edge,
     return gc_extern_space_visit(heap_extern_space(heap), edge, ref);
 }
 
+static inline int trace_edge(struct gc_heap *heap,
+                             struct gc_edge edge) GC_ALWAYS_INLINE;
+
 static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge) {
   struct gc_ref ref = gc_edge_ref(edge);
   int is_new = do_trace(heap, edge, ref);
@@ -1094,6 +1097,14 @@ void gc_heap_set_extern_space(struct gc_heap *heap,
   heap->extern_space = space;
 }
 
+static inline void tracer_visit(struct gc_edge edge, struct gc_heap *heap,
+                                void *trace_data) GC_ALWAYS_INLINE;
+static inline void
+tracer_visit(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
+  if (trace_edge(heap, edge))
+    gc_tracer_enqueue(&heap->tracer, gc_edge_ref(edge), trace_data);
+}
+
 static void trace_and_enqueue_locally(struct gc_edge edge,
                                       struct gc_heap *heap,
                                       void *data) {
@@ -1177,7 +1188,7 @@ static inline void tracer_trace_conservative_ref(struct gc_conservative_ref ref,
   int possibly_interior = 0;
   struct gc_ref resolved = trace_conservative_ref(heap, ref, possibly_interior);
   if (gc_ref_is_heap_object(resolved))
-    gc_tracer_enqueue(resolved, heap, data);
+    gc_tracer_enqueue(&heap->tracer, resolved, data);
 }
 
 static inline void trace_one_conservatively(struct gc_ref ref,
@@ -1889,7 +1900,7 @@ static void collect(struct gc_mutator *mut,
   large_object_space_start_gc(lospace, is_minor);
   gc_extern_space_start_gc(exspace, is_minor);
   resolve_ephemerons_lazily(heap);
-  gc_tracer_prepare(heap);
+  gc_tracer_prepare(&heap->tracer);
   HEAP_EVENT(heap, requesting_stop);
   request_mutators_to_stop(heap);
   trace_mutator_roots_with_lock_before_stop(mut);
@@ -1906,14 +1917,14 @@ static void collect(struct gc_mutator *mut,
   prepare_for_evacuation(heap);
   trace_roots_after_stop(heap);
   HEAP_EVENT(heap, roots_traced);
-  gc_tracer_trace(heap);
+  gc_tracer_trace(&heap->tracer);
   HEAP_EVENT(heap, heap_traced);
   resolve_ephemerons_eagerly(heap);
   while (enqueue_resolved_ephemerons(heap))
-    gc_tracer_trace(heap);
+    gc_tracer_trace(&heap->tracer);
   HEAP_EVENT(heap, ephemerons_traced);
   sweep_ephemerons(heap);
-  gc_tracer_release(heap);
+  gc_tracer_release(&heap->tracer);
   mark_space_finish_gc(space, gc_kind);
   large_object_space_finish_gc(lospace, is_minor);
   gc_extern_space_finish_gc(exspace, is_minor);
@@ -2366,7 +2377,7 @@ static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   pthread_cond_init(&heap->collector_cond, NULL);
   heap->size = options->common.heap_size;
 
-  if (!gc_tracer_init(heap, options->common.parallelism))
+  if (!gc_tracer_init(&heap->tracer, heap, options->common.parallelism))
     GC_CRASH();
 
   heap->pending_ephemerons_size_factor = 0.005;
