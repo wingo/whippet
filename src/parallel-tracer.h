@@ -12,6 +12,7 @@
 #include "local-worklist.h"
 #include "shared-worklist.h"
 #include "spin.h"
+#include "tracer.h"
 
 enum trace_worker_state {
   TRACE_WORKER_STOPPED,
@@ -48,9 +49,6 @@ struct local_tracer {
   struct shared_worklist *share_deque;
   struct local_worklist local;
 };
-
-struct context;
-static inline struct tracer* heap_tracer(struct gc_heap *heap);
 
 static int
 trace_worker_init(struct trace_worker *worker, struct gc_heap *heap,
@@ -147,15 +145,6 @@ tracer_maybe_unpark_workers(struct tracer *tracer) {
     tracer_unpark_all_workers(tracer);
 }
 
-static inline void tracer_visit(struct gc_edge edge, struct gc_heap *heap,
-                                void *trace_data) GC_ALWAYS_INLINE;
-static inline void tracer_enqueue(struct gc_ref ref, struct gc_heap *heap,
-                                  void *trace_data) GC_ALWAYS_INLINE;
-static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
-                             void *trace_data) GC_ALWAYS_INLINE;
-static inline int trace_edge(struct gc_heap *heap,
-                             struct gc_edge edge) GC_ALWAYS_INLINE;
-
 static inline void
 tracer_share(struct local_tracer *trace) {
   DEBUG("tracer #%zu: sharing\n", trace->worker->id);
@@ -175,12 +164,6 @@ tracer_enqueue(struct gc_ref ref, struct gc_heap *heap, void *trace_data) {
   if (local_worklist_full(&trace->local))
     tracer_share(trace);
   local_worklist_push(&trace->local, ref);
-}
-
-static inline void
-tracer_visit(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
-  if (trace_edge(heap, edge))
-    tracer_enqueue(gc_edge_ref(edge), heap, trace_data);
 }
 
 static struct gc_ref
