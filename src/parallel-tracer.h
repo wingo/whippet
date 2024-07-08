@@ -32,6 +32,7 @@ struct trace_worker {
   enum trace_worker_state state;
   pthread_mutex_t lock;
   struct shared_worklist deque;
+  struct gc_trace_worker_data *data;
 };
 
 #define TRACE_WORKERS_MAX_COUNT 8
@@ -60,7 +61,9 @@ trace_worker_init(struct trace_worker *worker, struct gc_heap *heap,
   worker->id = id;
   worker->steal_id = 0;
   worker->thread = 0;
+  worker->state = TRACE_WORKER_STOPPED;
   pthread_mutex_init(&worker->lock, NULL);
+  worker->data = NULL;
   return shared_worklist_init(&worker->deque);
 }
 
@@ -272,10 +275,13 @@ trace_worker_steal(struct local_tracer *trace) {
 }
 
 static void
-trace_worker_trace(struct trace_worker *worker) {
-  struct gc_heap *heap = worker->heap;
-  struct gc_tracer *tracer = worker->tracer;
+trace_with_data(struct gc_tracer *tracer,
+                struct gc_heap *heap,
+                struct gc_trace_worker_data *worker_data,
+                void *data) {
+  struct trace_worker *worker = data;
   atomic_fetch_add_explicit(&tracer->active_tracers, 1, memory_order_acq_rel);
+  worker->data = worker_data;
 
   struct local_tracer trace;
   trace.worker = worker;
@@ -302,7 +308,14 @@ trace_worker_trace(struct trace_worker *worker) {
 
   DEBUG("tracer #%zu: done tracing, %zu objects traced\n", worker->id, n);
 
+  worker->data = NULL;
   atomic_fetch_sub_explicit(&tracer->active_tracers, 1, memory_order_acq_rel);
+}
+
+static void
+trace_worker_trace(struct trace_worker *worker) {
+  gc_trace_worker_call_with_data(trace_with_data, worker->tracer,
+                                 worker->heap, worker);
 }
 
 static inline void

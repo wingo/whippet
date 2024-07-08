@@ -1094,6 +1094,17 @@ void gc_heap_set_extern_space(struct gc_heap *heap,
   heap->extern_space = space;
 }
 
+static void
+gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
+                                         struct gc_heap *heap,
+                                         struct gc_trace_worker_data *worker_data,
+                                         void *data),
+                               struct gc_tracer *tracer,
+                               struct gc_heap *heap,
+                               void *data) {
+  f(tracer, heap, NULL, data);
+}
+
 static inline void tracer_visit(struct gc_edge edge, struct gc_heap *heap,
                                 void *trace_data) GC_ALWAYS_INLINE;
 static inline void

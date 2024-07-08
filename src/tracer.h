@@ -10,17 +10,24 @@ struct gc_heap;
 /// To be implemented by collector.
 ////////////////////////////////////////////////////////////////////////
 
+struct gc_tracer;
+struct gc_trace_worker_data;
 // Visit all fields in an object.
 static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
                              void *trace_data) GC_ALWAYS_INLINE;
 
+static void
+gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
+                                         struct gc_heap *heap,
+                                         struct gc_trace_worker_data *worker_data,
+                                         void *data),
+                               struct gc_tracer *tracer,
+                               struct gc_heap *heap,
+                               void *data);
+
 ////////////////////////////////////////////////////////////////////////
 /// To be implemented by tracer.
 ////////////////////////////////////////////////////////////////////////
-
-// The tracer struct itself should be defined by the tracer
-// implementation.
-struct gc_tracer;
 
 // Initialize the tracer when the heap is created.
 static int gc_tracer_init(struct gc_tracer *tracer, struct gc_heap *heap,

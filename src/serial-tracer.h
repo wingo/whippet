@@ -40,13 +40,20 @@ gc_tracer_enqueue(struct gc_tracer *tracer, struct gc_ref ref,
   gc_tracer_enqueue_root(tracer, ref);
 }
 static inline void
-gc_tracer_trace(struct gc_tracer *tracer) {
+tracer_trace_with_data(struct gc_tracer *tracer, struct gc_heap *heap,
+                       struct gc_trace_worker_data *worker_data,
+                       void *data) {
   do {
     struct gc_ref obj = simple_worklist_pop(&tracer->worklist);
     if (!gc_ref_is_heap_object(obj))
       break;
-    trace_one(obj, tracer->heap, NULL);
+    trace_one(obj, heap, NULL);
   } while (1);
+}
+static inline void
+gc_tracer_trace(struct gc_tracer *tracer) {
+  gc_trace_worker_call_with_data(tracer_trace_with_data, tracer, tracer->heap,
+                                 NULL);
 }
 
 #endif // SERIAL_TRACER_H
