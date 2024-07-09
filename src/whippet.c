@@ -831,13 +831,6 @@ static inline size_t mark_space_object_size(struct mark_space *space,
   return granules * GRANULE_SIZE;
 }
 
-static inline size_t gc_object_allocation_size(struct gc_heap *heap,
-                                               struct gc_ref ref) {
-  if (GC_LIKELY(mark_space_contains(heap_mark_space(heap), ref)))
-    return mark_space_object_size(heap_mark_space(heap), ref);
-  return large_object_space_object_size(heap_large_object_space(heap), ref);
-}
-
 static int heap_has_multiple_mutators(struct gc_heap *heap) {
   return atomic_load_explicit(&heap->multithreaded, memory_order_relaxed);
 }

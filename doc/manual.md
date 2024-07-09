@@ -140,7 +140,10 @@ acquired and completed the forwarding attempt.
 
 An `ACQUIRED` object can then be forwarded via
 `gc_atomic_forward_commit`, or the forwarding attempt can be aborted via
-`gc_atomic_forward_abort`.
+`gc_atomic_forward_abort`.  Also, when an object is acquired, the
+collector may call `gc_atomic_forward_object_size` to compute how many
+bytes to copy.  (The collector may choose instead to record object sizes
+in a different way.)
 
 All of these `gc_atomic_forward` functions are to be implemented by the
 embedder.  Some programs may allocate a dedicated forwarding word in all

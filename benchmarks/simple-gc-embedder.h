@@ -168,6 +168,20 @@ gc_atomic_forward_abort(struct gc_atomic_forward *fwd) {
   fwd->state = GC_FORWARDING_STATE_ABORTED;
 }
 
+static inline size_t
+gc_atomic_forward_object_size(struct gc_atomic_forward *fwd) {
+  GC_ASSERT(fwd->state == GC_FORWARDING_STATE_ACQUIRED);
+  switch (tag_live_alloc_kind(fwd->data)) {
+#define SCAN_OBJECT(name, Name, NAME)                                   \
+    case ALLOC_KIND_##NAME:                                             \
+      return name##_size(gc_ref_heap_object(ref));                      \
+    FOR_EACH_HEAP_OBJECT_KIND(SCAN_OBJECT)
+#undef SCAN_OBJECT
+  default:
+    GC_CRASH();
+  }
+}
+
 static inline void
 gc_atomic_forward_commit(struct gc_atomic_forward *fwd, struct gc_ref new_ref) {
   GC_ASSERT(fwd->state == GC_FORWARDING_STATE_ACQUIRED);

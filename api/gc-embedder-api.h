@@ -66,6 +66,7 @@ GC_EMBEDDER_API inline struct gc_atomic_forward gc_atomic_forward_begin(struct g
 GC_EMBEDDER_API inline void gc_atomic_forward_acquire(struct gc_atomic_forward *);
 GC_EMBEDDER_API inline int gc_atomic_forward_retry_busy(struct gc_atomic_forward *);
 GC_EMBEDDER_API inline void gc_atomic_forward_abort(struct gc_atomic_forward *);
+GC_EMBEDDER_API inline size_t gc_atomic_forward_object_size(struct gc_atomic_forward *);
 GC_EMBEDDER_API inline void gc_atomic_forward_commit(struct gc_atomic_forward *,
                                                      struct gc_ref new_ref);
 GC_EMBEDDER_API inline uintptr_t gc_atomic_forward_address(struct gc_atomic_forward *);
