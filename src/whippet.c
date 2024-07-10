@@ -1228,6 +1228,13 @@ static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
     gc_trace_object(ref, tracer_visit, heap, worker, NULL);
 }
 
+static inline void trace_root(struct gc_root root,
+                              struct gc_heap *heap,
+                              struct gc_trace_worker *worker) {
+  // We don't use parallel root tracing yet.
+  GC_CRASH();
+}
+
 static void
 mark_and_globally_enqueue_mutator_conservative_roots(uintptr_t low,
                                                      uintptr_t high,
@@ -1876,8 +1883,11 @@ static void resolve_ephemerons_eagerly(struct gc_heap *heap) {
 }
 
 static int enqueue_resolved_ephemerons(struct gc_heap *heap) {
-  return gc_pop_resolved_ephemerons(heap, trace_and_enqueue_globally,
-                                    NULL);
+  struct gc_ephemeron *resolved = gc_pop_resolved_ephemerons(heap);
+  if (!resolved)
+    return 0;
+  gc_trace_resolved_ephemerons(resolved, trace_and_enqueue_globally, heap, NULL);
+  return 1;
 }
 
 static void sweep_ephemerons(struct gc_heap *heap) {

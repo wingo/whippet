@@ -32,12 +32,16 @@ gc_scan_pending_ephemerons(struct gc_pending_ephemerons *state,
                            struct gc_heap *heap, size_t shard,
                            size_t nshards);
 
-GC_INTERNAL int
-gc_pop_resolved_ephemerons(struct gc_heap *heap,
-                           void (*visit)(struct gc_edge edge,
-                                         struct gc_heap *heap,
-                                         void *visit_data),
-                           void *trace_data);
+GC_INTERNAL struct gc_ephemeron*
+gc_pop_resolved_ephemerons(struct gc_heap *heap);
+
+GC_INTERNAL void
+gc_trace_resolved_ephemerons(struct gc_ephemeron *resolved,
+                             void (*visit)(struct gc_edge edge,
+                                           struct gc_heap *heap,
+                                           void *visit_data),
+                             struct gc_heap *heap,
+                             void *trace_data);
 
 GC_INTERNAL void
 gc_sweep_pending_ephemerons(struct gc_pending_ephemerons *state,

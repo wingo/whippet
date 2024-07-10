@@ -521,23 +521,25 @@ gc_scan_pending_ephemerons(struct gc_pending_ephemerons *state,
   }
 }
 
-int
-gc_pop_resolved_ephemerons(struct gc_heap *heap,
-                           void (*visit)(struct gc_edge edge,
-                                         struct gc_heap *heap,
-                                         void *visit_data),
-                           void *trace_data) {
+struct gc_ephemeron*
+gc_pop_resolved_ephemerons(struct gc_heap *heap) {
   struct gc_pending_ephemerons *state = gc_heap_pending_ephemerons(heap);
-  struct gc_ephemeron *resolved = atomic_exchange(&state->resolved, NULL);
-  if (!resolved)
-    return 0;
+  return atomic_exchange(&state->resolved, NULL);
+}    
+
+void
+gc_trace_resolved_ephemerons(struct gc_ephemeron *resolved,
+                             void (*visit)(struct gc_edge edge,
+                                           struct gc_heap *heap,
+                                           void *visit_data),
+                             struct gc_heap *heap,
+                             void *trace_data) {
   for (; resolved; resolved = resolved->resolved) {
     visit(gc_ephemeron_value_edge(resolved), heap, trace_data);
     // RESOLVED -> TRACED.
     atomic_store_explicit(&resolved->state, EPHEMERON_STATE_TRACED,
                           memory_order_release);
   }
-  return 1;
 }    
 
 void

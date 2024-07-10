@@ -380,9 +380,14 @@ static void collect(struct gc_mutator *mut, size_t for_alloc) {
   HEAP_EVENT(heap, heap_traced);
   gc_scan_pending_ephemerons(heap->pending_ephemerons, heap, 0, 1);
   heap->check_pending_ephemerons = 1;
-  while (gc_pop_resolved_ephemerons(heap, trace, NULL))
+  do {
+    struct gc_ephemeron *resolved = gc_pop_resolved_ephemerons(heap);
+    if (!resolved)
+      break;
+    gc_trace_resolved_ephemerons(resolved, trace, heap, NULL);
     while(grey < semi->hp)
       grey = scan(heap, gc_ref(grey));
+  } while (1);
   HEAP_EVENT(heap, ephemerons_traced);
   large_object_space_finish_gc(large, 0);
   gc_extern_space_finish_gc(heap->extern_space, 0);
