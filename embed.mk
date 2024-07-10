@@ -40,6 +40,9 @@ GC_LIBS_bdw        = `pkg-config --libs bdw-gc`
 GC_STEM_semi       = semi
 GC_CFLAGS_semi     = -DGC_PRECISE_ROOTS=1
 
+GC_STEM_pcc        = pcc
+GC_CFLAGS_pcc      = -DGC_PRECISE_ROOTS=1 -DGC_PARALLEL=1
+
 define whippet_variant
 GC_STEM_$(1)       = whippet
 GC_CFLAGS_$(1)     = $(2)

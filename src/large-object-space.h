@@ -58,6 +58,11 @@ static size_t large_object_space_npages(struct large_object_space *space,
   return (bytes + space->page_size - 1) >> space->page_size_log2;
 }
 
+static size_t
+large_object_space_size_at_last_collection(struct large_object_space *space) {
+  return space->live_pages_at_last_collection << space->page_size_log2;
+}
+
 static void large_object_space_clear_one_remembered(uintptr_t addr,
                                                     void *unused) {
   struct gc_ref ref = gc_ref(addr);
