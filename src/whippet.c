@@ -678,7 +678,8 @@ static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge) {
   struct gc_ref ref = gc_edge_ref(edge);
   int is_new = do_trace(heap, edge, ref);
 
-  if (GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
+  if (is_new &&
+      GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
                                        memory_order_relaxed)))
     gc_resolve_pending_ephemerons(ref, heap);
 
