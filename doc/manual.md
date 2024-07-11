@@ -182,8 +182,9 @@ prepared!
 ## Configuration, compilation, and linking
 
 To the user, Whippet presents an abstract API that does not encode the
-specificities of any given collector.  Whippet currently includes three
+specificities of any given collector.  Whippet currently includes four
 implementations of that API: `semi`, a simple semi-space collector;
+`pcc`, a parallel copying collector (like semi but multithreaded);
 `bdw`, an implementation via the third-party
 [Boehm-Demers-Weiser](https://github.com/ivmai/bdwgc) conservative
 collector; and `whippet`, an Immix-like collector.
