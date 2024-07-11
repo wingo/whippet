@@ -125,6 +125,7 @@ gc_tracer_init(struct gc_tracer *tracer, struct gc_heap *heap,
   for (size_t i = 1; i < desired_worker_count; i++) {
     if (!trace_worker_init(&tracer->workers[i], heap, tracer, i))
       break;
+    pthread_mutex_lock(&tracer->workers[i].lock);
     if (trace_worker_spawn(&tracer->workers[i]))
       tracer->worker_count++;
     else
@@ -256,9 +257,11 @@ trace_worker_should_continue(struct gc_trace_worker *worker) {
       }
       int done = (locked == tracer->worker_count) &&
         !trace_worker_can_steal_from_any(worker, tracer);
+      if (done)
+        return 0;
       while (locked > 1)
         pthread_mutex_unlock(&tracer->workers[--locked].lock);
-      return !done;
+      return 1;
     }
     // spin
     LOG("checking for termination: spinning #%zu\n", spin_count);
@@ -349,6 +352,9 @@ gc_tracer_enqueue_roots(struct gc_tracer *tracer, struct gc_ref *objv,
 static inline void
 gc_tracer_trace(struct gc_tracer *tracer) {
   DEBUG("starting trace; %zu workers\n", tracer->worker_count);
+
+  for (int i = 1; i < tracer->worker_count; i++)
+    pthread_mutex_unlock(&tracer->workers[i].lock);
 
   ssize_t parallel_threshold =
     LOCAL_WORKLIST_SIZE - LOCAL_WORKLIST_SHARE_AMOUNT;
