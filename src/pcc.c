@@ -52,6 +52,7 @@ struct pcc_block {
     struct {
       struct pcc_block *next;
       uint8_t in_core;
+      size_t allocated; // For partially-allocated blocks.
     };
     uint8_t padding[HEADER_BYTES_PER_BLOCK];
   };
@@ -101,6 +102,7 @@ struct pcc_extent {
 
 struct pcc_space {
   struct pcc_block *available;
+  struct pcc_block *partially_allocated;
   struct pcc_block *allocated ALIGNED_TO_AVOID_FALSE_SHARING;
   size_t allocated_block_count;
   struct pcc_block *paged_out ALIGNED_TO_AVOID_FALSE_SHARING;
@@ -223,6 +225,17 @@ static void push_allocated_block(struct pcc_space *space,
                             memory_order_relaxed);
 }
 
+static struct pcc_block* pop_partially_allocated_block(struct pcc_space *space) {
+  return pop_block(&space->partially_allocated);
+}
+static void push_partially_allocated_block(struct pcc_space *space,
+                                           struct pcc_block *block,
+                                           uintptr_t hp) {
+  block->allocated = hp & (REGION_SIZE - 1);
+  GC_ASSERT(block->allocated);
+  push_block(&space->partially_allocated, block);
+}
+
 static struct pcc_block* pop_paged_out_block(struct pcc_space *space) {
   return pop_block(&space->paged_out);
 }
@@ -291,10 +304,9 @@ gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
                                struct gc_trace_worker *worker) {
   struct gc_trace_worker_data data = {0,0,NULL};
   f(tracer, heap, worker, &data);
-  if (data.block) {
-    record_fragmentation(heap_pcc_space(heap), data.limit - data.hp);
-    push_allocated_block(heap_pcc_space(heap), data.block);
-  }
+  if (data.block)
+    push_partially_allocated_block(heap_pcc_space(heap), data.block,
+                                   data.hp);
   // FIXME: Add (data.limit - data.hp) to fragmentation.
 }
 
@@ -309,18 +321,26 @@ static void clear_mutator_allocation_buffers(struct gc_heap *heap) {
   }
 }
 
+static struct pcc_block*
+append_block_lists(struct pcc_block *head, struct pcc_block *tail) {
+  if (!head) return tail;
+  if (tail) {
+    struct pcc_block *walk = head;
+    while (walk->next)
+      walk = walk->next;
+    walk->next = tail;
+  }
+  return head;
+}
+
 static void pcc_space_flip(struct pcc_space *space) {
   // Mutators stopped, can access nonatomically.
   struct pcc_block *available = space->available;
+  struct pcc_block *partially_allocated = space->partially_allocated;
   struct pcc_block *allocated = space->allocated;
-  if (available) {
-    struct pcc_block *tail = available;
-    while (tail->next)
-      tail = tail->next;
-    tail->next = allocated;
-    allocated = available;
-  }
-  space->available = allocated;
+  allocated = append_block_lists(partially_allocated, allocated);
+  space->available = append_block_lists(available, allocated);
+  space->partially_allocated = NULL;
   space->allocated = NULL;
   space->allocated_block_count = 0;
   space->fragmentation = 0;
@@ -345,13 +365,21 @@ static struct gc_ref evacuation_allocate(struct pcc_space *space,
   uintptr_t hp = data->hp;
   uintptr_t limit = data->limit;
   uintptr_t new_hp = hp + size;
-  struct gc_ref ret;
-  if (new_hp <= limit) {
-    data->hp = new_hp;
-    return gc_ref(hp);
-  }
+  if (new_hp <= limit)
+    goto done;
 
   if (data->block) {
+    record_fragmentation(space, limit - hp);
+    push_allocated_block(space, data->block);
+  }
+  while ((data->block = pop_partially_allocated_block(space))) {
+    pcc_space_compute_region(space, data->block, &hp, &limit);
+    hp += data->block->allocated;
+    new_hp = hp + size;
+    if (new_hp <= limit) {
+      data->limit = limit;
+      goto done;
+    }
     record_fragmentation(space, limit - hp);
     push_allocated_block(space, data->block);
   }
@@ -364,9 +392,12 @@ static struct gc_ref evacuation_allocate(struct pcc_space *space,
     GC_CRASH();
   }
   pcc_space_compute_region(space, data->block, &hp, &data->limit);
+  new_hp = hp + size;
   // The region is empty and is therefore large enough for a small
   // allocation.
-  data->hp = hp + size;
+
+done:
+  data->hp = new_hp;
   return gc_ref(hp);
 }
 
@@ -507,6 +538,7 @@ static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->event_listener_data =
     heap->event_listener.mutator_added(heap->event_listener_data);
   heap_lock(heap);
+  mut->block = NULL;
   // We have no roots.  If there is a GC currently in progress, we have
   // nothing to add.  Just wait until it's done.
   while (mutators_are_stopping(heap))
@@ -525,18 +557,23 @@ static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
 static void remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   MUTATOR_EVENT(mut, mutator_removed);
   mut->heap = NULL;
+  if (mut->block) {
+    push_partially_allocated_block(heap_pcc_space(heap), mut->block,
+                                   mut->hp);
+    mut->block = NULL;
+  }
   heap_lock(heap);
   heap->mutator_count--;
-  // We have no roots.  If there is a GC stop currently in progress,
-  // maybe tell the controller it can continue.
-  if (mutators_are_stopping(heap) && all_mutators_stopped(heap))
-    pthread_cond_signal(&heap->collector_cond);
   if (mut->next)
     mut->next->prev = mut->prev;
   if (mut->prev)
     mut->prev->next = mut->next;
   else
     heap->mutators = mut->next;
+  // We have no roots.  If there is a GC stop currently in progress,
+  // maybe tell the controller it can continue.
+  if (mutators_are_stopping(heap) && all_mutators_stopped(heap))
+    pthread_cond_signal(&heap->collector_cond);
   heap_unlock(heap);
 }
 
@@ -794,27 +831,35 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
   uintptr_t hp = mut->hp;
   uintptr_t limit = mut->limit;
   uintptr_t new_hp = hp + size;
-  struct gc_ref ret;
-  if (new_hp <= limit) {
-    mut->hp = new_hp;
-    gc_clear_fresh_allocation(gc_ref(hp), size);
-    return gc_ref_heap_object(gc_ref(hp));
-  }
+  if (new_hp <= limit)
+    goto done;
 
   struct pcc_space *space = heap_pcc_space(mutator_heap(mut));
   if (mut->block) {
     record_fragmentation(space, limit - hp);
     push_allocated_block(space, mut->block);
   }
-  mut->block = pop_available_block(space);
-  while (!mut->block) {
+  while ((mut->block = pop_partially_allocated_block(space))) {
+    pcc_space_compute_region(space, mut->block, &hp, &limit);
+    hp += mut->block->allocated;
+    new_hp = hp + size;
+    if (new_hp <= limit) {
+      mut->limit = limit;
+      goto done;
+    }
+    record_fragmentation(space, limit - hp);
+    push_allocated_block(space, mut->block);
+  }
+  while (!(mut->block = pop_available_block(space))) {
     trigger_collection(mut);
-    mut->block = pop_available_block(space);
   }
   pcc_space_compute_region(space, mut->block, &hp, &mut->limit);
+  new_hp = hp + size;
   // The region is empty and is therefore large enough for a small
   // allocation.
-  mut->hp = hp + size;
+
+done:
+  mut->hp = new_hp;
   gc_clear_fresh_allocation(gc_ref(hp), size);
   return gc_ref_heap_object(gc_ref(hp));
 }
@@ -929,6 +974,7 @@ static int pcc_space_init(struct pcc_space *space, struct gc_heap *heap) {
     return 0;
 
   space->available = NULL;
+  space->partially_allocated = NULL;
   space->allocated = NULL;
   space->allocated_block_count = 0;
   space->paged_out = NULL;
