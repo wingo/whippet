@@ -231,9 +231,15 @@ static struct pcc_block* pop_partially_allocated_block(struct pcc_space *space) 
 static void push_partially_allocated_block(struct pcc_space *space,
                                            struct pcc_block *block,
                                            uintptr_t hp) {
-  block->allocated = hp & (REGION_SIZE - 1);
-  GC_ASSERT(block->allocated);
-  push_block(&space->partially_allocated, block);
+  size_t allocated = hp & (REGION_SIZE - 1);
+  if (allocated) {
+    block->allocated = allocated;
+    push_block(&space->partially_allocated, block);
+  } else {
+    // Could be hp was bumped all the way to the limit, in which case
+    // allocated wraps to 0; in any case the block is full.
+    push_allocated_block(space, block);
+  }
 }
 
 static struct pcc_block* pop_paged_out_block(struct pcc_space *space) {
