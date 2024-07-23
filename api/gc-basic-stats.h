@@ -58,6 +58,7 @@ static inline void gc_basic_stats_mutators_stopped(void *data) {}
 static inline void gc_basic_stats_roots_traced(void *data) {}
 static inline void gc_basic_stats_heap_traced(void *data) {}
 static inline void gc_basic_stats_ephemerons_traced(void *data) {}
+static inline void gc_basic_stats_finalizers_traced(void *data) {}
 
 static inline void gc_basic_stats_restarting_mutators(void *data) {
   struct gc_basic_stats *stats = data;
@@ -100,6 +101,7 @@ static inline void gc_basic_stats_live_data_size(void *data, size_t size) {
     gc_basic_stats_roots_traced,                                        \
     gc_basic_stats_heap_traced,                                         \
     gc_basic_stats_ephemerons_traced,                                   \
+    gc_basic_stats_finalizers_traced,                                   \
     gc_basic_stats_restarting_mutators,                                 \
     gc_basic_stats_mutator_added,                                       \
     gc_basic_stats_mutator_cause_gc,                                    \

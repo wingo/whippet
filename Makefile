@@ -52,6 +52,8 @@ obj/gc-options.o: src/gc-options.c | .deps obj
 	$(COMPILE) -c $<
 obj/%.gc-ephemeron.o: src/gc-ephemeron.c | .deps obj
 	$(COMPILE) -include benchmarks/$*-embedder.h -c $<
+obj/%.gc-finalizer.o: src/gc-finalizer.c | .deps obj
+	$(COMPILE) -include benchmarks/$*-embedder.h -c $<
 
 GC_STEM_bdw   	   = bdw
 GC_CFLAGS_bdw 	   = -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
@@ -99,7 +101,7 @@ obj/$(1).$(2).gc.o: src/$(call gc_impl,$(2)) | .deps obj
 	$$(COMPILE) $(call gc_cflags,$(2)) $(call gc_impl_cflags,$(2)) -include benchmarks/$(1)-embedder.h -c $$<
 obj/$(1).$(2).o: benchmarks/$(1).c | .deps obj
 	$$(COMPILE) $(call gc_cflags,$(2)) -include api/$(call gc_attrs,$(2)) -c $$<
-bin/$(1).$(2): obj/$(1).$(2).gc.o obj/$(1).$(2).o obj/gc-stack.o obj/gc-options.o obj/gc-platform.o obj/$(1).gc-ephemeron.o | bin
+bin/$(1).$(2): obj/$(1).$(2).gc.o obj/$(1).$(2).o obj/gc-stack.o obj/gc-options.o obj/gc-platform.o obj/$(1).gc-ephemeron.o obj/$(1).gc-finalizer.o | bin
 	$$(LINK) $$^ $(call gc_libs,$(2))
 endef
 

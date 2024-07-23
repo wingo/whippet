@@ -12,6 +12,7 @@ static inline void gc_null_event_listener_mutators_stopped(void *data) {}
 static inline void gc_null_event_listener_roots_traced(void *data) {}
 static inline void gc_null_event_listener_heap_traced(void *data) {}
 static inline void gc_null_event_listener_ephemerons_traced(void *data) {}
+static inline void gc_null_event_listener_finalizers_traced(void *data) {}
 static inline void gc_null_event_listener_restarting_mutators(void *data) {}
 
 static inline void* gc_null_event_listener_mutator_added(void *data) {}
@@ -34,6 +35,7 @@ static inline void gc_null_event_listener_live_data_size(void *, size_t) {}
     gc_null_event_listener_roots_traced,                               \
     gc_null_event_listener_heap_traced,                                \
     gc_null_event_listener_ephemerons_traced,                          \
+    gc_null_event_listener_finalizers_traced,                          \
     gc_null_event_listener_restarting_mutators,                        \
     gc_null_event_listener_mutator_added,                              \
     gc_null_event_listener_mutator_cause_gc,                           \

@@ -55,6 +55,8 @@ struct gc_heap {
   struct gc_heap_roots *roots;
   struct gc_mutator *mutators;
   struct gc_event_listener event_listener;
+  struct gc_finalizer_state *finalizer_state;
+  gc_finalizer_callback have_finalizers;
   void *event_listener_data;
 };
 
@@ -165,6 +167,7 @@ static void bdw_mark_edge(struct gc_edge edge, struct gc_heap *heap,
 static int heap_gc_kind;
 static int mutator_gc_kind;
 static int ephemeron_gc_kind;
+static int finalizer_gc_kind;
 
 // In BDW-GC, we can't hook into the mark phase to call
 // gc_trace_ephemerons_for_object, so the advertised ephemeron strategy
@@ -199,6 +202,46 @@ int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
   return 1;
 }
 
+struct gc_finalizer* gc_allocate_finalizer(struct gc_mutator *mut) {
+  return GC_generic_malloc(gc_finalizer_size(), finalizer_gc_kind);
+}
+
+static void finalize_object(void *obj, void *data) {
+  struct gc_finalizer *f = data;
+  gc_finalizer_externally_fired(__the_bdw_gc_heap->finalizer_state, f);
+}
+
+void gc_finalizer_attach(struct gc_mutator *mut, struct gc_finalizer *finalizer,
+                         unsigned priority, struct gc_ref object,
+                         struct gc_ref closure) {
+  // Don't bother much about the actual finalizer; just delegate to BDW-GC.
+  GC_finalization_proc prev = NULL;
+  void *prev_data = NULL;
+  gc_finalizer_init_internal(finalizer, object, closure);
+  gc_finalizer_externally_activated(finalizer);
+  GC_REGISTER_FINALIZER_NO_ORDER (gc_ref_heap_object(object), finalize_object,
+                                  finalizer, &prev, &prev_data);
+  // FIXME: Allow multiple finalizers per object.
+  GC_ASSERT(prev == NULL);
+  GC_ASSERT(prev_data == NULL);
+}
+
+struct gc_finalizer* gc_finalizer_pop(struct gc_mutator *mut) {
+  GC_invoke_finalizers();
+  return gc_finalizer_state_pop(mut->heap->finalizer_state);
+}
+
+void gc_set_finalizer_callback(struct gc_heap *heap,
+                               gc_finalizer_callback callback) {
+  heap->have_finalizers = callback;
+}
+
+static void have_finalizers(void) {
+  struct gc_heap *heap = __the_bdw_gc_heap;
+  if (heap->have_finalizers)
+    heap->have_finalizers(heap, 1);
+}
+
 static struct GC_ms_entry *
 mark_ephemeron(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
                struct GC_ms_entry *mark_stack_limit, GC_word env) {
@@ -224,6 +267,29 @@ mark_ephemeron(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
   }
 
   gc_trace_ephemeron(ephemeron, bdw_mark_edge, NULL, &state);
+
+  return state.mark_stack_ptr;
+}
+
+static struct GC_ms_entry *
+mark_finalizer(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
+               struct GC_ms_entry *mark_stack_limit, GC_word env) {
+
+  struct bdw_mark_state state = {
+    mark_stack_ptr,
+    mark_stack_limit,
+  };
+  
+  struct gc_finalizer *finalizer = (struct gc_finalizer*) addr;
+
+  // If this ephemeron is on a freelist, its first word will be a
+  // freelist link and everything else will be NULL.
+  if (!gc_ref_value(gc_finalizer_object(finalizer))) {
+    bdw_mark_edge(gc_edge(addr), NULL, &state);
+    return state.mark_stack_ptr;
+  }
+
+  gc_trace_finalizer(finalizer, bdw_mark_edge, NULL, &state);
 
   return state.mark_stack_ptr;
 }
@@ -428,6 +494,8 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   }
 
   GC_set_all_interior_pointers (0);
+  GC_set_finalize_on_demand (1);
+  GC_set_finalizer_notifier(have_finalizers);
 
   // Not part of 7.3, sigh.  Have to set an env var.
   // GC_set_markers_count(options->common.parallelism);
@@ -453,6 +521,9 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
     ephemeron_gc_kind = GC_new_kind(GC_new_free_list(),
                                     GC_MAKE_PROC(GC_new_proc(mark_ephemeron), 0),
                                     add_size_to_descriptor, clear_memory);
+    finalizer_gc_kind = GC_new_kind(GC_new_free_list(),
+                                    GC_MAKE_PROC(GC_new_proc(mark_finalizer), 0),
+                                    add_size_to_descriptor, clear_memory);
   }
 
   *heap = GC_generic_malloc(sizeof(struct gc_heap), heap_gc_kind);
@@ -460,6 +531,7 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
 
   (*heap)->event_listener = event_listener;
   (*heap)->event_listener_data = event_listener_data;
+  (*heap)->finalizer_state = gc_make_finalizer_state();
 
   __the_bdw_gc_heap = *heap;
   HEAP_EVENT(init, GC_get_heap_size());

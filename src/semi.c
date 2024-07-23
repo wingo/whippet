@@ -37,6 +37,7 @@ struct gc_heap {
   struct semi_space semi_space;
   struct large_object_space large_object_space;
   struct gc_pending_ephemerons *pending_ephemerons;
+  struct gc_finalizer_state *finalizer_state;
   struct gc_extern_space *extern_space;
   double pending_ephemerons_size_factor;
   double pending_ephemerons_size_slop;
@@ -350,6 +351,37 @@ static void adjust_heap_size_and_limits(struct gc_heap *heap,
   semi->limit = new_limit;
 }
 
+static uintptr_t trace_closure(struct gc_heap *heap, struct semi_space *semi,
+                               uintptr_t grey) {
+  while(grey < semi->hp)
+    grey = scan(heap, gc_ref(grey));
+  return grey;
+}
+
+static uintptr_t resolve_ephemerons(struct gc_heap *heap, uintptr_t grey) {
+  for (struct gc_ephemeron *resolved = gc_pop_resolved_ephemerons(heap);
+       resolved;
+       resolved = gc_pop_resolved_ephemerons(heap)) {
+    gc_trace_resolved_ephemerons(resolved, trace, heap, NULL);
+    grey = trace_closure(heap, heap_semi_space(heap), grey);
+  }
+  return grey;
+}
+
+static uintptr_t resolve_finalizers(struct gc_heap *heap, uintptr_t grey) {
+  for (size_t priority = 0;
+       priority < gc_finalizer_priority_count();
+       priority++) {
+    if (gc_resolve_finalizers(heap->finalizer_state, priority,
+                              trace, heap, NULL)) {
+      grey = trace_closure(heap, heap_semi_space(heap), grey);
+      grey = resolve_ephemerons(heap, grey);
+    }
+  }
+  gc_notify_finalizers(heap->finalizer_state, heap);
+  return grey;
+}
+
 static void collect(struct gc_mutator *mut, size_t for_alloc) {
   struct gc_heap *heap = mutator_heap(mut);
   int is_minor = 0;
@@ -373,22 +405,17 @@ static void collect(struct gc_mutator *mut, size_t for_alloc) {
     gc_trace_heap_roots(heap->roots, trace, heap, NULL);
   if (mut->roots)
     gc_trace_mutator_roots(mut->roots, trace, heap, NULL);
+  gc_visit_finalizer_roots(heap->finalizer_state, trace, heap, NULL);
   HEAP_EVENT(heap, roots_traced);
   // fprintf(stderr, "pushed %zd bytes in roots\n", space->hp - grey);
-  while(grey < semi->hp)
-    grey = scan(heap, gc_ref(grey));
+  grey = trace_closure(heap, semi, grey);
   HEAP_EVENT(heap, heap_traced);
   gc_scan_pending_ephemerons(heap->pending_ephemerons, heap, 0, 1);
   heap->check_pending_ephemerons = 1;
-  do {
-    struct gc_ephemeron *resolved = gc_pop_resolved_ephemerons(heap);
-    if (!resolved)
-      break;
-    gc_trace_resolved_ephemerons(resolved, trace, heap, NULL);
-    while(grey < semi->hp)
-      grey = scan(heap, gc_ref(grey));
-  } while (1);
+  grey = resolve_ephemerons(heap, grey);
   HEAP_EVENT(heap, ephemerons_traced);
+  grey = resolve_finalizers(heap, grey);
+  HEAP_EVENT(heap, finalizers_traced);
   large_object_space_finish_gc(large, 0);
   gc_extern_space_finish_gc(heap->extern_space, 0);
   semi_space_finish_gc(semi, large->live_pages_at_last_collection);
@@ -486,6 +513,28 @@ void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
   gc_ephemeron_init_internal(mutator_heap(mut), ephemeron, key, value);
 }
 
+struct gc_finalizer* gc_allocate_finalizer(struct gc_mutator *mut) {
+  return gc_allocate(mut, gc_finalizer_size());
+}
+
+void gc_finalizer_attach(struct gc_mutator *mut, struct gc_finalizer *finalizer,
+                         unsigned priority, struct gc_ref object,
+                         struct gc_ref closure) {
+  gc_finalizer_init_internal(finalizer, object, closure);
+  gc_finalizer_attach_internal(mutator_heap(mut)->finalizer_state,
+                               finalizer, priority);
+  // No write barrier.
+}
+
+struct gc_finalizer* gc_finalizer_pop(struct gc_mutator *mut) {
+  return gc_finalizer_state_pop(mutator_heap(mut)->finalizer_state);
+}
+
+void gc_set_finalizer_callback(struct gc_heap *heap,
+                               gc_finalizer_callback callback) {
+  gc_finalizer_state_set_callback(heap->finalizer_state, callback);
+}
+
 static int region_init(struct region *region, size_t size) {
   region->base = 0;
   region->active_size = 0;
@@ -542,8 +591,11 @@ static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   heap->options = options;
   heap->size = options->common.heap_size;
   heap->roots = NULL;
+  heap->finalizer_state = gc_make_finalizer_state();
+  if (!heap->finalizer_state)
+    GC_CRASH();
 
-  return heap_prepare_pending_ephemerons(heap);
+return heap_prepare_pending_ephemerons(heap);
 }
 
 int gc_option_from_string(const char *str) {

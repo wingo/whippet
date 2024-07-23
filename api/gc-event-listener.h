@@ -12,6 +12,7 @@ struct gc_event_listener {
   void (*roots_traced)(void *data);
   void (*heap_traced)(void *data);
   void (*ephemerons_traced)(void *data);
+  void (*finalizers_traced)(void *data);
   void (*restarting_mutators)(void *data);
 
   void* (*mutator_added)(void *data);

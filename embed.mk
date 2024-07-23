@@ -31,6 +31,8 @@ $(GC_OBJDIR)gc-options.o: $(WHIPPET)src/gc-options.c
 	$(GC_COMPILE) -c $<
 $(GC_OBJDIR)gc-ephemeron.o: $(WHIPPET)src/gc-ephemeron.c
 	$(GC_COMPILE) $(EMBEDDER_TO_GC_CFLAGS) -c $<
+$(GC_OBJDIR)gc-finalizer.o: $(WHIPPET)src/gc-finalizer.c
+	$(GC_COMPILE) $(EMBEDDER_TO_GC_CFLAGS) -c $<
 
 GC_STEM_bdw   	   = bdw
 GC_CFLAGS_bdw 	   = -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
@@ -83,4 +85,4 @@ GC_LIBS             = $(call gc_libs,$(GC_COLLECTOR))
 $(GC_OBJDIR)gc-impl.o: $(WHIPPET)src/$(call gc_impl,$(GC_COLLECTOR))
 	$(GC_COMPILE) $(GC_IMPL_CFLAGS) $(EMBEDDER_TO_GC_CFLAGS) -c $<
 
-GC_OBJS=$(foreach O,gc-platform.o gc-stack.o gc-options.o gc-ephemeron.o gc-impl.o,$(GC_OBJDIR)$(O))
+GC_OBJS=$(foreach O,gc-platform.o gc-stack.o gc-options.o gc-ephemeron.o gc-finalizer.o gc-impl.o,$(GC_OBJDIR)$(O))

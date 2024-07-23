@@ -131,6 +131,7 @@ struct gc_heap {
   int collecting;
   int check_pending_ephemerons;
   struct gc_pending_ephemerons *pending_ephemerons;
+  struct gc_finalizer_state *finalizer_state;
   size_t mutator_count;
   size_t paused_mutator_count;
   size_t inactive_mutator_count;
@@ -649,6 +650,9 @@ static inline void trace_root(struct gc_root root, struct gc_heap *heap,
     gc_trace_resolved_ephemerons(root.resolved_ephemerons, tracer_visit,
                                  heap, worker);
     break;
+  case GC_ROOT_KIND_EDGE:
+    tracer_visit(root.edge, heap, worker);
+    break;
   default:
     GC_CRASH();
   }
@@ -712,10 +716,16 @@ static int maybe_grow_heap(struct gc_heap *heap) {
   return 0;
 }
 
+static void visit_root_edge(struct gc_edge edge, struct gc_heap *heap,
+                            void *unused) {
+  gc_tracer_add_root(&heap->tracer, gc_root_edge(edge));
+}
+
 static void add_roots(struct gc_heap *heap) {
   for (struct gc_mutator *mut = heap->mutators; mut; mut = mut->next)
     gc_tracer_add_root(&heap->tracer, gc_root_mutator(mut));
   gc_tracer_add_root(&heap->tracer, gc_root_heap(heap));
+  gc_visit_finalizer_roots(heap->finalizer_state, visit_root_edge, heap, NULL);
 }
 
 static void resolve_ephemerons_lazily(struct gc_heap *heap) {
@@ -729,12 +739,26 @@ static void resolve_ephemerons_eagerly(struct gc_heap *heap) {
   gc_scan_pending_ephemerons(heap->pending_ephemerons, heap, 0, 1);
 }
 
-static int enqueue_resolved_ephemerons(struct gc_heap *heap) {
-  struct gc_ephemeron *resolved = gc_pop_resolved_ephemerons(heap);
-  if (!resolved)
-    return 0;
-  gc_tracer_add_root(&heap->tracer, gc_root_resolved_ephemerons(resolved));
-  return 1;
+static void trace_resolved_ephemerons(struct gc_heap *heap) {
+  for (struct gc_ephemeron *resolved = gc_pop_resolved_ephemerons(heap);
+       resolved;
+       resolved = gc_pop_resolved_ephemerons(heap)) {
+    gc_tracer_add_root(&heap->tracer, gc_root_resolved_ephemerons(resolved));
+    gc_tracer_trace(&heap->tracer);
+  }
+}
+
+static void resolve_finalizers(struct gc_heap *heap) {
+  for (size_t priority = 0;
+       priority < gc_finalizer_priority_count();
+       priority++) {
+    if (gc_resolve_finalizers(heap->finalizer_state, priority,
+                              visit_root_edge, heap, NULL)) {
+      gc_tracer_trace(&heap->tracer);
+      trace_resolved_ephemerons(heap);
+    }
+  }
+  gc_notify_finalizers(heap->finalizer_state, heap);
 }
 
 static void sweep_ephemerons(struct gc_heap *heap) {
@@ -765,9 +789,10 @@ static void collect(struct gc_mutator *mut) {
   gc_tracer_trace(&heap->tracer);
   HEAP_EVENT(heap, heap_traced);
   resolve_ephemerons_eagerly(heap);
-  while (enqueue_resolved_ephemerons(heap))
-    gc_tracer_trace(&heap->tracer);
+  trace_resolved_ephemerons(heap);
   HEAP_EVENT(heap, ephemerons_traced);
+  resolve_finalizers(heap);
+  HEAP_EVENT(heap, finalizers_traced);
   sweep_ephemerons(heap);
   gc_tracer_release(&heap->tracer);
   pcc_space_finish_gc(cspace);
@@ -891,6 +916,28 @@ unsigned gc_heap_ephemeron_trace_epoch(struct gc_heap *heap) {
   return heap->count;
 }
 
+struct gc_finalizer* gc_allocate_finalizer(struct gc_mutator *mut) {
+  return gc_allocate(mut, gc_finalizer_size());
+}
+
+void gc_finalizer_attach(struct gc_mutator *mut, struct gc_finalizer *finalizer,
+                         unsigned priority, struct gc_ref object,
+                         struct gc_ref closure) {
+  gc_finalizer_init_internal(finalizer, object, closure);
+  gc_finalizer_attach_internal(mutator_heap(mut)->finalizer_state,
+                               finalizer, priority);
+  // No write barrier.
+}
+
+struct gc_finalizer* gc_finalizer_pop(struct gc_mutator *mut) {
+  return gc_finalizer_state_pop(mutator_heap(mut)->finalizer_state);
+}
+
+void gc_set_finalizer_callback(struct gc_heap *heap,
+                               gc_finalizer_callback callback) {
+  gc_finalizer_state_set_callback(heap->finalizer_state, callback);
+}
+
 static struct pcc_slab* allocate_slabs(size_t nslabs) {
   size_t size = nslabs * SLAB_SIZE;
   size_t extent = size + SLAB_SIZE;
@@ -967,6 +1014,10 @@ static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   heap->pending_ephemerons_size_slop = 0.5;
 
   if (!heap_prepare_pending_ephemerons(heap))
+    GC_CRASH();
+
+  heap->finalizer_state = gc_make_finalizer_state();
+  if (!heap->finalizer_state)
     GC_CRASH();
 
   return 1;

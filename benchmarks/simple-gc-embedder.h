@@ -6,6 +6,9 @@
 #include "gc-embedder-api.h"
 
 #define GC_EMBEDDER_EPHEMERON_HEADER struct gc_header header;
+#define GC_EMBEDDER_FINALIZER_HEADER struct gc_header header;
+
+static inline size_t gc_finalizer_priority_count(void) { return 2; }
 
 static inline int
 gc_is_valid_conservative_ref_displacement(uintptr_t displacement) {

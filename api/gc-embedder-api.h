@@ -16,7 +16,6 @@ struct gc_mutator_roots;
 struct gc_heap_roots;
 struct gc_atomic_forward;
 struct gc_heap;
-struct gc_ephemeron;
 struct gc_extern_space;
 
 GC_EMBEDDER_API inline int gc_is_valid_conservative_ref_displacement(uintptr_t displacement);

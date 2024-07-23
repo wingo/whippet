@@ -57,6 +57,11 @@ static inline void gc_event_listener_chain_ephemerons_traced(void *data) {
   chain->head.ephemerons_traced(chain->head_data);
   chain->tail.ephemerons_traced(chain->tail_data);
 }
+static inline void gc_event_listener_chain_finalizers_traced(void *data) {
+  struct gc_event_listener_chain *chain = data;
+  chain->head.finalizers_traced(chain->head_data);
+  chain->tail.finalizers_traced(chain->tail_data);
+}
 
 static inline void gc_event_listener_chain_restarting_mutators(void *data) {
   struct gc_event_listener_chain *chain = data;
@@ -123,6 +128,7 @@ static inline void gc_event_listener_chain_live_data_size(void *data, size_t siz
     gc_event_listener_chain_roots_traced,                               \
     gc_event_listener_chain_heap_traced,                                \
     gc_event_listener_chain_ephemerons_traced,                          \
+    gc_event_listener_chain_finalizers_traced,                          \
     gc_event_listener_chain_restarting_mutators,                        \
     gc_event_listener_chain_mutator_added,                              \
     gc_event_listener_chain_mutator_cause_gc,                           \

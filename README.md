@@ -45,7 +45,7 @@ a talk given at FOSDEM 2023.
  - [X] Conservative data segments
  - [ ] Heap growth/shrinking
  - [ ] Debugging/tracing
- - [ ] Finalizers
+ - [X] Finalizers
  - [X] Weak references / weak maps
 
 ### Features that would improve Whippet performance
