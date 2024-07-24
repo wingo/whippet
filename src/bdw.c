@@ -219,14 +219,14 @@ void gc_finalizer_attach(struct gc_mutator *mut, struct gc_finalizer *finalizer,
   void *prev_data = NULL;
   gc_finalizer_init_internal(finalizer, object, closure);
   gc_finalizer_externally_activated(finalizer);
-  GC_REGISTER_FINALIZER_NO_ORDER (gc_ref_heap_object(object), finalize_object,
-                                  finalizer, &prev, &prev_data);
+  GC_REGISTER_FINALIZER_NO_ORDER(gc_ref_heap_object(object), finalize_object,
+                                 finalizer, &prev, &prev_data);
   // FIXME: Allow multiple finalizers per object.
   GC_ASSERT(prev == NULL);
   GC_ASSERT(prev_data == NULL);
 }
 
-struct gc_finalizer* gc_finalizer_pop(struct gc_mutator *mut) {
+struct gc_finalizer* gc_pop_finalizable(struct gc_mutator *mut) {
   GC_invoke_finalizers();
   return gc_finalizer_state_pop(mut->heap->finalizer_state);
 }

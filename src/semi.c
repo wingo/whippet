@@ -526,7 +526,7 @@ void gc_finalizer_attach(struct gc_mutator *mut, struct gc_finalizer *finalizer,
   // No write barrier.
 }
 
-struct gc_finalizer* gc_finalizer_pop(struct gc_mutator *mut) {
+struct gc_finalizer* gc_pop_finalizable(struct gc_mutator *mut) {
   return gc_finalizer_state_pop(mutator_heap(mut)->finalizer_state);
 }
 

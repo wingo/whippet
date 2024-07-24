@@ -592,7 +592,7 @@ static void request_mutators_to_stop(struct gc_heap *heap) {
 static void allow_mutators_to_continue(struct gc_heap *heap) {
   GC_ASSERT(mutators_are_stopping(heap));
   GC_ASSERT(all_mutators_stopped(heap));
-  heap->paused_mutator_count = 0;
+  heap->paused_mutator_count--;
   atomic_store_explicit(&heap->collecting, 0, memory_order_relaxed);
   GC_ASSERT(!mutators_are_stopping(heap));
   pthread_cond_broadcast(&heap->mutator_cond);
@@ -683,6 +683,7 @@ pause_mutator_for_collection(struct gc_heap *heap, struct gc_mutator *mut) {
   do {
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
   } while (mutators_are_stopping(heap));
+  heap->paused_mutator_count--;
 
   MUTATOR_EVENT(mut, mutator_restarted);
 }
@@ -929,7 +930,7 @@ void gc_finalizer_attach(struct gc_mutator *mut, struct gc_finalizer *finalizer,
   // No write barrier.
 }
 
-struct gc_finalizer* gc_finalizer_pop(struct gc_mutator *mut) {
+struct gc_finalizer* gc_pop_finalizable(struct gc_mutator *mut) {
   return gc_finalizer_state_pop(mutator_heap(mut)->finalizer_state);
 }
 

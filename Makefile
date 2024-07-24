@@ -1,4 +1,4 @@
-TESTS = quads mt-gcbench ephemerons # MT_GCBench MT_GCBench2
+TESTS = quads mt-gcbench ephemerons finalizers
 COLLECTORS = \
 	bdw \
 	semi \
