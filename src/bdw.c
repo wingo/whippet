@@ -219,7 +219,7 @@ void gc_finalizer_attach(struct gc_mutator *mut, struct gc_finalizer *finalizer,
   void *prev_data = NULL;
   gc_finalizer_init_internal(finalizer, object, closure);
   gc_finalizer_externally_activated(finalizer);
-  GC_REGISTER_FINALIZER_NO_ORDER(gc_ref_heap_object(object), finalize_object,
+  GC_register_finalizer_no_order(gc_ref_heap_object(object), finalize_object,
                                  finalizer, &prev, &prev_data);
   // FIXME: Allow multiple finalizers per object.
   GC_ASSERT(prev == NULL);
@@ -314,6 +314,8 @@ mark_heap(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
 
   if (heap->roots)
     gc_trace_heap_roots(heap->roots, bdw_mark_edge, heap, &state);
+
+  gc_visit_finalizer_roots(heap->finalizer_state, bdw_mark_edge, heap, &state);
 
   state.mark_stack_ptr = GC_MARK_AND_PUSH (heap->mutators,
                                            state.mark_stack_ptr,
