@@ -233,6 +233,7 @@ size_t gc_visit_finalizer_roots(struct gc_finalizer_state *state,
         visit(gc_edge(&table->buckets[bidx]), heap, visit_data);
     }
   }
+  visit(gc_edge(&state->fired), heap, visit_data);
   return count;
 }
 
