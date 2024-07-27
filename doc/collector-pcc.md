@@ -57,11 +57,6 @@ performance penalty.  `pcc` generally starts to outperform `semi` when
 it can trace with 2 threads, and gets better with each additional
 thread.
 
-I sometimes wonder whether the worklist should contain grey edges or
-grey objects.  [MMTk](https://www.mmtk.io/) seems to do the former, and bundles edges into work
-packets, which are the unit of work sharing.  I don't know yet what is
-best and look forward to experimenting once I have better benchmarks.
-
 The memory used for the external worklist is dynamically allocated from
 the OS and is not currently counted as contributing to the heap size.
 If you are targetting a microcontroller or something, probably you need
