@@ -8,19 +8,9 @@ Whippet is an embed-only C library, designed to be copied into a
 program's source tree.  It exposes an abstract C API for managed memory
 allocation, and provides a number of implementations of that API.
 
-One of the implementations is also called "whippet", and is the
-motivation for creating this library.  For a detailed introduction, see
-[Whippet: Towards a new local
-maximum](https://wingolog.org/archives/2023/02/07/whippet-towards-a-new-local-maximum),
-a talk given at FOSDEM 2023.
-
 ## Documentation
 
- * [Design](./doc/design.md): What's the general idea?
- * [Manual](./doc/manual.md): How do you get your program to use
-   Whippet?  What is the API?
- * [Guile](./doc/guile.md): Some notes on a potential rebase of Guile on
-   top of Whippet.
+See the [documentation](./doc/README.md).
 
 ## Source repository structure
 
