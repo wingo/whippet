@@ -111,17 +111,17 @@ treating each word on the stack as if it may be an object reference, and
 marking any object at that address.
 
 After all these years, *whether* to mark stacks conservatively or not is
-still an open research question.  Conservative stack scanning retain too
-much data if an integer is confused for an object reference and removes
-a layer of correctness-by-construction from a system.  Sometimes it is
-required, for example if your embedder cannot enumerate roots precisely.
-But there are reasons to consider it even if you can do precise roots:
-it removes the need for the compiler to produce a stack map to store the
-precise root enumeration at every safepoint; it removes the need to look
-up a stack map when tracing; and it allows C or C++ support code to
-avoid having to place roots in traceable locations published to the
-garbage collector.  And the [performance question is still
-open](https://dl.acm.org/doi/10.1145/2660193.2660198).
+still an open research question.  Conservative stack scanning can retain
+too much data if an integer is confused for an object reference and
+removes a layer of correctness-by-construction from a system.  Sometimes
+it is required, for example if your embedder cannot enumerate roots
+precisely.  But there are reasons to consider it even if you can do
+precise roots:  it removes the need for the compiler to produce a stack
+map to store the precise root enumeration at every safepoint; it removes
+the need to look up a stack map when tracing; and it allows C or C++
+support code to avoid having to place roots in traceable locations
+published to the garbage collector.  And the [performance question is
+still open](https://dl.acm.org/doi/10.1145/2660193.2660198).
 
 Anyway.  Whippet can scan roots conservatively.  Those roots are pinned
 for the collection; even if the collection will compact via evacuation,
