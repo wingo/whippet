@@ -6,9 +6,9 @@ and multiple tracing threads.
 
 Like `semi`, `pcc` traces by evacuation: it moves all live objects on
 every collection.  (Exception:  objects larger than 8192 bytes are
-placed into a partitioned space traces by marking in place instead of
-copying.)  Evacuation requires precise roots, so if your embedder does
-not support precise roots, `pcc` is not for you.
+placed into a partitioned space which traces by marking in place instead
+of copying.)  Evacuation requires precise roots, so if your embedder
+does not support precise roots, `pcc` is not for you.
 
 Again like `semi`, `pcc` generally requires a heap size at least twice
 as large as the maximum live heap size, and performs best with ample

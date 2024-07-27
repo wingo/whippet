@@ -24,7 +24,7 @@ mutator/embedder bugs.  Then if memory is tight, switch to
 `parallel-whippet`, possibly `parallel-generational-whippet`.
 
 If you are writing a new project, you have a choice as to whether to pay
-the development cost of precise roots or not.  If choose to not have
+the development cost of precise roots or not.  If you choose to not have
 precise roots, then go for `stack-conservative-parallel-whippet`
 directly.
 
