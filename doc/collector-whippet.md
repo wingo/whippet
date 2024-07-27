@@ -58,7 +58,7 @@ The `whippet` collector has a few feature flags that can be turned on or
 off.  If you use the [standard embedder makefile include](../embed.mk),
 then there is a name for each combination of features: `whippet` has no
 additional features, `parallel-whippet` enables parallel marking,
-`parallel-generational-whippet` enables parallelism,
+`parallel-generational-whippet` enables generations,
 `stack-conservative-parallel-generational-whippet` uses conservative
 root-finding, and `heap-conservative-parallel-generational-whippet`
 additionally traces the heap conservatively.  You can leave off
