@@ -116,6 +116,7 @@ struct copy_space {
   // The rest of these members are only changed rarely and with the heap
   // lock.
   uint8_t active_region ALIGNED_TO_AVOID_FALSE_SHARING;
+  uint8_t atomic_forward;
   size_t allocated_bytes_at_last_gc;
   size_t fragmentation_at_last_gc;
   struct copy_space_extent *extents;
@@ -411,8 +412,9 @@ copy_space_gc_during_evacuation(void *data) {
 }
 
 static inline int
-copy_space_forward(struct copy_space *space, struct gc_edge edge,
-                   struct gc_ref old_ref, struct copy_space_allocator *alloc) {
+copy_space_forward_atomic(struct copy_space *space, struct gc_edge edge,
+                          struct gc_ref old_ref,
+                          struct copy_space_allocator *alloc) {
   GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
   struct gc_atomic_forward fwd = gc_atomic_forward_begin(old_ref);
 
@@ -459,8 +461,9 @@ copy_space_forward(struct copy_space *space, struct gc_edge edge,
 }
 
 static int
-copy_space_forward_if_traced(struct copy_space *space, struct gc_edge edge,
-                             struct gc_ref old_ref) {
+copy_space_forward_if_traced_atomic(struct copy_space *space,
+                                    struct gc_edge edge,
+                                    struct gc_ref old_ref) {
   GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
   struct gc_atomic_forward fwd = gc_atomic_forward_begin(old_ref);
   switch (fwd.state) {
@@ -486,7 +489,8 @@ copy_space_forward_if_traced(struct copy_space *space, struct gc_edge edge,
 
 static inline int
 copy_space_forward_nonatomic(struct copy_space *space, struct gc_edge edge,
-                             struct gc_ref old_ref, struct copy_space_allocator *alloc) {
+                             struct gc_ref old_ref,
+                             struct copy_space_allocator *alloc) {
   GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
 
   uintptr_t forwarded = gc_object_forwarded_nonatomic(old_ref);
@@ -517,6 +521,23 @@ copy_space_forward_if_traced_nonatomic(struct copy_space *space,
     return 1;
   }
   return 0;
+}
+
+static inline int
+copy_space_forward(struct copy_space *space, struct gc_edge edge,
+                   struct gc_ref old_ref,
+                   struct copy_space_allocator *alloc) {
+  if (space->atomic_forward)
+    return copy_space_forward_atomic(space, edge, old_ref, alloc);
+  return copy_space_forward_nonatomic(space, edge, old_ref, alloc);
+}
+
+static inline int
+copy_space_forward_if_traced(struct copy_space *space, struct gc_edge edge,
+                             struct gc_ref old_ref) {
+  if (space->atomic_forward)
+    return copy_space_forward_if_traced_atomic(space, edge, old_ref);
+  return copy_space_forward_if_traced_nonatomic(space, edge, old_ref);
 }
 
 static inline int
@@ -567,7 +588,7 @@ copy_space_allocate_slabs(size_t nslabs) {
 }
 
 static int
-copy_space_init(struct copy_space *space, size_t size) {
+copy_space_init(struct copy_space *space, size_t size, int atomic) {
   size = align_up(size, COPY_SPACE_BLOCK_SIZE);
   size_t reserved = align_up(size, COPY_SPACE_SLAB_SIZE);
   size_t nslabs = reserved / COPY_SPACE_SLAB_SIZE;
@@ -583,6 +604,7 @@ copy_space_init(struct copy_space *space, size_t size) {
   space->fragmentation = 0;
   space->bytes_to_page_out = 0;
   space->active_region = 0;
+  space->atomic_forward = atomic;
   space->allocated_bytes_at_last_gc = 0;
   space->fragmentation_at_last_gc = 0;
   space->extents = calloc(1, sizeof(struct copy_space_extent));

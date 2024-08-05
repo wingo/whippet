@@ -611,7 +611,8 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   HEAP_EVENT(*heap, init, (*heap)->size);
 
   struct copy_space *space = heap_copy_space(*heap);
-  if (!copy_space_init(space, (*heap)->size)) {
+  int atomic_forward = options->common.parallelism > 1;
+  if (!copy_space_init(space, (*heap)->size, atomic_forward)) {
     free(*heap);
     *heap = NULL;
     return 0;
