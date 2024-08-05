@@ -1,15 +1,17 @@
 # Whippet collectors
 
-Whippet has four collectors currently:
- - [Semi-space collector (semi)](./collector-semi.md): For
+Whippet has five collectors currently:
+ - [Semi-space collector (`semi`)](./collector-semi.md): For
    single-threaded embedders who are not too tight on memory.
- - [Parallel copying collector (pcc)](./collector-pcc.md): Like semi,
-   but with support for multiple mutator threads.  Faster than semi if
+ - [Serial copying collector (`scc`)](./collector-scc.md): Like `semi`,
+   but with support for multiple mutator threads.
+ - [Parallel copying collector (`pcc`)](./collector-pcc.md): Like `scc`,
+   but with support for multiple tracing threads.  Faster than `scc` if
    multiple cores are available at collection-time.
- - [Whippet collector (whippet)](./collector-whippet.md):
+ - [Whippet collector (`whippet`)](./collector-whippet.md):
    Immix-inspired collector.  Optionally parallel, conservative (stack
    and/or heap), and/or generational.
- - [Boehm-Demers-Weiser collector (bdw)](./collector-bdw.md):
+ - [Boehm-Demers-Weiser collector (`bdw`)](./collector-bdw.md):
    Conservative mark-sweep collector, implemented by
    Boehm-Demers-Weiser library.
 
@@ -18,10 +20,12 @@ Whippet has four collectors currently:
 If you are migrating an embedder off BDW-GC, then it could be reasonable
 to first go to `bdw`, then `stack-conservative-parallel-whippet`.
 
-If you have an embedder with precise roots, use `semi` if
-single-threaded, or `pcc` if multi-threaded.  That will shake out
-mutator/embedder bugs.  Then if memory is tight, switch to
+If you have an embedder with precise roots, use `pcc`.  That will shake
+out mutator/embedder bugs.  Then if memory is tight, switch to
 `parallel-whippet`, possibly `parallel-generational-whippet`.
+
+If you are aiming for maximum simplicity and minimal code size (ten
+kilobytes or so), use `semi`.
 
 If you are writing a new project, you have a choice as to whether to pay
 the development cost of precise roots or not.  If you choose to not have

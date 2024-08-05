@@ -2,6 +2,7 @@ TESTS = quads mt-gcbench ephemerons finalizers
 COLLECTORS = \
 	bdw \
 	semi \
+	scc \
 	pcc \
 	\
 	whippet \
@@ -62,6 +63,9 @@ GC_LIBS_bdw        = `pkg-config --libs bdw-gc`
 
 GC_STEM_semi       = semi
 GC_CFLAGS_semi     = -DGC_PRECISE_ROOTS=1
+
+GC_STEM_scc       = scc
+GC_CFLAGS_scc     = -DGC_PRECISE_ROOTS=1
 
 GC_STEM_pcc       = pcc
 GC_CFLAGS_pcc     = -DGC_PRECISE_ROOTS=1 -DGC_PARALLEL=1

@@ -485,6 +485,41 @@ copy_space_forward_if_traced(struct copy_space *space, struct gc_edge edge,
 }
 
 static inline int
+copy_space_forward_nonatomic(struct copy_space *space, struct gc_edge edge,
+                             struct gc_ref old_ref, struct copy_space_allocator *alloc) {
+  GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
+
+  uintptr_t forwarded = gc_object_forwarded_nonatomic(old_ref);
+  if (forwarded) {
+    gc_edge_update(edge, gc_ref(forwarded));
+    return 0;
+  } else {
+    size_t size;
+    gc_trace_object(old_ref, NULL, NULL, NULL, &size);
+    struct gc_ref new_ref =
+      copy_space_allocate(alloc, space, size,
+                          copy_space_gc_during_evacuation, NULL);
+    memcpy(gc_ref_heap_object(new_ref), gc_ref_heap_object(old_ref), size);
+    gc_object_forward_nonatomic(old_ref, new_ref);
+    gc_edge_update(edge, new_ref);
+    return 1;
+  }
+}
+
+static int
+copy_space_forward_if_traced_nonatomic(struct copy_space *space,
+                                       struct gc_edge edge,
+                                       struct gc_ref old_ref) {
+  GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
+  uintptr_t forwarded = gc_object_forwarded_nonatomic(old_ref);
+  if (forwarded) {
+    gc_edge_update(edge, gc_ref(forwarded));
+    return 1;
+  }
+  return 0;
+}
+
+static inline int
 copy_space_contains(struct copy_space *space, struct gc_ref ref) {
   for (size_t i = 0; i < space->nextents; i++)
     if (space->extents[i].low_addr <= gc_ref_value(ref) &&
