@@ -24,11 +24,12 @@ entries to the worker's [shared worklist](../src/shared-worklist.h).
 When a worker runs out of local work, it will first try to remove work
 from its own shared worklist, then will try to steal from other workers.
 
-Because threads compete to evacuate objects, `pcc` uses [atomic
-compare-and-swap instead of simple forwarding pointer
-updates](./manual.md#forwarding-objects), which imposes around a ~30%
-performance penalty.  `pcc` generally starts to outperform `scc` when it
-can trace with 2 threads, and gets better with each additional thread.
+If only one tracing thread is enabled (`parallelism=1`), `pcc` uses
+non-atomic forwarding, but if multiple threads compete to evacuate
+objects, `pcc` uses [atomic compare-and-swap instead of simple
+forwarding pointer updates](./manual.md#forwarding-objects).  This
+imposes around a ~30% performance penalty but having multiple tracing
+threads is generally worth it, unless the object graph is itself serial.
 
 As with `scc`, the memory used for the external worklist is dynamically
 allocated from the OS and is not currently counted as contributing to
