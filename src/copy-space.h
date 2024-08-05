@@ -51,6 +51,7 @@ struct copy_space_block {
     struct {
       struct copy_space_block *next;
       uint8_t in_core;
+      uint8_t all_zeroes[2];
       size_t allocated; // For partly-empty blocks.
     };
     uint8_t padding[COPY_SPACE_HEADER_BYTES_PER_BLOCK];
@@ -203,6 +204,7 @@ static void
 copy_space_page_out_block(struct copy_space *space,
                           struct copy_space_block *block) {
   block->in_core = 0;
+  block->all_zeroes[0] = block->all_zeroes[1] = 1;
   madvise(copy_space_block_payload(block), COPY_SPACE_BLOCK_SIZE, MADV_DONTNEED);
   copy_space_push_paged_out_block(space, block);
 }
@@ -270,9 +272,16 @@ copy_space_allocator_acquire_block(struct copy_space_allocator *alloc,
 static int
 copy_space_allocator_acquire_empty_block(struct copy_space_allocator *alloc,
                                          struct copy_space *space) {
-  return copy_space_allocator_acquire_block(alloc,
-                                            copy_space_pop_empty_block(space),
-                                            space->active_region);
+  if (copy_space_allocator_acquire_block(alloc,
+                                         copy_space_pop_empty_block(space),
+                                         space->active_region)) {
+    if (alloc->block->all_zeroes[space->active_region])
+      alloc->block->all_zeroes[space->active_region] = 0;
+    else
+      memset((char*)alloc->hp, 0, COPY_SPACE_REGION_SIZE);
+    return 1;
+  }
+  return 0;
 }
 
 static int
@@ -550,6 +559,7 @@ copy_space_init(struct copy_space *space, size_t size) {
   for (size_t slab = 0; slab < nslabs; slab++) {
     for (size_t idx = 0; idx < COPY_SPACE_NONHEADER_BLOCKS_PER_SLAB; idx++) {
       struct copy_space_block *block = &slabs[slab].headers[idx];
+      block->all_zeroes[0] = block->all_zeroes[1] = 1;
       if (reserved > size) {
         block->in_core = 0;
         copy_space_push_paged_out_block(space, block);

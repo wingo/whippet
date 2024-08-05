@@ -40,7 +40,7 @@ static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
 }
 
 static inline int gc_allocator_needs_clear(void) {
-  return 1;
+  return 0;
 }
 
 static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) {
