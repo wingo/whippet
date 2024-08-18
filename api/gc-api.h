@@ -59,11 +59,9 @@ static inline void gc_clear_fresh_allocation(struct gc_ref obj,
   memset(gc_ref_heap_object(obj), 0, size);
 }
 
-static inline void gc_update_alloc_table(struct gc_mutator *mut,
-                                         struct gc_ref obj,
+static inline void gc_update_alloc_table(struct gc_ref obj,
                                          size_t size) GC_ALWAYS_INLINE;
-static inline void gc_update_alloc_table(struct gc_mutator *mut,
-                                         struct gc_ref obj,
+static inline void gc_update_alloc_table(struct gc_ref obj,
                                          size_t size) {
   size_t alignment = gc_allocator_alloc_table_alignment();
   if (!alignment) return;
@@ -117,7 +115,7 @@ static inline void* gc_allocate_small_fast_bump_pointer(struct gc_mutator *mut, 
   *hp_loc = new_hp;
 
   gc_clear_fresh_allocation(gc_ref(hp), size);
-  gc_update_alloc_table(mut, gc_ref(hp), size);
+  gc_update_alloc_table(gc_ref(hp), size);
 
   return (void*)hp;
 }
@@ -138,7 +136,7 @@ static inline void* gc_allocate_small_fast_freelist(struct gc_mutator *mut, size
   *freelist_loc = *(void**)head;
 
   gc_clear_fresh_allocation(gc_ref_from_heap_object(head), size);
-  gc_update_alloc_table(mut, gc_ref_from_heap_object(head), size);
+  gc_update_alloc_table(gc_ref_from_heap_object(head), size);
 
   return head;
 }
