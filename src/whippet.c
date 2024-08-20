@@ -91,6 +91,10 @@ struct gc_mutator {
   struct gc_mutator *next;
 };
 
+struct gc_trace_worker_data {
+  struct nofl_allocator allocator;
+};
+
 static inline struct nofl_space*
 heap_nofl_space(struct gc_heap *heap) {
   return &heap->nofl_space;
@@ -108,16 +112,34 @@ mutator_heap(struct gc_mutator *mutator) {
   return mutator->heap;
 }
 
+static void
+gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
+                                         struct gc_heap *heap,
+                                         struct gc_trace_worker *worker,
+                                         struct gc_trace_worker_data *data),
+                               struct gc_tracer *tracer,
+                               struct gc_heap *heap,
+                               struct gc_trace_worker *worker) {
+  struct gc_trace_worker_data data;
+  nofl_allocator_reset(&data.allocator);
+  f(tracer, heap, worker, &data);
+  nofl_allocator_finish(&data.allocator, heap_nofl_space(heap));
+}
+
 static void collect(struct gc_mutator *mut,
                     enum gc_collection_kind requested_kind) GC_NEVER_INLINE;
 
 static inline int
-do_trace(struct gc_heap *heap, struct gc_edge edge, struct gc_ref ref) {
+do_trace(struct gc_heap *heap, struct gc_edge edge, struct gc_ref ref,
+         struct gc_trace_worker *worker) {
   if (!gc_ref_is_heap_object(ref))
     return 0;
-  if (GC_LIKELY(nofl_space_contains(heap_nofl_space(heap), ref)))
-    return nofl_space_evacuate_or_mark_object(heap_nofl_space(heap), edge, ref);
-  else if (large_object_space_contains(heap_large_object_space(heap), ref))
+  if (GC_LIKELY(nofl_space_contains(heap_nofl_space(heap), ref))) {
+    struct nofl_allocator *alloc =
+      worker ? &gc_trace_worker_data(worker)->allocator : NULL;
+    return nofl_space_evacuate_or_mark_object(heap_nofl_space(heap), edge, ref,
+                                              alloc);
+  } else if (large_object_space_contains(heap_large_object_space(heap), ref))
     return large_object_space_mark_object(heap_large_object_space(heap),
                                           ref);
   else
@@ -125,12 +147,13 @@ do_trace(struct gc_heap *heap, struct gc_edge edge, struct gc_ref ref) {
 }
 
 static inline int trace_edge(struct gc_heap *heap,
-                             struct gc_edge edge) GC_ALWAYS_INLINE;
+                             struct gc_edge edge,
+                             struct gc_trace_worker *worker) GC_ALWAYS_INLINE;
 
 static inline int
-trace_edge(struct gc_heap *heap, struct gc_edge edge) {
+trace_edge(struct gc_heap *heap, struct gc_edge edge, struct gc_trace_worker *worker) {
   struct gc_ref ref = gc_edge_ref(edge);
-  int is_new = do_trace(heap, edge, ref);
+  int is_new = do_trace(heap, edge, ref, worker);
 
   if (is_new &&
       GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
@@ -340,23 +363,12 @@ gc_heap_set_extern_space(struct gc_heap *heap, struct gc_extern_space *space) {
   heap->extern_space = space;
 }
 
-static void
-gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
-                                         struct gc_heap *heap,
-                                         struct gc_trace_worker *worker,
-                                         struct gc_trace_worker_data *data),
-                               struct gc_tracer *tracer,
-                               struct gc_heap *heap,
-                               struct gc_trace_worker *worker) {
-  f(tracer, heap, worker, NULL);
-}
-
 static inline void tracer_visit(struct gc_edge edge, struct gc_heap *heap,
                                 void *trace_data) GC_ALWAYS_INLINE;
 static inline void
 tracer_visit(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
   struct gc_trace_worker *worker = trace_data;
-  if (trace_edge(heap, edge))
+  if (trace_edge(heap, edge, worker))
     gc_trace_worker_enqueue(worker, gc_edge_ref(edge));
 }
 
@@ -364,7 +376,7 @@ static void
 trace_and_enqueue_locally(struct gc_edge edge, struct gc_heap *heap,
                           void *data) {
   struct gc_mutator *mut = data;
-  if (trace_edge(heap, edge))
+  if (trace_edge(heap, edge, NULL))
     mutator_mark_buf_push(&mut->mark_buf, gc_edge_ref(edge));
 }
 
@@ -396,7 +408,7 @@ trace_conservative_ref_and_enqueue_locally(struct gc_conservative_ref ref,
 static void
 trace_and_enqueue_globally(struct gc_edge edge, struct gc_heap *heap,
                            void *unused) {
-  if (trace_edge(heap, edge))
+  if (trace_edge(heap, edge, NULL))
     gc_tracer_enqueue_root(&heap->tracer, gc_edge_ref(edge));
 }
 
@@ -643,7 +655,7 @@ trace_mutator_roots_after_stop(struct gc_heap *heap) {
   atomic_store(&heap->mutator_trace_list, NULL);
 
   for (struct gc_mutator *mut = heap->inactive_mutators; mut; mut = mut->next) {
-    nofl_finish_sweeping_in_block(&mut->allocator, heap_nofl_space(heap));
+    nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
     trace_mutator_roots_with_lock(mut);
   }
 }
@@ -719,7 +731,7 @@ pause_mutator_for_collection_with_lock(struct gc_mutator *mut) {
   struct gc_heap *heap = mutator_heap(mut);
   GC_ASSERT(mutators_are_stopping(heap));
   MUTATOR_EVENT(mut, mutator_stopping);
-  nofl_finish_sweeping_in_block(&mut->allocator, heap_nofl_space(heap));
+  nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
   gc_stack_capture_hot(&mut->stack);
   if (mutator_should_mark_while_stopping(mut))
     // No need to collect results in mark buf; we can enqueue roots directly.
@@ -760,7 +772,7 @@ static double
 heap_last_gc_yield(struct gc_heap *heap) {
   struct nofl_space *nofl_space = heap_nofl_space(heap);
   size_t nofl_yield = nofl_space_yield(nofl_space);
-  size_t evacuation_reserve = nofl_space_evacuation_reserve(nofl_space);
+  size_t evacuation_reserve = nofl_space_evacuation_reserve_bytes(nofl_space);
   // FIXME: Size nofl evacuation reserve based on size of nofl space,
   // not heap size.
   size_t minimum_evacuation_reserve =
@@ -1030,7 +1042,8 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   DEBUG("last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
   detect_out_of_memory(heap);
   trace_pinned_roots_after_stop(heap);
-  nofl_space_prepare_for_evacuation(nofl_space, gc_kind);
+  if (gc_kind == GC_COLLECTION_COMPACTING)
+    nofl_space_prepare_evacuation(nofl_space);
   trace_roots_after_stop(heap);
   HEAP_EVENT(heap, roots_traced);
   gc_tracer_trace(&heap->tracer);
