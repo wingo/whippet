@@ -2153,6 +2153,8 @@ static size_t next_hole(struct gc_mutator *mut) {
       if (granules < GRANULES_PER_BLOCK)
         return granules;
       struct block_summary *summary = block_summary_for_addr(mut->block);
+      // Sweep mark bytes for completely empty block.
+      memset(metadata_byte_for_addr(mut->block), 0, GRANULES_PER_BLOCK);
       block_summary_clear_flag(summary, BLOCK_NEEDS_SWEEP);
       // Sweeping found a completely empty block.  If we are below the
       // minimum evacuation reserve, take the block.
