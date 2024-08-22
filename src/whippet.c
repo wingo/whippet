@@ -1024,7 +1024,7 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
     determine_collection_kind(heap, requested_kind);
   int is_minor = gc_kind == GC_COLLECTION_MINOR;
   HEAP_EVENT(heap, prepare_gc, gc_kind);
-  nofl_space_update_mark_patterns(nofl_space, !is_minor);
+  nofl_space_prepare_gc(nofl_space, gc_kind);
   large_object_space_start_gc(lospace, is_minor);
   gc_extern_space_start_gc(exspace, is_minor);
   resolve_ephemerons_lazily(heap);
@@ -1042,8 +1042,7 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   DEBUG("last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
   detect_out_of_memory(heap);
   trace_pinned_roots_after_stop(heap);
-  if (gc_kind == GC_COLLECTION_COMPACTING)
-    nofl_space_prepare_evacuation(nofl_space);
+  nofl_space_start_gc(nofl_space, gc_kind);
   trace_roots_after_stop(heap);
   HEAP_EVENT(heap, roots_traced);
   gc_tracer_trace(&heap->tracer);

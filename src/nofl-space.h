@@ -70,14 +70,14 @@ STATIC_ASSERT_EQ(sizeof(struct nofl_slab_header), NOFL_HEADER_BYTES_PER_SLAB);
 // non-atomically by the mutator when it owns a block; otherwise they
 // need to be accessed atomically.
 enum nofl_block_summary_flag {
-  NOFL_BLOCK_OUT_FOR_THREAD = 0x1,
-  NOFL_BLOCK_HAS_PIN = 0x2,
-  NOFL_BLOCK_PAGED_OUT = 0x4,
-  NOFL_BLOCK_NEEDS_SWEEP = 0x8,
-  NOFL_BLOCK_UNAVAILABLE = 0x10,
-  NOFL_BLOCK_EVACUATE = 0x20,
-  NOFL_BLOCK_VENERABLE = 0x40,
-  NOFL_BLOCK_VENERABLE_AFTER_SWEEP = 0x80,
+  NOFL_BLOCK_EVACUATE = 0x1,
+  NOFL_BLOCK_ZERO = 0x2,
+  NOFL_BLOCK_UNAVAILABLE = 0x4,
+  NOFL_BLOCK_FLAG_UNUSED_3 = 0x8,
+  NOFL_BLOCK_FLAG_UNUSED_4 = 0x10,
+  NOFL_BLOCK_FLAG_UNUSED_5 = 0x20,
+  NOFL_BLOCK_FLAG_UNUSED_6 = 0x40,
+  NOFL_BLOCK_FLAG_UNUSED_7 = 0x80,
   NOFL_BLOCK_FLAG_UNUSED_8 = 0x100,
   NOFL_BLOCK_FLAG_UNUSED_9 = 0x200,
   NOFL_BLOCK_FLAG_UNUSED_10 = 0x400,
@@ -141,14 +141,17 @@ struct nofl_space {
   size_t extent;
   size_t heap_size;
   uint8_t last_collection_was_minor;
-  uintptr_t next_block;   // atomically
   struct nofl_block_list empty;
   struct nofl_block_list unavailable;
+  struct nofl_block_list to_sweep;
   struct nofl_block_list partly_full;
+  struct nofl_block_list full;
+  struct nofl_block_list promoted;
+  struct nofl_block_list old;
   struct nofl_block_list evacuation_targets;
   double evacuation_minimum_reserve;
   double evacuation_reserve;
-  double venerable_threshold;
+  double promotion_threshold;
   ssize_t pending_unavailable_bytes; // atomically
   struct nofl_slab *slabs;
   size_t nslabs;
@@ -277,6 +280,7 @@ static void
 nofl_push_block(struct nofl_block_list *list, uintptr_t block) {
   atomic_fetch_add_explicit(&list->count, 1, memory_order_acq_rel);
   struct nofl_block_summary *summary = nofl_block_summary_for_addr(block);
+  GC_ASSERT_EQ(nofl_block_summary_next(summary), 0);
   uintptr_t next = atomic_load_explicit(&list->blocks, memory_order_acquire);
   do {
     nofl_block_summary_set_next(summary, next);
@@ -306,10 +310,8 @@ nofl_block_count(struct nofl_block_list *list) {
 
 static void
 nofl_push_unavailable_block(struct nofl_space *space, uintptr_t block) {
-  struct nofl_block_summary *summary = nofl_block_summary_for_addr(block);
-  GC_ASSERT(!nofl_block_summary_has_flag(summary, NOFL_BLOCK_NEEDS_SWEEP));
-  GC_ASSERT(!nofl_block_summary_has_flag(summary, NOFL_BLOCK_UNAVAILABLE));
-  nofl_block_summary_set_flag(summary, NOFL_BLOCK_UNAVAILABLE);
+  nofl_block_summary_set_flag(nofl_block_summary_for_addr(block),
+                              NOFL_BLOCK_ZERO | NOFL_BLOCK_UNAVAILABLE);
   madvise((void*)block, NOFL_BLOCK_SIZE, MADV_DONTNEED);
   nofl_push_block(&space->unavailable, block);
 }
@@ -317,12 +319,15 @@ nofl_push_unavailable_block(struct nofl_space *space, uintptr_t block) {
 static uintptr_t
 nofl_pop_unavailable_block(struct nofl_space *space) {
   uintptr_t block = nofl_pop_block(&space->unavailable);
-  if (!block)
-    return 0;
-  struct nofl_block_summary *summary = nofl_block_summary_for_addr(block);
-  GC_ASSERT(nofl_block_summary_has_flag(summary, NOFL_BLOCK_UNAVAILABLE));
-  nofl_block_summary_clear_flag(summary, NOFL_BLOCK_UNAVAILABLE);
+  if (block)
+    nofl_block_summary_clear_flag(nofl_block_summary_for_addr(block),
+                                  NOFL_BLOCK_UNAVAILABLE);
   return block;
+}
+
+static void
+nofl_push_empty_block(struct nofl_space *space, uintptr_t block) {
+  nofl_push_block(&space->empty, block);
 }
 
 static uintptr_t
@@ -333,8 +338,6 @@ nofl_pop_empty_block(struct nofl_space *space) {
 static int
 nofl_maybe_push_evacuation_target(struct nofl_space *space,
                                   uintptr_t block, double reserve) {
-  GC_ASSERT(!nofl_block_summary_has_flag(nofl_block_summary_for_addr(block),
-                                         NOFL_BLOCK_NEEDS_SWEEP));
   size_t targets = nofl_block_count(&space->evacuation_targets);
   size_t total = space->nslabs * NOFL_NONMETA_BLOCKS_PER_SLAB;
   size_t unavailable = nofl_block_count(&space->unavailable);
@@ -359,13 +362,6 @@ nofl_push_evacuation_target_if_possible(struct nofl_space *space,
                                            space->evacuation_reserve);
 }
 
-static void
-nofl_push_empty_block(struct nofl_space *space, uintptr_t block) {
-  GC_ASSERT(!nofl_block_summary_has_flag(nofl_block_summary_for_addr(block),
-                                         NOFL_BLOCK_NEEDS_SWEEP));
-  nofl_push_block(&space->empty, block);
-}
-
 static inline void
 nofl_clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);
@@ -377,29 +373,16 @@ nofl_space_live_object_granules(uint8_t *metadata) {
 }
 
 static void
-nofl_clear_remaining_metadata_bytes_in_block(uintptr_t block,
-                                             uintptr_t allocated) {
-  GC_ASSERT((allocated & (NOFL_GRANULE_SIZE - 1)) == 0);
-  uintptr_t base = block + allocated;
-  uintptr_t limit = block + NOFL_BLOCK_SIZE;
-  uintptr_t granules = (limit - base) >> NOFL_GRANULE_SIZE_LOG_2;
-  GC_ASSERT(granules <= NOFL_GRANULES_PER_BLOCK);
-  memset(nofl_metadata_byte_for_addr(base), 0, granules);
-}
-
-static void
 nofl_allocator_reset(struct nofl_allocator *alloc) {
   alloc->alloc = alloc->sweep = alloc->block = 0;
 }
 
 static void
 nofl_allocator_release_full_block(struct nofl_allocator *alloc,
-                                  struct nofl_space *space,
-                                  struct nofl_block_summary *summary) {
+                                  struct nofl_space *space) {
   GC_ASSERT(alloc->block);
   GC_ASSERT(alloc->alloc == alloc->sweep);
-  GC_ASSERT(!nofl_block_summary_has_flag(summary, NOFL_BLOCK_VENERABLE));
-
+  struct nofl_block_summary *summary = nofl_block_summary_for_addr(alloc->block);
   atomic_fetch_add(&space->granules_freed_by_last_collection,
                    summary->free_granules);
   atomic_fetch_add(&space->fragmentation_granules_since_last_collection,
@@ -409,24 +392,51 @@ nofl_allocator_release_full_block(struct nofl_allocator *alloc,
   // trying to allocate into it for a minor GC.  Sweep it next time to
   // clear any garbage allocated in this cycle and mark it as
   // "venerable" (i.e., old).
-  if (!nofl_block_summary_has_flag(summary, NOFL_BLOCK_VENERABLE_AFTER_SWEEP) &&
-      summary->free_granules < NOFL_GRANULES_PER_BLOCK * space->venerable_threshold)
-    nofl_block_summary_set_flag(summary, NOFL_BLOCK_VENERABLE_AFTER_SWEEP);
+  if (GC_GENERATIONAL &&
+      summary->free_granules < NOFL_GRANULES_PER_BLOCK * space->promotion_threshold)
+    nofl_push_block(&space->promoted, alloc->block);
+  else
+    nofl_push_block(&space->full, alloc->block);
 
   nofl_allocator_reset(alloc);
 }
 
 static void
+nofl_allocator_release_full_evacuation_target(struct nofl_allocator *alloc,
+                                              struct nofl_space *space) {
+  GC_ASSERT(alloc->alloc > alloc->block);
+  GC_ASSERT(alloc->sweep == alloc->block + NOFL_BLOCK_SIZE);
+  size_t hole_size = alloc->sweep - alloc->alloc;
+  struct nofl_block_summary *summary = nofl_block_summary_for_addr(alloc->block);
+  // FIXME: Check how this affects statistics.
+  GC_ASSERT_EQ(summary->hole_count, 1);
+  GC_ASSERT_EQ(summary->free_granules, NOFL_GRANULES_PER_BLOCK);
+  atomic_fetch_add(&space->granules_freed_by_last_collection,
+                   NOFL_GRANULES_PER_BLOCK);
+  if (hole_size) {
+    hole_size >>= NOFL_GRANULE_SIZE_LOG_2;
+    summary->holes_with_fragmentation = 1;
+    summary->fragmentation_granules = hole_size >> NOFL_GRANULE_SIZE_LOG_2;
+    atomic_fetch_add(&space->fragmentation_granules_since_last_collection,
+                     summary->fragmentation_granules);
+  } else {
+    GC_ASSERT_EQ(summary->fragmentation_granules, 0);
+    GC_ASSERT_EQ(summary->holes_with_fragmentation, 0);
+  }
+  nofl_push_block(&space->old, alloc->block);
+  nofl_allocator_reset(alloc);
+}
+
+static void
 nofl_allocator_release_partly_full_block(struct nofl_allocator *alloc,
-                                         struct nofl_space *space,
-                                         struct nofl_block_summary *summary) {
+                                         struct nofl_space *space) {
   // A block can go on the partly full list if it has exactly one
   // hole, located at the end of the block.
   GC_ASSERT(alloc->alloc > alloc->block);
   GC_ASSERT(alloc->sweep == alloc->block + NOFL_BLOCK_SIZE);
-  GC_ASSERT(nofl_block_summary_has_flag(summary, NOFL_BLOCK_NEEDS_SWEEP));
   size_t hole_size = alloc->sweep - alloc->alloc;
   GC_ASSERT(hole_size);
+  struct nofl_block_summary *summary = nofl_block_summary_for_addr(alloc->block);
   summary->fragmentation_granules = hole_size >> NOFL_GRANULE_SIZE_LOG_2;
   nofl_push_block(&space->partly_full, alloc->block);
   nofl_allocator_reset(alloc);
@@ -457,11 +467,22 @@ nofl_allocator_acquire_empty_block(struct nofl_allocator *alloc,
   summary->free_granules = NOFL_GRANULES_PER_BLOCK;
   summary->holes_with_fragmentation = 0;
   summary->fragmentation_granules = 0;
-  nofl_block_summary_set_flag(summary, NOFL_BLOCK_NEEDS_SWEEP);
   alloc->block = alloc->alloc = block;
   alloc->sweep = block + NOFL_BLOCK_SIZE;
-  nofl_clear_memory(block, NOFL_BLOCK_SIZE);
+  if (nofl_block_summary_has_flag(summary, NOFL_BLOCK_ZERO))
+    nofl_block_summary_clear_flag(summary, NOFL_BLOCK_ZERO);
+  else
+    nofl_clear_memory(block, NOFL_BLOCK_SIZE);
   return NOFL_GRANULES_PER_BLOCK;
+}
+
+static size_t
+nofl_allocator_acquire_evacuation_target(struct nofl_allocator* alloc,
+                                         struct nofl_space *space) {
+  size_t granules = nofl_allocator_acquire_partly_full_block(alloc, space);
+  if (granules)
+    return granules;
+  return nofl_allocator_acquire_empty_block(alloc, space);
 }
 
 static void
@@ -471,8 +492,6 @@ nofl_allocator_finish_hole(struct nofl_allocator *alloc) {
     struct nofl_block_summary *summary = nofl_block_summary_for_addr(alloc->block);
     summary->holes_with_fragmentation++;
     summary->fragmentation_granules += granules;
-    uint8_t *metadata = nofl_metadata_byte_for_addr(alloc->alloc);
-    memset(metadata, 0, granules);
     alloc->alloc = alloc->sweep;
   }
 }
@@ -513,15 +532,18 @@ nofl_allocator_next_hole_in_block(struct nofl_allocator *alloc,
   }
 
   size_t free_granules = scan_for_byte(metadata, limit_granules, sweep_mask);
+  size_t free_bytes = free_granules * NOFL_GRANULE_SIZE;
   GC_ASSERT(free_granules);
   GC_ASSERT(free_granules <= limit_granules);
+
+  memset(metadata, 0, free_granules);
+  memset((char*)sweep, 0, free_bytes);
 
   struct nofl_block_summary *summary = nofl_block_summary_for_addr(sweep);
   summary->hole_count++;
   GC_ASSERT(free_granules <= NOFL_GRANULES_PER_BLOCK - summary->free_granules);
   summary->free_granules += free_granules;
 
-  size_t free_bytes = free_granules * NOFL_GRANULE_SIZE;
   alloc->alloc = sweep;
   alloc->sweep = sweep + free_bytes;
   return free_granules;
@@ -539,14 +561,15 @@ static void
 nofl_allocator_release_block(struct nofl_allocator *alloc,
                              struct nofl_space *space) {
   GC_ASSERT(alloc->block);
-  struct nofl_block_summary *summary = nofl_block_summary_for_addr(alloc->block);
   if (alloc->alloc < alloc->sweep &&
       alloc->sweep == alloc->block + NOFL_BLOCK_SIZE &&
-      summary->holes_with_fragmentation == 0) {
-    nofl_allocator_release_partly_full_block(alloc, space, summary);
+      nofl_block_summary_for_addr(alloc->block)->holes_with_fragmentation == 0) {
+    nofl_allocator_release_partly_full_block(alloc, space);
+  } else if (space->evacuating) {
+    nofl_allocator_release_full_evacuation_target(alloc, space);
   } else {
     nofl_allocator_finish_sweeping_in_block(alloc, space->sweep_mask);
-    nofl_allocator_release_full_block(alloc, space, summary);
+    nofl_allocator_release_full_block(alloc, space);
   }
 }
 
@@ -554,28 +577,6 @@ static void
 nofl_allocator_finish(struct nofl_allocator *alloc, struct nofl_space *space) {
   if (alloc->block)
     nofl_allocator_release_block(alloc, space);
-}
-
-static uintptr_t
-nofl_space_next_block_to_sweep(struct nofl_space *space) {
-  uintptr_t block = atomic_load_explicit(&space->next_block,
-                                         memory_order_acquire);
-  uintptr_t next_block;
-  do {
-    if (block == 0)
-      return 0;
-
-    next_block = block + NOFL_BLOCK_SIZE;
-    if (next_block % NOFL_SLAB_SIZE == 0) {
-      uintptr_t hi_addr = space->low_addr + space->extent;
-      if (next_block == hi_addr)
-        next_block = 0;
-      else
-        next_block += NOFL_META_BLOCKS_PER_SLAB * NOFL_BLOCK_SIZE;
-    }
-  } while (!atomic_compare_exchange_weak(&space->next_block, &block,
-                                         next_block));
-  return block;
 }
 
 static int
@@ -593,6 +594,17 @@ nofl_maybe_release_swept_empty_block(struct nofl_allocator *alloc,
   return 1;
 }
 
+static int
+nofl_allocator_acquire_block_to_sweep(struct nofl_allocator *alloc,
+                                      struct nofl_space *space) {
+  uintptr_t block = nofl_pop_block(&space->to_sweep);
+  if (block) {
+    alloc->block = alloc->alloc = alloc->sweep = block;
+    return 1;
+  }
+  return 0;
+}
+
 static size_t
 nofl_allocator_next_hole(struct nofl_allocator *alloc,
                          struct nofl_space *space) {
@@ -604,8 +616,6 @@ nofl_allocator_next_hole(struct nofl_allocator *alloc,
   while (1) {
     // Sweep current block for a hole.
     if (alloc->block) {
-      struct nofl_block_summary *summary =
-        nofl_block_summary_for_addr(alloc->block);
       size_t granules =
         nofl_allocator_next_hole_in_block(alloc, space->sweep_mask);
       if (granules) {
@@ -613,10 +623,8 @@ nofl_allocator_next_hole(struct nofl_allocator *alloc,
         // to use it.
         if (granules < NOFL_GRANULES_PER_BLOCK)
           return granules;
-        // Otherwise we have an empty block.
-        nofl_clear_remaining_metadata_bytes_in_block(alloc->block, 0);
-        nofl_block_summary_clear_flag(summary, NOFL_BLOCK_NEEDS_SWEEP);
-        // If we need an evacuation reserve block, take it.
+        // Otherwise we have an empty block.  If we need an evacuation reserve
+        // block, take it.
         if (nofl_push_evacuation_target_if_needed(space, alloc->block)) {
           nofl_allocator_reset(alloc);
           continue;
@@ -627,17 +635,14 @@ nofl_allocator_next_hole(struct nofl_allocator *alloc,
           continue;
         // Otherwise if we've already returned lots of empty blocks to the
         // freelist, let the allocator keep this block.
-        if (!empties_countdown) {
-          // After this block is allocated into, it will need to be swept.
-          nofl_block_summary_set_flag(summary, NOFL_BLOCK_NEEDS_SWEEP);
+        if (!empties_countdown)
           return granules;
-        }
         // Otherwise we push to the empty blocks list.
         nofl_push_empty_block(space, alloc->block);
         nofl_allocator_reset(alloc);
         empties_countdown--;
       } else {
-        nofl_allocator_release_full_block(alloc, space, summary);
+        nofl_allocator_release_full_block(alloc, space);
       }
     }
 
@@ -649,72 +654,30 @@ nofl_allocator_next_hole(struct nofl_allocator *alloc,
         return granules;
     }
 
-    while (1) {
-      uintptr_t block = nofl_space_next_block_to_sweep(space);
-      if (block) {
-        // Sweeping found a block.  We might take it for allocation, or
-        // we might send it back.
-        struct nofl_block_summary *summary = nofl_block_summary_for_addr(block);
-        // If it's marked unavailable, it's already on a list of
-        // unavailable blocks, so skip and get the next block.
-        if (nofl_block_summary_has_flag(summary, NOFL_BLOCK_UNAVAILABLE))
-          continue;
-        if (nofl_block_summary_has_flag(summary, NOFL_BLOCK_VENERABLE)) {
-          // Skip venerable blocks after a minor GC -- we don't need to
-          // sweep as they weren't allocated into last cycle, and the
-          // mark bytes didn't rotate, so we have no cleanup to do; and
-          // we shouldn't try to allocate into them as it's not worth
-          // it.  Any wasted space is measured as fragmentation.
-          if (space->last_collection_was_minor)
-            continue;
-          else
-            nofl_block_summary_clear_flag(summary, NOFL_BLOCK_VENERABLE);
-        }
-        if (nofl_block_summary_has_flag(summary, NOFL_BLOCK_NEEDS_SWEEP)) {
-          // Prepare to sweep the block for holes.
-          alloc->alloc = alloc->sweep = alloc->block = block;
-          if (nofl_block_summary_has_flag(summary, NOFL_BLOCK_VENERABLE_AFTER_SWEEP)) {
-            // In the last cycle we noted that this block consists of
-            // mostly old data.  Sweep any garbage, commit the mark as
-            // venerable, and avoid allocating into it.
-            nofl_block_summary_clear_flag(summary, NOFL_BLOCK_VENERABLE_AFTER_SWEEP);
-            if (space->last_collection_was_minor) {
-              nofl_allocator_finish_sweeping_in_block(alloc, space->sweep_mask);
-              nofl_allocator_release_full_block(alloc, space, summary);
-              nofl_block_summary_set_flag(summary, NOFL_BLOCK_VENERABLE);
-              continue;
-            }
-          }
-          // This block was marked in the last GC and needs sweeping.
-          // As we sweep we'll want to record how many bytes were live
-          // at the last collection.  As we allocate we'll record how
-          // many granules were wasted because of fragmentation.
-          summary->hole_count = 0;
-          summary->free_granules = 0;
-          summary->holes_with_fragmentation = 0;
-          summary->fragmentation_granules = 0;
-          break;
-        } else {
-          // Otherwise this block is completely empty and is on the
-          // empties list.  We take from the empties list only after all
-          // the NEEDS_SWEEP blocks are processed.
-          continue;
-        }
-      } else {
-        // We are done sweeping for blocks.  Now take from the empties
-        // list.
-        block = nofl_pop_empty_block(space);
-        // No empty block?  Return 0 to cause collection.
-        if (!block)
-          return 0;
+    if (nofl_allocator_acquire_block_to_sweep(alloc, space)) {
+      struct nofl_block_summary *summary =
+        nofl_block_summary_for_addr(alloc->block);
+      // This block was marked in the last GC and needs sweeping.
+      // As we sweep we'll want to record how many bytes were live
+      // at the last collection.  As we allocate we'll record how
+      // many granules were wasted because of fragmentation.
+      summary->hole_count = 0;
+      summary->free_granules = 0;
+      summary->holes_with_fragmentation = 0;
+      summary->fragmentation_granules = 0;
+      continue;
+    }
 
+    // We are done sweeping for blocks.  Now take from the empties list.
+    {
+      uintptr_t block;
+      while ((block = nofl_pop_empty_block(space))) {
         // Maybe we should use this empty as a target for evacuation.
         if (nofl_push_evacuation_target_if_possible(space, block))
           continue;
 
         // Otherwise give the block to the allocator.
         struct nofl_block_summary *summary = nofl_block_summary_for_addr(block);
-        nofl_block_summary_set_flag(summary, NOFL_BLOCK_NEEDS_SWEEP);
         summary->hole_count = 1;
         summary->free_granules = NOFL_GRANULES_PER_BLOCK;
         summary->holes_with_fragmentation = 0;
@@ -725,6 +688,9 @@ nofl_allocator_next_hole(struct nofl_allocator *alloc,
         return NOFL_GRANULES_PER_BLOCK;
       }
     }
+
+    // Couldn't acquire another block; return 0 to cause collection.
+    return 0;
   }
 }
 
@@ -740,7 +706,6 @@ nofl_allocate(struct nofl_allocator *alloc, struct nofl_space *space,
     while (1) {
       size_t hole = nofl_allocator_next_hole(alloc, space);
       if (hole >= granules) {
-        nofl_clear_memory(alloc->alloc, hole * NOFL_GRANULE_SIZE);
         break;
       }
       if (!hole)
@@ -754,33 +719,22 @@ nofl_allocate(struct nofl_allocator *alloc, struct nofl_space *space,
   return ret;
 }
 
-static size_t
-nofl_allocator_acquire_evacuation_block(struct nofl_allocator* alloc,
-                                        struct nofl_space *space) {
-  size_t granules = nofl_allocator_acquire_partly_full_block(alloc, space);
-  if (granules)
-    return granules;
-  return nofl_allocator_acquire_empty_block(alloc, space);
-}
-
 static struct gc_ref
 nofl_evacuation_allocate(struct nofl_allocator* alloc, struct nofl_space *space,
                          size_t granules) {
   size_t avail = (alloc->sweep - alloc->alloc) >> NOFL_GRANULE_SIZE_LOG_2;
   while (avail < granules) {
-    if (alloc->block) {
-      nofl_allocator_finish_hole(alloc);
-      nofl_allocator_release_full_block(alloc, space,
-                                        nofl_block_summary_for_addr(alloc->block));
-    }
-    avail = nofl_allocator_acquire_evacuation_block(alloc, space);
+    if (alloc->block)
+      // No need to finish the hole, these mark bytes are zero.
+      nofl_allocator_release_full_evacuation_target(alloc, space);
+    avail = nofl_allocator_acquire_evacuation_target(alloc, space);
     if (!avail)
       return gc_ref_null();
   }
 
   struct gc_ref ret = gc_ref(alloc->alloc);
   alloc->alloc += granules * NOFL_GRANULE_SIZE;
-  gc_update_alloc_table(ret, granules * NOFL_GRANULE_SIZE);
+  // Caller is responsible for updating alloc table.
   return ret;
 }
 
@@ -860,25 +814,10 @@ nofl_space_trace_remembered_set(struct nofl_space *space,
 static void
 nofl_space_clear_remembered_set(struct nofl_space *space) {
   if (!GC_GENERATIONAL) return;
+  // FIXME: Don't assume slabs are contiguous.
   for (size_t slab = 0; slab < space->nslabs; slab++) {
     memset(space->slabs[slab].remembered_set, 0, NOFL_REMSET_BYTES_PER_SLAB);
   }
-}
-
-static void
-nofl_space_reset_sweeper(struct nofl_space *space) {
-  space->next_block = (uintptr_t) &space->slabs[0].blocks;
-}
-
-static void
-nofl_space_update_mark_patterns(struct nofl_space *space,
-                                int advance_mark_mask) {
-  uint8_t survivor_mask = space->marked_mask;
-  uint8_t next_marked_mask = nofl_rotate_dead_survivor_marked(survivor_mask);
-  if (advance_mark_mask)
-    space->marked_mask = next_marked_mask;
-  space->live_mask = survivor_mask | next_marked_mask;
-  space->sweep_mask = broadcast_byte(space->live_mask);
 }
 
 static void
@@ -911,6 +850,12 @@ nofl_space_prepare_evacuation(struct nofl_space *space) {
     while ((block = nofl_pop_block(&space->evacuation_targets)))
       nofl_push_empty_block(space, block);
   }
+  // Blocks are either to_sweep, empty, or unavailable.
+  GC_ASSERT_EQ(nofl_block_count(&space->partly_full), 0);
+  GC_ASSERT_EQ(nofl_block_count(&space->full), 0);
+  GC_ASSERT_EQ(nofl_block_count(&space->promoted), 0);
+  GC_ASSERT_EQ(nofl_block_count(&space->old), 0);
+  GC_ASSERT_EQ(nofl_block_count(&space->evacuation_targets), 0);
   size_t target_blocks = nofl_block_count(&space->empty);
   DEBUG("evacuation target block count: %zu\n", target_blocks);
 
@@ -933,27 +878,16 @@ nofl_space_prepare_evacuation(struct nofl_space *space) {
   const size_t bucket_count = 33;
   size_t histogram[33] = {0,};
   size_t bucket_size = NOFL_GRANULES_PER_BLOCK / 32;
-  size_t empties = 0;
-  for (size_t slab = 0; slab < space->nslabs; slab++) {
-    for (size_t block = 0; block < NOFL_NONMETA_BLOCKS_PER_SLAB; block++) {
-      struct nofl_block_summary *summary = &space->slabs[slab].summaries[block];
-      if (nofl_block_summary_has_flag(summary, NOFL_BLOCK_UNAVAILABLE))
-        continue;
-      if (!nofl_block_summary_has_flag(summary, NOFL_BLOCK_NEEDS_SWEEP)) {
-        empties++;
-        continue;
-      }
+  {
+    uintptr_t block = space->to_sweep.blocks;
+    while (block) {
+      struct nofl_block_summary *summary = nofl_block_summary_for_addr(block);
       size_t survivor_granules = NOFL_GRANULES_PER_BLOCK - summary->free_granules;
       size_t bucket = (survivor_granules + bucket_size - 1) / bucket_size;
       histogram[bucket]++;
+      block = nofl_block_summary_next(summary);
     }
   }
-
-  // Blocks which lack the NEEDS_SWEEP flag are empty, either because
-  // they have been removed from the pool and have the UNAVAILABLE flag
-  // set, or because they are on the empties or evacuation target
-  // lists.  When evacuation starts, the empties list should be empty.
-  GC_ASSERT(empties == target_blocks);
 
   // Now select a number of blocks that is likely to fill the space in
   // the target blocks.  Prefer candidate blocks with fewer survivors
@@ -969,14 +903,11 @@ nofl_space_prepare_evacuation(struct nofl_space *space) {
   }
 
   // Having selected the number of blocks, now we set the evacuation
-  // candidate flag on all blocks.
-  for (size_t slab = 0; slab < space->nslabs; slab++) {
-    for (size_t block = 0; block < NOFL_NONMETA_BLOCKS_PER_SLAB; block++) {
-      struct nofl_block_summary *summary = &space->slabs[slab].summaries[block];
-      if (nofl_block_summary_has_flag(summary, NOFL_BLOCK_UNAVAILABLE))
-        continue;
-      if (!nofl_block_summary_has_flag(summary, NOFL_BLOCK_NEEDS_SWEEP))
-        continue;
+  // candidate flag on all blocks that have live objects.
+  {
+    uintptr_t block = space->to_sweep.blocks;
+    while (block) {
+      struct nofl_block_summary *summary = nofl_block_summary_for_addr(block);
       size_t survivor_granules = NOFL_GRANULES_PER_BLOCK - summary->free_granules;
       size_t bucket = (survivor_granules + bucket_size - 1) / bucket_size;
       if (histogram[bucket]) {
@@ -985,8 +916,48 @@ nofl_space_prepare_evacuation(struct nofl_space *space) {
       } else {
         nofl_block_summary_clear_flag(summary, NOFL_BLOCK_EVACUATE);
       }
+      block = nofl_block_summary_next(summary);
     }
   }
+}
+
+static void
+nofl_space_update_mark_patterns(struct nofl_space *space,
+                                int advance_mark_mask) {
+  uint8_t survivor_mask = space->marked_mask;
+  uint8_t next_marked_mask = nofl_rotate_dead_survivor_marked(survivor_mask);
+  if (advance_mark_mask)
+    space->marked_mask = next_marked_mask;
+  space->live_mask = survivor_mask | next_marked_mask;
+  space->sweep_mask = broadcast_byte(space->live_mask);
+}
+
+static void
+nofl_space_prepare_gc(struct nofl_space *space, enum gc_collection_kind kind) {
+  nofl_space_update_mark_patterns(space, !(kind == GC_COLLECTION_MINOR));
+}
+
+static void
+nofl_space_start_gc(struct nofl_space *space, enum gc_collection_kind gc_kind) {
+  GC_ASSERT_EQ(nofl_block_count(&space->partly_full), 0);
+  GC_ASSERT_EQ(nofl_block_count(&space->to_sweep), 0);
+
+  // Any block that was the target of allocation in the last cycle will need to
+  // be swept next cycle.
+  uintptr_t block;
+  while ((block = nofl_pop_block(&space->full)))
+    nofl_push_block(&space->to_sweep, block);
+
+  if (gc_kind != GC_COLLECTION_MINOR) {
+    uintptr_t block;
+    while ((block = nofl_pop_block(&space->promoted)))
+      nofl_push_block(&space->to_sweep, block);
+    while ((block = nofl_pop_block(&space->old)))
+      nofl_push_block(&space->to_sweep, block);
+  }
+
+  if (gc_kind == GC_COLLECTION_COMPACTING)
+    nofl_space_prepare_evacuation(space);
 }
 
 static void
@@ -996,7 +967,6 @@ nofl_space_finish_evacuation(struct nofl_space *space) {
   // repopulate the reserve.
   GC_ASSERT(space->evacuating);
   space->evacuating = 0;
-  space->evacuation_reserve = space->evacuation_minimum_reserve;
   size_t total = space->nslabs * NOFL_NONMETA_BLOCKS_PER_SLAB;
   size_t unavailable = nofl_block_count(&space->unavailable);
   size_t reserve = space->evacuation_minimum_reserve * (total - unavailable);
@@ -1006,13 +976,15 @@ nofl_space_finish_evacuation(struct nofl_space *space) {
     if (!block) break;
     nofl_push_block(&space->evacuation_targets, block);
   }
-  {
-    // FIXME: We should avoid sweeping partly full blocks, but it's too annoying
-    // to do at the moment given the way sweeping works.
-    uintptr_t block;
-    do {
-      block = nofl_pop_block(&space->partly_full);
-    } while (block);
+}
+
+static void
+nofl_space_promote_blocks(struct nofl_space *space) {
+  uintptr_t block;
+  while ((block = nofl_pop_block(&space->promoted))) {
+    struct nofl_allocator alloc = { block, block, block };
+    nofl_allocator_finish_sweeping_in_block(&alloc, space->sweep_mask);
+    nofl_push_block(&space->old, block);
   }
 }
 
@@ -1022,39 +994,109 @@ nofl_size_to_granules(size_t size) {
 }
 
 static void
-nofl_space_verify_before_restart(struct nofl_space *space) {
-  GC_ASSERT_EQ(nofl_block_count(&space->partly_full), 0);
-  // Iterate objects in each block, verifying that the END bytes correspond to
-  // the measured object size.
-  for (size_t slab = 0; slab < space->nslabs; slab++) {
-    for (size_t block = 0; block < NOFL_NONMETA_BLOCKS_PER_SLAB; block++) {
-      struct nofl_block_summary *summary = &space->slabs[slab].summaries[block];
-      if (nofl_block_summary_has_flag(summary, NOFL_BLOCK_UNAVAILABLE))
-        continue;
-
-      uintptr_t addr = (uintptr_t)space->slabs[slab].blocks[block].data;
-      uintptr_t limit = addr + NOFL_BLOCK_SIZE;
-      uint8_t *meta = nofl_metadata_byte_for_addr(addr);
-      while (addr < limit) {
-        if (meta[0] & space->live_mask) {
-          struct gc_ref obj = gc_ref(addr);
-          size_t obj_bytes;
-          gc_trace_object(obj, NULL, NULL, NULL, &obj_bytes);
-          size_t granules = nofl_size_to_granules(obj_bytes);
-          GC_ASSERT(granules);
-          for (size_t granule = 0; granule < granules - 1; granule++)
-            GC_ASSERT(!(meta[granule] & NOFL_METADATA_BYTE_END));
-          GC_ASSERT(meta[granules - 1] & NOFL_METADATA_BYTE_END);
-          meta += granules;
-          addr += granules * NOFL_GRANULE_SIZE;
-        } else {
-          meta++;
-          addr += NOFL_GRANULE_SIZE;
-        }
+nofl_space_verify_sweepable_blocks(struct nofl_space *space,
+                                   struct nofl_block_list *list)
+{
+  uintptr_t addr = list->blocks;
+  while (addr) {
+    struct nofl_block_summary *summary = nofl_block_summary_for_addr(addr);
+    // Iterate objects in the block, verifying that the END bytes correspond to
+    // the measured object size.
+    uintptr_t limit = addr + NOFL_BLOCK_SIZE;
+    uint8_t *meta = nofl_metadata_byte_for_addr(addr);
+    while (addr < limit) {
+      if (meta[0] & space->live_mask) {
+        struct gc_ref obj = gc_ref(addr);
+        size_t obj_bytes;
+        gc_trace_object(obj, NULL, NULL, NULL, &obj_bytes);
+        size_t granules = nofl_size_to_granules(obj_bytes);
+        GC_ASSERT(granules);
+        for (size_t granule = 0; granule < granules - 1; granule++)
+          GC_ASSERT(!(meta[granule] & NOFL_METADATA_BYTE_END));
+        GC_ASSERT(meta[granules - 1] & NOFL_METADATA_BYTE_END);
+        meta += granules;
+        addr += granules * NOFL_GRANULE_SIZE;
+      } else {
+        meta++;
+        addr += NOFL_GRANULE_SIZE;
       }
-      GC_ASSERT(addr == limit);
     }
+    GC_ASSERT(addr == limit);
+    addr = nofl_block_summary_next(summary);
   }
+}
+
+static void
+nofl_space_verify_swept_blocks(struct nofl_space *space,
+                               struct nofl_block_list *list) {
+  uintptr_t addr = list->blocks;
+  while (addr) {
+    struct nofl_block_summary *summary = nofl_block_summary_for_addr(addr);
+    // Iterate objects in the block, verifying that the END bytes correspond to
+    // the measured object size.
+    uintptr_t limit = addr + NOFL_BLOCK_SIZE;
+    uint8_t *meta = nofl_metadata_byte_for_addr(addr);
+    while (addr < limit) {
+      if (meta[0]) {
+        GC_ASSERT(meta[0] & space->marked_mask);
+        GC_ASSERT_EQ(meta[0] & ~(space->marked_mask | NOFL_METADATA_BYTE_END), 0);
+        struct gc_ref obj = gc_ref(addr);
+        size_t obj_bytes;
+        gc_trace_object(obj, NULL, NULL, NULL, &obj_bytes);
+        size_t granules = nofl_size_to_granules(obj_bytes);
+        GC_ASSERT(granules);
+        for (size_t granule = 0; granule < granules - 1; granule++)
+          GC_ASSERT(!(meta[granule] & NOFL_METADATA_BYTE_END));
+        GC_ASSERT(meta[granules - 1] & NOFL_METADATA_BYTE_END);
+        meta += granules;
+        addr += granules * NOFL_GRANULE_SIZE;
+      } else {
+        meta++;
+        addr += NOFL_GRANULE_SIZE;
+      }
+    }
+    GC_ASSERT(addr == limit);
+    addr = nofl_block_summary_next(summary);
+  }
+}
+
+static void
+nofl_space_verify_empty_blocks(struct nofl_space *space,
+                               struct nofl_block_list *list,
+                               int paged_in) {
+  uintptr_t addr = list->blocks;
+  while (addr) {
+    struct nofl_block_summary *summary = nofl_block_summary_for_addr(addr);
+    // Iterate objects in the block, verifying that the END bytes correspond to
+    // the measured object size.
+    uintptr_t limit = addr + NOFL_BLOCK_SIZE;
+    uint8_t *meta = nofl_metadata_byte_for_addr(addr);
+    while (addr < limit) {
+      GC_ASSERT_EQ(*meta, 0);
+      if (paged_in) {
+        char zeroes[NOFL_GRANULE_SIZE] = { 0, };
+        GC_ASSERT_EQ(memcmp((char*)addr, zeroes, NOFL_GRANULE_SIZE), 0);
+      }
+      meta++;
+      addr += NOFL_GRANULE_SIZE;
+    }
+    GC_ASSERT(addr == limit);
+    addr = nofl_block_summary_next(summary);
+  }
+}
+
+static void
+nofl_space_verify_before_restart(struct nofl_space *space) {
+  nofl_space_verify_sweepable_blocks(space, &space->to_sweep);
+  nofl_space_verify_sweepable_blocks(space, &space->promoted);
+  // If there are full or partly full blocks, they were filled during
+  // evacuation.
+  nofl_space_verify_swept_blocks(space, &space->partly_full);
+  nofl_space_verify_swept_blocks(space, &space->full);
+  nofl_space_verify_swept_blocks(space, &space->old);
+  nofl_space_verify_empty_blocks(space, &space->empty, 1);
+  nofl_space_verify_empty_blocks(space, &space->unavailable, 0);
+  // GC_ASSERT(space->last_collection_was_minor || !nofl_block_count(&space->old));
 }
 
 static void
@@ -1063,9 +1105,24 @@ nofl_space_finish_gc(struct nofl_space *space,
   space->last_collection_was_minor = (gc_kind == GC_COLLECTION_MINOR);
   if (space->evacuating)
     nofl_space_finish_evacuation(space);
-  nofl_space_reset_sweeper(space);
-  nofl_space_update_mark_patterns(space, 0);
+  else {
+    space->evacuation_reserve = space->evacuation_minimum_reserve;
+    // If we were evacuating and preferentially allocated empty blocks
+    // to the evacuation reserve, return those blocks to the empty set
+    // for allocation by the mutator.
+    size_t total = space->nslabs * NOFL_NONMETA_BLOCKS_PER_SLAB;
+    size_t unavailable = nofl_block_count(&space->unavailable);
+    size_t target = space->evacuation_minimum_reserve * (total - unavailable);
+    size_t reserve = nofl_block_count(&space->evacuation_targets);
+    while (reserve-- > target)
+      nofl_push_block(&space->empty,
+                      nofl_pop_block(&space->evacuation_targets));
+  }
+
+  // FIXME: Promote concurrently instead of during the pause.
+  nofl_space_promote_blocks(space);
   nofl_space_reset_statistics(space);
+  nofl_space_update_mark_patterns(space, 0);
   if (GC_DEBUG)
     nofl_space_verify_before_restart(space);
 }
@@ -1361,7 +1418,7 @@ nofl_allocate_slabs(size_t nslabs) {
 
 static int
 nofl_space_init(struct nofl_space *space, size_t size, int atomic,
-                double venerable_threshold) {
+                double promotion_threshold) {
   size = align_up(size, NOFL_BLOCK_SIZE);
   size_t reserved = align_up(size, NOFL_SLAB_SIZE);
   size_t nslabs = reserved / NOFL_SLAB_SIZE;
@@ -1375,10 +1432,9 @@ nofl_space_init(struct nofl_space *space, size_t size, int atomic,
   space->nslabs = nslabs;
   space->low_addr = (uintptr_t) slabs;
   space->extent = reserved;
-  space->next_block = 0;
   space->evacuation_minimum_reserve = 0.02;
   space->evacuation_reserve = space->evacuation_minimum_reserve;
-  space->venerable_threshold = venerable_threshold;
+  space->promotion_threshold = promotion_threshold;
   for (size_t slab = 0; slab < nslabs; slab++) {
     for (size_t block = 0; block < NOFL_NONMETA_BLOCKS_PER_SLAB; block++) {
       uintptr_t addr = (uintptr_t)slabs[slab].blocks[block].data;
@@ -1386,6 +1442,8 @@ nofl_space_init(struct nofl_space *space, size_t size, int atomic,
         nofl_push_unavailable_block(space, addr);
         reserved -= NOFL_BLOCK_SIZE;
       } else {
+        nofl_block_summary_set_flag(nofl_block_summary_for_addr(addr),
+                                    NOFL_BLOCK_ZERO);
         if (!nofl_push_evacuation_target_if_needed(space, addr))
           nofl_push_empty_block(space, addr);
       }
