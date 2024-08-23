@@ -676,8 +676,13 @@ nofl_allocator_next_hole(struct nofl_allocator *alloc,
         if (nofl_push_evacuation_target_if_possible(space, block))
           continue;
 
-        // Otherwise give the block to the allocator.
         struct nofl_block_summary *summary = nofl_block_summary_for_addr(block);
+        if (nofl_block_summary_has_flag(summary, NOFL_BLOCK_ZERO))
+          nofl_block_summary_clear_flag(summary, NOFL_BLOCK_ZERO);
+        else
+          nofl_clear_memory(block, NOFL_BLOCK_SIZE);
+
+        // Otherwise give the block to the allocator.
         summary->hole_count = 1;
         summary->free_granules = NOFL_GRANULES_PER_BLOCK;
         summary->holes_with_fragmentation = 0;
@@ -1073,7 +1078,7 @@ nofl_space_verify_empty_blocks(struct nofl_space *space,
     uint8_t *meta = nofl_metadata_byte_for_addr(addr);
     while (addr < limit) {
       GC_ASSERT_EQ(*meta, 0);
-      if (paged_in) {
+      if (paged_in && nofl_block_summary_has_flag(summary, NOFL_BLOCK_ZERO)) {
         char zeroes[NOFL_GRANULE_SIZE] = { 0, };
         GC_ASSERT_EQ(memcmp((char*)addr, zeroes, NOFL_GRANULE_SIZE), 0);
       }
