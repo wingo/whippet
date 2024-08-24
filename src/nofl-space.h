@@ -55,8 +55,7 @@ struct nofl_slab;
 struct nofl_slab_header {
   union {
     struct {
-      struct nofl_slab *next;
-      struct nofl_slab *prev;
+      uint8_t block_marks[NOFL_BLOCKS_PER_SLAB];
     };
     uint8_t padding[NOFL_HEADER_BYTES_PER_SLAB];
   };
@@ -231,6 +230,45 @@ nofl_metadata_byte_for_addr(uintptr_t addr) {
 static uint8_t*
 nofl_metadata_byte_for_object(struct gc_ref ref) {
   return nofl_metadata_byte_for_addr(gc_ref_value(ref));
+}
+
+static int
+nofl_block_is_marked(uintptr_t addr) {
+  uintptr_t base = align_down(addr, NOFL_SLAB_SIZE);
+  struct nofl_slab *slab = (struct nofl_slab *) base;
+  unsigned block_idx = (addr / NOFL_BLOCK_SIZE) % NOFL_BLOCKS_PER_SLAB;
+  uint8_t mark_byte = block_idx / 8;
+  GC_ASSERT(mark_byte < NOFL_HEADER_BYTES_PER_SLAB);
+  uint8_t mark_mask = 1U << (block_idx % 8);
+  uint8_t byte = atomic_load_explicit(&slab->header.block_marks[mark_byte],
+                                      memory_order_relaxed);
+  return byte & mark_mask;
+}
+
+static void
+nofl_block_set_mark(uintptr_t addr) {
+  uintptr_t base = align_down(addr, NOFL_SLAB_SIZE);
+  struct nofl_slab *slab = (struct nofl_slab *) base;
+  unsigned block_idx = (addr / NOFL_BLOCK_SIZE) % NOFL_BLOCKS_PER_SLAB;
+  uint8_t mark_byte = block_idx / 8;
+  GC_ASSERT(mark_byte < NOFL_HEADER_BYTES_PER_SLAB);
+  uint8_t mark_mask = 1U << (block_idx % 8);
+  atomic_fetch_or_explicit(&slab->header.block_marks[mark_byte],
+                           mark_mask,
+                           memory_order_relaxed);
+}
+
+static void
+nofl_block_clear_mark(uintptr_t addr) {
+  uintptr_t base = align_down(addr, NOFL_SLAB_SIZE);
+  struct nofl_slab *slab = (struct nofl_slab *) base;
+  unsigned block_idx = (addr / NOFL_BLOCK_SIZE) % NOFL_BLOCKS_PER_SLAB;
+  uint8_t mark_byte = block_idx / 8;
+  GC_ASSERT(mark_byte < NOFL_HEADER_BYTES_PER_SLAB);
+  uint8_t mark_mask = 1U << (block_idx % 8);
+  atomic_fetch_and_explicit(&slab->header.block_marks[mark_byte],
+                            ~mark_mask,
+                            memory_order_relaxed);
 }
 
 #define NOFL_GRANULES_PER_BLOCK (NOFL_BLOCK_SIZE / NOFL_GRANULE_SIZE)
@@ -1124,6 +1162,25 @@ nofl_space_finish_gc(struct nofl_space *space,
                       nofl_pop_block(&space->evacuation_targets));
   }
 
+  {
+    struct nofl_block_list to_sweep = {0,};
+    uintptr_t block;
+    while ((block = nofl_pop_block(&space->to_sweep))) {
+      if (nofl_block_is_marked(block)) {
+        nofl_block_clear_mark(block);
+        nofl_push_block(&to_sweep, block);
+      } else {
+        // Block is empty.
+        memset(nofl_metadata_byte_for_addr(block), 0, NOFL_GRANULES_PER_BLOCK);
+        nofl_push_empty_block(space, block);
+      }
+    }
+    atomic_store_explicit(&space->to_sweep.count, to_sweep.count,
+                          memory_order_release);
+    atomic_store_explicit(&space->to_sweep.blocks, to_sweep.blocks,
+                          memory_order_release);
+  }
+
   // FIXME: Promote concurrently instead of during the pause.
   nofl_space_promote_blocks(space);
   nofl_space_reset_statistics(space);
@@ -1199,7 +1256,18 @@ static inline int
 nofl_space_set_mark(struct nofl_space *space, uint8_t *metadata, uint8_t byte) {
   uint8_t mask = NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_MARK_0
     | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
-  *metadata = (byte & ~mask) | space->marked_mask;
+  atomic_store_explicit(metadata,
+                        (byte & ~mask) | space->marked_mask,
+                        memory_order_relaxed);
+  return 1;
+}
+
+static inline int
+nofl_space_set_nonempty_mark(struct nofl_space *space, uint8_t *metadata,
+                             uint8_t byte, struct gc_ref ref) {
+  nofl_space_set_mark(space, metadata, byte);
+  if (!nofl_block_is_marked(gc_ref_value(ref)))
+    nofl_block_set_mark(gc_ref_value(ref));
   return 1;
 }
 
@@ -1242,7 +1310,7 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
       // opportunistic evacuation.  No future evacuation of this
       // object will succeed.  Mark in place instead.
       gc_atomic_forward_abort(&fwd);
-      return nofl_space_set_mark(space, metadata, byte);
+      return nofl_space_set_nonempty_mark(space, metadata, byte, old_ref);
     }
     break;
   }
@@ -1282,7 +1350,7 @@ nofl_space_evacuate_or_mark_object(struct nofl_space *space,
     return nofl_space_evacuate(space, metadata, byte, edge, old_ref,
                                evacuate);
 
-  return nofl_space_set_mark(space, metadata, byte);
+  return nofl_space_set_nonempty_mark(space, metadata, byte, old_ref);
 }
 
 static inline int
@@ -1404,10 +1472,7 @@ nofl_space_mark_conservative_ref(struct nofl_space *space,
     addr = block_base + (loc - loc_base) * NOFL_GRANULE_SIZE;
   }
 
-  uint8_t mask = NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_MARK_0
-    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
-  atomic_store_explicit(loc, (byte & ~mask) | space->marked_mask,
-                        memory_order_relaxed);
+  nofl_space_set_nonempty_mark(space, loc, byte, gc_ref(addr));
 
   return gc_ref(addr);
 }
