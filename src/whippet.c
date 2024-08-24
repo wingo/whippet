@@ -247,6 +247,7 @@ add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
 
 static void
 remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
+  nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
   MUTATOR_EVENT(mut, mutator_removed);
   mut->heap = NULL;
   heap_lock(heap);
@@ -621,7 +622,8 @@ wait_for_mutators_to_stop(struct gc_heap *heap) {
     pthread_cond_wait(&heap->collector_cond, &heap->lock);
 }
 
-static void trace_mutator_conservative_roots_after_stop(struct gc_heap *heap) {
+static void
+trace_mutator_conservative_roots_after_stop(struct gc_heap *heap) {
   int active_mutators_already_marked = heap_should_mark_while_stopping(heap);
   if (!active_mutators_already_marked)
     for (struct gc_mutator *mut = atomic_load(&heap->mutator_trace_list);
@@ -654,10 +656,8 @@ trace_mutator_roots_after_stop(struct gc_heap *heap) {
   }
   atomic_store(&heap->mutator_trace_list, NULL);
 
-  for (struct gc_mutator *mut = heap->inactive_mutators; mut; mut = mut->next) {
-    nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
+  for (struct gc_mutator *mut = heap->inactive_mutators; mut; mut = mut->next)
     trace_mutator_roots_with_lock(mut);
-  }
 }
 
 static void
@@ -1323,6 +1323,7 @@ void gc_finish_for_thread(struct gc_mutator *mut) {
 
 static void deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mut->next == NULL);
+  nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
   heap_lock(heap);
   mut->next = heap->inactive_mutators;
   heap->inactive_mutators = mut;

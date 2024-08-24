@@ -944,17 +944,17 @@ nofl_space_prepare_gc(struct nofl_space *space, enum gc_collection_kind kind) {
 
 static void
 nofl_space_start_gc(struct nofl_space *space, enum gc_collection_kind gc_kind) {
-  GC_ASSERT_EQ(nofl_block_count(&space->partly_full), 0);
   GC_ASSERT_EQ(nofl_block_count(&space->to_sweep), 0);
 
   // Any block that was the target of allocation in the last cycle will need to
   // be swept next cycle.
   uintptr_t block;
+  while ((block = nofl_pop_block(&space->partly_full)))
+    nofl_push_block(&space->to_sweep, block);
   while ((block = nofl_pop_block(&space->full)))
     nofl_push_block(&space->to_sweep, block);
 
   if (gc_kind != GC_COLLECTION_MINOR) {
-    uintptr_t block;
     while ((block = nofl_pop_block(&space->promoted)))
       nofl_push_block(&space->to_sweep, block);
     while ((block = nofl_pop_block(&space->old)))
