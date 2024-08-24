@@ -1187,6 +1187,88 @@ nofl_space_sweep_until_memory_released(struct nofl_space *space,
 }
 
 static inline int
+nofl_space_should_evacuate(struct nofl_space *space, struct gc_ref obj) {
+  if (!space->evacuating)
+    return 0;
+  struct nofl_block_summary *summary =
+    nofl_block_summary_for_addr(gc_ref_value(obj));
+  return nofl_block_summary_has_flag(summary, NOFL_BLOCK_EVACUATE);
+}
+
+static inline int
+nofl_space_set_mark(struct nofl_space *space, uint8_t *metadata, uint8_t byte) {
+  uint8_t mask = NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_MARK_0
+    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
+  *metadata = (byte & ~mask) | space->marked_mask;
+  return 1;
+}
+
+static inline int
+nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
+                    struct gc_edge edge,
+                    struct gc_ref old_ref,
+                    struct nofl_allocator *evacuate) {
+  struct gc_atomic_forward fwd = gc_atomic_forward_begin(old_ref);
+
+  if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
+    gc_atomic_forward_acquire(&fwd);
+
+  switch (fwd.state) {
+  case GC_FORWARDING_STATE_NOT_FORWARDED:
+  case GC_FORWARDING_STATE_ABORTED:
+  default:
+    // Impossible.
+    GC_CRASH();
+  case GC_FORWARDING_STATE_ACQUIRED: {
+    // We claimed the object successfully; evacuating is up to us.
+    size_t object_granules = nofl_space_live_object_granules(metadata);
+    struct gc_ref new_ref = nofl_evacuation_allocate(evacuate, space,
+                                                     object_granules);
+    if (gc_ref_is_heap_object(new_ref)) {
+      // Copy object contents before committing, as we don't know what
+      // part of the object (if any) will be overwritten by the
+      // commit.
+      memcpy(gc_ref_heap_object(new_ref), gc_ref_heap_object(old_ref),
+             object_granules * NOFL_GRANULE_SIZE);
+      gc_atomic_forward_commit(&fwd, new_ref);
+      // Now update extent metadata, and indicate to the caller that
+      // the object's fields need to be traced.
+      uint8_t *new_metadata = nofl_metadata_byte_for_object(new_ref);
+      memcpy(new_metadata + 1, metadata + 1, object_granules - 1);
+      gc_edge_update(edge, new_ref);
+      return nofl_space_set_mark(space, new_metadata, byte);
+    } else {
+      // Well shucks; allocation failed, marking the end of
+      // opportunistic evacuation.  No future evacuation of this
+      // object will succeed.  Mark in place instead.
+      gc_atomic_forward_abort(&fwd);
+      return nofl_space_set_mark(space, metadata, byte);
+    }
+    break;
+  }
+  case GC_FORWARDING_STATE_BUSY:
+    // Someone else claimed this object first.  Spin until new address
+    // known, or evacuation aborts.
+    for (size_t spin_count = 0;; spin_count++) {
+      if (gc_atomic_forward_retry_busy(&fwd))
+        break;
+      yield_for_spin(spin_count);
+    }
+    if (fwd.state == GC_FORWARDING_STATE_ABORTED)
+      // Remove evacuation aborted; remote will mark and enqueue.
+      return 0;
+    ASSERT(fwd.state == GC_FORWARDING_STATE_FORWARDED);
+    // Fall through.
+  case GC_FORWARDING_STATE_FORWARDED:
+    // The object has been evacuated already.  Update the edge;
+    // whoever forwarded the object will make sure it's eventually
+    // traced.
+    gc_edge_update(edge, gc_ref(gc_atomic_forward_address(&fwd)));
+    return 0;
+  }
+}
+
+static inline int
 nofl_space_evacuate_or_mark_object(struct nofl_space *space,
                                    struct gc_edge edge,
                                    struct gc_ref old_ref,
@@ -1195,75 +1277,12 @@ nofl_space_evacuate_or_mark_object(struct nofl_space *space,
   uint8_t byte = *metadata;
   if (byte & space->marked_mask)
     return 0;
-  if (space->evacuating &&
-      nofl_block_summary_has_flag(nofl_block_summary_for_addr(gc_ref_value(old_ref)),
-                                  NOFL_BLOCK_EVACUATE)) {
-    // This is an evacuating collection, and we are attempting to
-    // evacuate this block, and we are tracing this particular object
-    // for what appears to be the first time.
-    struct gc_atomic_forward fwd = gc_atomic_forward_begin(old_ref);
 
-    if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
-      gc_atomic_forward_acquire(&fwd);
+  if (nofl_space_should_evacuate(space, old_ref))
+    return nofl_space_evacuate(space, metadata, byte, edge, old_ref,
+                               evacuate);
 
-    switch (fwd.state) {
-    case GC_FORWARDING_STATE_NOT_FORWARDED:
-    case GC_FORWARDING_STATE_ABORTED:
-      // Impossible.
-      GC_CRASH();
-    case GC_FORWARDING_STATE_ACQUIRED: {
-      // We claimed the object successfully; evacuating is up to us.
-      size_t object_granules = nofl_space_live_object_granules(metadata);
-      struct gc_ref new_ref = nofl_evacuation_allocate(evacuate, space,
-                                                       object_granules);
-      if (gc_ref_is_heap_object(new_ref)) {
-        // Copy object contents before committing, as we don't know what
-        // part of the object (if any) will be overwritten by the
-        // commit.
-        memcpy(gc_ref_heap_object(new_ref), gc_ref_heap_object(old_ref),
-               object_granules * NOFL_GRANULE_SIZE);
-        gc_atomic_forward_commit(&fwd, new_ref);
-        // Now update extent metadata, and indicate to the caller that
-        // the object's fields need to be traced.
-        uint8_t *new_metadata = nofl_metadata_byte_for_object(new_ref);
-        memcpy(new_metadata + 1, metadata + 1, object_granules - 1);
-        gc_edge_update(edge, new_ref);
-        metadata = new_metadata;
-        // Fall through to set mark bits.
-      } else {
-        // Well shucks; allocation failed, marking the end of
-        // opportunistic evacuation.  No future evacuation of this
-        // object will succeed.  Mark in place instead.
-        gc_atomic_forward_abort(&fwd);
-      }
-      break;
-    }
-    case GC_FORWARDING_STATE_BUSY:
-      // Someone else claimed this object first.  Spin until new address
-      // known, or evacuation aborts.
-      for (size_t spin_count = 0;; spin_count++) {
-        if (gc_atomic_forward_retry_busy(&fwd))
-          break;
-        yield_for_spin(spin_count);
-      }
-      if (fwd.state == GC_FORWARDING_STATE_ABORTED)
-        // Remove evacuation aborted; remote will mark and enqueue.
-        return 0;
-      ASSERT(fwd.state == GC_FORWARDING_STATE_FORWARDED);
-      // Fall through.
-    case GC_FORWARDING_STATE_FORWARDED:
-      // The object has been evacuated already.  Update the edge;
-      // whoever forwarded the object will make sure it's eventually
-      // traced.
-      gc_edge_update(edge, gc_ref(gc_atomic_forward_address(&fwd)));
-      return 0;
-    }
-  }
-
-  uint8_t mask = NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_MARK_0
-    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
-  *metadata = (byte & ~mask) | space->marked_mask;
-  return 1;
+  return nofl_space_set_mark(space, metadata, byte);
 }
 
 static inline int
@@ -1282,21 +1301,10 @@ nofl_space_contains(struct nofl_space *space, struct gc_ref ref) {
   return nofl_space_contains_address(space, gc_ref_value(ref));
 }
 
-static int
-nofl_space_forward_or_mark_if_traced(struct nofl_space *space,
-                                     struct gc_edge edge,
-                                     struct gc_ref ref) {
-  uint8_t *metadata = nofl_metadata_byte_for_object(ref);
-  uint8_t byte = *metadata;
-  if (byte & space->marked_mask)
-    return 1;
-
-  if (!space->evacuating)
-    return 0;
-  if (!nofl_block_summary_has_flag(nofl_block_summary_for_addr(gc_ref_value(ref)),
-                                   NOFL_BLOCK_EVACUATE))
-    return 0;
-
+static inline int
+nofl_space_forward_if_evacuated(struct nofl_space *space,
+                                struct gc_edge edge,
+                                struct gc_ref ref) {
   struct gc_atomic_forward fwd = gc_atomic_forward_begin(ref);
   switch (fwd.state) {
   case GC_FORWARDING_STATE_NOT_FORWARDED:
@@ -1320,6 +1328,21 @@ nofl_space_forward_or_mark_if_traced(struct nofl_space *space,
   default:
     GC_CRASH();
   }
+}
+
+static int
+nofl_space_forward_or_mark_if_traced(struct nofl_space *space,
+                                     struct gc_edge edge,
+                                     struct gc_ref ref) {
+  uint8_t *metadata = nofl_metadata_byte_for_object(ref);
+  uint8_t byte = *metadata;
+  if (byte & space->marked_mask)
+    return 1;
+
+  if (!nofl_space_should_evacuate(space, ref))
+    return 0;
+
+  return nofl_space_forward_if_evacuated(space, edge, ref);
 }
 
 static inline struct gc_ref
