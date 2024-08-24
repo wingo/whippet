@@ -647,94 +647,49 @@ static size_t
 nofl_allocator_next_hole(struct nofl_allocator *alloc,
                          struct nofl_space *space) {
   nofl_allocator_finish_hole(alloc);
-  // As we sweep if we find that a block is empty, we return it to the
-  // empties list.  Empties are precious.  But if we return 10 blocks in
-  // a row, and still find an 11th empty, go ahead and use it.
-  size_t empties_countdown = 10;
-  while (1) {
-    // Sweep current block for a hole.
-    if (alloc->block) {
-      size_t granules =
-        nofl_allocator_next_hole_in_block(alloc, space->sweep_mask);
-      if (granules) {
-        // If the hole spans only part of a block, let the allocator try
-        // to use it.
-        if (granules < NOFL_GRANULES_PER_BLOCK)
-          return granules;
-        // Otherwise we have an empty block.  If we need an evacuation reserve
-        // block, take it.
-        if (nofl_push_evacuation_target_if_needed(space, alloc->block)) {
-          nofl_allocator_reset(alloc);
-          continue;
-        }
-        // If we have pending pages to release to the OS, we should unmap
-        // this block.
-        if (nofl_maybe_release_swept_empty_block(alloc, space))
-          continue;
-        // Otherwise if we've already returned lots of empty blocks to the
-        // freelist, let the allocator keep this block.
-        if (!empties_countdown)
-          return granules;
-        // Otherwise we push to the empty blocks list.
-        nofl_push_empty_block(space, alloc->block);
-        nofl_allocator_reset(alloc);
-        empties_countdown--;
-      } else {
-        nofl_allocator_release_full_block(alloc, space);
-      }
-    }
 
-    GC_ASSERT(alloc->block == 0);
-
-    {
-      size_t granules = nofl_allocator_acquire_partly_full_block(alloc, space);
-      if (granules)
-        return granules;
-    }
-
-    if (nofl_allocator_acquire_block_to_sweep(alloc, space)) {
-      struct nofl_block_summary *summary =
-        nofl_block_summary_for_addr(alloc->block);
-      // This block was marked in the last GC and needs sweeping.
-      // As we sweep we'll want to record how many bytes were live
-      // at the last collection.  As we allocate we'll record how
-      // many granules were wasted because of fragmentation.
-      summary->hole_count = 0;
-      summary->free_granules = 0;
-      summary->holes_with_fragmentation = 0;
-      summary->fragmentation_granules = 0;
-      continue;
-    }
-
-    // We are done sweeping for blocks.  Now take from the empties list.
-    {
-      uintptr_t block;
-      while ((block = nofl_pop_empty_block(space))) {
-        // Maybe we should use this empty as a target for evacuation.
-        if (nofl_push_evacuation_target_if_possible(space, block))
-          continue;
-
-        struct nofl_block_summary *summary = nofl_block_summary_for_addr(block);
-        if (nofl_block_summary_has_flag(summary, NOFL_BLOCK_ZERO))
-          nofl_block_summary_clear_flag(summary, NOFL_BLOCK_ZERO);
-        else
-          nofl_clear_memory(block, NOFL_BLOCK_SIZE);
-
-        // Otherwise give the block to the allocator.
-        summary->hole_count = 1;
-        summary->free_granules = NOFL_GRANULES_PER_BLOCK;
-        summary->holes_with_fragmentation = 0;
-        summary->fragmentation_granules = 0;
-        alloc->block = block;
-        alloc->alloc = block;
-        alloc->sweep = block + NOFL_BLOCK_SIZE;
-        return NOFL_GRANULES_PER_BLOCK;
-      }
-    }
-
-    // Couldn't acquire another block; return 0 to cause collection.
-    return 0;
+  // Sweep current block for a hole.
+  if (alloc->block) {
+    size_t granules =
+      nofl_allocator_next_hole_in_block(alloc, space->sweep_mask);
+    if (granules)
+      return granules;
+    else
+      nofl_allocator_release_full_block(alloc, space);
   }
+
+  GC_ASSERT(alloc->block == 0);
+
+  {
+    size_t granules = nofl_allocator_acquire_partly_full_block(alloc, space);
+    if (granules)
+      return granules;
+  }
+
+  while (nofl_allocator_acquire_block_to_sweep(alloc, space)) {
+    struct nofl_block_summary *summary =
+      nofl_block_summary_for_addr(alloc->block);
+    // This block was marked in the last GC and needs sweeping.
+    // As we sweep we'll want to record how many bytes were live
+    // at the last collection.  As we allocate we'll record how
+    // many granules were wasted because of fragmentation.
+    summary->hole_count = 0;
+    summary->free_granules = 0;
+    summary->holes_with_fragmentation = 0;
+    summary->fragmentation_granules = 0;
+    size_t granules =
+      nofl_allocator_next_hole_in_block(alloc, space->sweep_mask);
+    if (granules)
+      return granules;
+    nofl_allocator_release_full_block(alloc, space);
+  }
+
+  // We are done sweeping for blocks.  Now take from the empties list.
+  if (nofl_allocator_acquire_empty_block(alloc, space))
+    return NOFL_GRANULES_PER_BLOCK;
+
+  // Couldn't acquire another block; return 0 to cause collection.
+  return 0;
 }
 
 static struct gc_ref
@@ -1172,7 +1127,8 @@ nofl_space_finish_gc(struct nofl_space *space,
       } else {
         // Block is empty.
         memset(nofl_metadata_byte_for_addr(block), 0, NOFL_GRANULES_PER_BLOCK);
-        nofl_push_empty_block(space, block);
+        if (!nofl_push_evacuation_target_if_possible(space, block))
+          nofl_push_empty_block(space, block);
       }
     }
     atomic_store_explicit(&space->to_sweep.count, to_sweep.count,
