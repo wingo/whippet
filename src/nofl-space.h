@@ -258,19 +258,6 @@ nofl_block_set_mark(uintptr_t addr) {
                            memory_order_relaxed);
 }
 
-static void
-nofl_block_clear_mark(uintptr_t addr) {
-  uintptr_t base = align_down(addr, NOFL_SLAB_SIZE);
-  struct nofl_slab *slab = (struct nofl_slab *) base;
-  unsigned block_idx = (addr / NOFL_BLOCK_SIZE) % NOFL_BLOCKS_PER_SLAB;
-  uint8_t mark_byte = block_idx / 8;
-  GC_ASSERT(mark_byte < NOFL_HEADER_BYTES_PER_SLAB);
-  uint8_t mark_mask = 1U << (block_idx % 8);
-  atomic_fetch_and_explicit(&slab->header.block_marks[mark_byte],
-                            ~mark_mask,
-                            memory_order_relaxed);
-}
-
 #define NOFL_GRANULES_PER_BLOCK (NOFL_BLOCK_SIZE / NOFL_GRANULE_SIZE)
 #define NOFL_GRANULES_PER_REMSET_BYTE \
   (NOFL_GRANULES_PER_BLOCK / NOFL_REMSET_BYTES_PER_BLOCK)
@@ -934,7 +921,7 @@ static void
 nofl_space_clear_block_marks(struct nofl_space *space) {
   for (size_t s = 0; s < space->nslabs; s++) {
     struct nofl_slab *slab = &space->slabs[s];
-    memset(&slab->header.block_marks, 0, NOFL_BLOCKS_PER_SLAB / 8);
+    memset(slab->header.block_marks, 0, NOFL_BLOCKS_PER_SLAB / 8);
   }
 }
 
