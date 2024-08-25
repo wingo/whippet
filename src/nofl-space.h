@@ -1271,7 +1271,8 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
       uint8_t *new_metadata = nofl_metadata_byte_for_object(new_ref);
       memcpy(new_metadata + 1, metadata + 1, object_granules - 1);
       gc_edge_update(edge, new_ref);
-      return nofl_space_set_mark(space, new_metadata, byte);
+      return nofl_space_set_nonempty_mark(space, new_metadata, byte,
+                                          new_ref);
     } else {
       // Well shucks; allocation failed, marking the end of
       // opportunistic evacuation.  No future evacuation of this
