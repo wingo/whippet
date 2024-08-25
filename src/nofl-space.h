@@ -931,8 +931,20 @@ nofl_space_update_mark_patterns(struct nofl_space *space,
 }
 
 static void
+nofl_space_clear_block_marks(struct nofl_space *space) {
+  for (size_t s = 0; s < space->nslabs; s++) {
+    struct nofl_slab *slab = &space->slabs[s];
+    memset(&slab->header.block_marks, 0, NOFL_BLOCKS_PER_SLAB / 8);
+  }
+}
+
+static void
 nofl_space_prepare_gc(struct nofl_space *space, enum gc_collection_kind kind) {
-  nofl_space_update_mark_patterns(space, !(kind == GC_COLLECTION_MINOR));
+  int is_minor = kind == GC_COLLECTION_MINOR;
+  if (!is_minor) {
+    nofl_space_update_mark_patterns(space, 1);
+    nofl_space_clear_block_marks(space);
+  }
 }
 
 static void
@@ -1122,7 +1134,6 @@ nofl_space_finish_gc(struct nofl_space *space,
     uintptr_t block;
     while ((block = nofl_pop_block(&space->to_sweep))) {
       if (nofl_block_is_marked(block)) {
-        nofl_block_clear_mark(block);
         nofl_push_block(&to_sweep, block);
       } else {
         // Block is empty.
