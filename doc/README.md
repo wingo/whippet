@@ -8,6 +8,6 @@
    characteristics and which impose different requirements on the
    embedder.
 
- * [Guile](./doc/guile.md): Some notes on a potential rebase of Guile on
+ * [Guile](./guile.md): Some notes on a potential rebase of Guile on
    top of Whippet.
 
