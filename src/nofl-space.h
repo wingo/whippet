@@ -236,30 +236,24 @@ nofl_metadata_byte_for_object(struct gc_ref ref) {
   return nofl_metadata_byte_for_addr(gc_ref_value(ref));
 }
 
-static int
-nofl_block_is_marked(uintptr_t addr) {
+static uint8_t*
+nofl_block_mark_loc(uintptr_t addr) {
   uintptr_t base = align_down(addr, NOFL_SLAB_SIZE);
   struct nofl_slab *slab = (struct nofl_slab *) base;
   unsigned block_idx = (addr / NOFL_BLOCK_SIZE) % NOFL_BLOCKS_PER_SLAB;
-  uint8_t mark_byte = block_idx / 8;
-  GC_ASSERT(mark_byte < NOFL_HEADER_BYTES_PER_SLAB);
-  uint8_t mark_mask = 1U << (block_idx % 8);
-  uint8_t byte = atomic_load_explicit(&slab->header.block_marks[mark_byte],
-                                      memory_order_relaxed);
-  return byte & mark_mask;
+  return &slab->header.block_marks[block_idx];
+}
+
+static int
+nofl_block_is_marked(uintptr_t addr) {
+  return atomic_load_explicit(nofl_block_mark_loc(addr), memory_order_relaxed);
 }
 
 static void
 nofl_block_set_mark(uintptr_t addr) {
-  uintptr_t base = align_down(addr, NOFL_SLAB_SIZE);
-  struct nofl_slab *slab = (struct nofl_slab *) base;
-  unsigned block_idx = (addr / NOFL_BLOCK_SIZE) % NOFL_BLOCKS_PER_SLAB;
-  uint8_t mark_byte = block_idx / 8;
-  GC_ASSERT(mark_byte < NOFL_HEADER_BYTES_PER_SLAB);
-  uint8_t mark_mask = 1U << (block_idx % 8);
-  atomic_fetch_or_explicit(&slab->header.block_marks[mark_byte],
-                           mark_mask,
-                           memory_order_relaxed);
+  uint8_t *loc = nofl_block_mark_loc(addr);
+  if (!atomic_load_explicit(loc, memory_order_relaxed))
+    atomic_store_explicit(loc, 1, memory_order_relaxed);
 }
 
 #define NOFL_GRANULES_PER_BLOCK (NOFL_BLOCK_SIZE / NOFL_GRANULE_SIZE)
@@ -982,7 +976,7 @@ static void
 nofl_space_clear_block_marks(struct nofl_space *space) {
   for (size_t s = 0; s < space->nslabs; s++) {
     struct nofl_slab *slab = space->slabs[s];
-    memset(slab->header.block_marks, 0, NOFL_BLOCKS_PER_SLAB / 8);
+    memset(slab->header.block_marks, 0, sizeof(slab->header.block_marks));
   }
 }
 
@@ -1282,8 +1276,7 @@ static inline int
 nofl_space_set_nonempty_mark(struct nofl_space *space, uint8_t *metadata,
                              uint8_t byte, struct gc_ref ref) {
   nofl_space_set_mark(space, metadata, byte);
-  if (!nofl_block_is_marked(gc_ref_value(ref)))
-    nofl_block_set_mark(gc_ref_value(ref));
+  nofl_block_set_mark(gc_ref_value(ref));
   return 1;
 }
 
