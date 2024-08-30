@@ -13,6 +13,7 @@
 
 #include "assert.h"
 #include "debug.h"
+#include "extents.h"
 #include "gc-align.h"
 #include "gc-attrs.h"
 #include "gc-inline.h"
@@ -140,8 +141,7 @@ struct nofl_space {
   uint8_t live_mask;
   uint8_t marked_mask;
   uint8_t evacuating;
-  uintptr_t low_addr;
-  size_t extent;
+  struct extents *extents;
   size_t heap_size;
   uint8_t last_collection_was_minor;
   struct nofl_block_list empty;
@@ -156,7 +156,7 @@ struct nofl_space {
   double evacuation_reserve;
   double promotion_threshold;
   ssize_t pending_unavailable_bytes; // atomically
-  struct nofl_slab *slabs;
+  struct nofl_slab **slabs;
   size_t nslabs;
   uintptr_t granules_freed_by_last_collection; // atomically
   uintptr_t fragmentation_granules_since_last_collection; // atomically
@@ -847,7 +847,7 @@ nofl_space_trace_remembered_set(struct nofl_space *space,
                                 struct gc_heap *heap) {
   GC_ASSERT(!space->evacuating);
   for (size_t s = 0; s < space->nslabs; s++) {
-    struct nofl_slab *slab = &space->slabs[s];
+    struct nofl_slab *slab = space->slabs[s];
     uint8_t *remset = slab->remembered_set;
     for (size_t card_base = 0;
          card_base < NOFL_REMSET_BYTES_PER_SLAB;
@@ -868,9 +868,8 @@ nofl_space_trace_remembered_set(struct nofl_space *space,
 static void
 nofl_space_clear_remembered_set(struct nofl_space *space) {
   if (!GC_GENERATIONAL) return;
-  // FIXME: Don't assume slabs are contiguous.
   for (size_t slab = 0; slab < space->nslabs; slab++) {
-    memset(space->slabs[slab].remembered_set, 0, NOFL_REMSET_BYTES_PER_SLAB);
+    memset(space->slabs[slab]->remembered_set, 0, NOFL_REMSET_BYTES_PER_SLAB);
   }
 }
 
@@ -982,7 +981,7 @@ nofl_space_update_mark_patterns(struct nofl_space *space,
 static void
 nofl_space_clear_block_marks(struct nofl_space *space) {
   for (size_t s = 0; s < space->nslabs; s++) {
-    struct nofl_slab *slab = &space->slabs[s];
+    struct nofl_slab *slab = space->slabs[s];
     memset(slab->header.block_marks, 0, NOFL_BLOCKS_PER_SLAB / 8);
   }
 }
@@ -1373,7 +1372,7 @@ nofl_space_evacuate_or_mark_object(struct nofl_space *space,
 
 static inline int
 nofl_space_contains_address(struct nofl_space *space, uintptr_t addr) {
-  return addr - space->low_addr < space->extent;
+  return extents_contain_addr(space->extents, addr);
 }
 
 static inline int
@@ -1526,6 +1525,20 @@ nofl_allocate_slabs(size_t nslabs) {
   return (struct nofl_slab*) aligned_base;
 }
 
+static void
+nofl_space_add_slabs(struct nofl_space *space, struct nofl_slab *slabs,
+                     size_t nslabs) {
+  size_t old_size = space->nslabs * sizeof(struct nofl_slab*);
+  size_t additional_size = nslabs * sizeof(struct nofl_slab*);
+  space->extents = extents_adjoin(space->extents, slabs,
+                                  nslabs * sizeof(struct nofl_slab));
+  space->slabs = realloc(space->slabs, old_size + additional_size);
+  if (!space->slabs)
+    GC_CRASH();
+  while (nslabs--)
+    space->slabs[space->nslabs++] = slabs++;
+}
+
 static int
 nofl_space_init(struct nofl_space *space, size_t size, int atomic,
                 double promotion_threshold) {
@@ -1538,10 +1551,8 @@ nofl_space_init(struct nofl_space *space, size_t size, int atomic,
 
   space->marked_mask = NOFL_METADATA_BYTE_MARK_0;
   nofl_space_update_mark_patterns(space, 0);
-  space->slabs = slabs;
-  space->nslabs = nslabs;
-  space->low_addr = (uintptr_t) slabs;
-  space->extent = reserved;
+  space->extents = extents_allocate(10);
+  nofl_space_add_slabs(space, slabs, nslabs);
   space->evacuation_minimum_reserve = 0.02;
   space->evacuation_reserve = space->evacuation_minimum_reserve;
   space->promotion_threshold = promotion_threshold;
