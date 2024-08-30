@@ -10,6 +10,7 @@
 
 #include "assert.h"
 #include "debug.h"
+#include "extents.h"
 #include "gc-align.h"
 #include "gc-attrs.h"
 #include "gc-inline.h"
@@ -100,11 +101,6 @@ copy_space_object_region(struct gc_ref obj) {
   return (gc_ref_value(obj) / COPY_SPACE_REGION_SIZE) & 1;
 }
 
-struct copy_space_extent {
-  uintptr_t low_addr;
-  uintptr_t high_addr;
-};
-
 struct copy_space {
   struct copy_space_block *empty;
   struct copy_space_block *partly_full;
@@ -119,8 +115,7 @@ struct copy_space {
   uint8_t atomic_forward;
   size_t allocated_bytes_at_last_gc;
   size_t fragmentation_at_last_gc;
-  struct copy_space_extent *extents;
-  size_t nextents;
+  struct extents *extents;
   struct copy_space_slab *slabs;
   size_t nslabs;
 };
@@ -542,11 +537,7 @@ copy_space_forward_if_traced(struct copy_space *space, struct gc_edge edge,
 
 static inline int
 copy_space_contains(struct copy_space *space, struct gc_ref ref) {
-  for (size_t i = 0; i < space->nextents; i++)
-    if (space->extents[i].low_addr <= gc_ref_value(ref) &&
-        gc_ref_value(ref) < space->extents[i].high_addr)
-      return 1;
-  return 0;
+  return extents_contain_addr(space->extents, gc_ref_value(ref));
 }
 
 static inline void
@@ -607,10 +598,8 @@ copy_space_init(struct copy_space *space, size_t size, int atomic) {
   space->atomic_forward = atomic;
   space->allocated_bytes_at_last_gc = 0;
   space->fragmentation_at_last_gc = 0;
-  space->extents = calloc(1, sizeof(struct copy_space_extent));
-  space->extents[0].low_addr = (uintptr_t) slabs;
-  space->extents[0].high_addr = space->extents[0].low_addr + reserved;
-  space->nextents = 1;
+  space->extents = extents_allocate(10);
+  extents_adjoin(space->extents, slabs, reserved);
   space->slabs = slabs;
   space->nslabs = nslabs;
   for (size_t slab = 0; slab < nslabs; slab++) {
