@@ -1,6 +1,6 @@
 # Whippet and Guile
 
-If the Whippet collector works out, it could replace Guile's garbage
+If the `mmc` collector works out, it could replace Guile's garbage
 collector.  Guile currently uses BDW-GC.  Guile has a widely used C API
 and implements part of its run-time in C.  For this reason it may be
 infeasible to require precise enumeration of GC roots -- we may need to

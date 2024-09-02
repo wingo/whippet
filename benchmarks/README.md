@@ -7,14 +7,14 @@
    threads.  We analytically compute the peak amount of live data and
    then size the GC heap as a multiplier of that size.  It has a peak
    heap consumption of 10 MB or so per mutator thread: not very large.
-   At a 2x heap multiplier, it causes about 30 collections for the
-   whippet collector, and runs somewhere around 200-400 milliseconds in
+   At a 2x heap multiplier, it causes about 30 collections for the `mmc`
+   collector, and runs somewhere around 200-400 milliseconds in
    single-threaded mode, on the machines I have in 2022.  For low thread
    counts, the GCBench benchmark is small; but then again many Guile
    processes also are quite short-lived, so perhaps it is useful to
    ensure that small heaps remain lightweight.
 
-   To stress Whippet's handling of fragmentation, we modified this
+   To stress `mmc`'s handling of fragmentation, we modified this
    benchmark to intersperse pseudorandomly-sized holes between tree
    nodes.
 

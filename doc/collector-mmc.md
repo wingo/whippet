@@ -1,19 +1,14 @@
-# Whippet collector
+# Mostly-copying collector
 
-One collector implementation in the Whippet garbage collection library
-is also called Whippet.  Naming-wise this is a somewhat confusing
-situation; perhaps it will change.
-
-Anyway, the `whippet` collector is mainly a mark-region collector,
-inspired by
+The `mmc` collector is mainly a mark-region collector, inspired by
 [Immix](http://users.cecs.anu.edu.au/~steveb/pubs/papers/immix-pldi-2008.pdf).
-To a first approximation, Whippet is a whole-heap Immix collector with a
+To a first approximation, `mmc` is a whole-heap Immix collector with a
 large object space on the side.
 
-When tracing, `whippet` mostly marks objects in place.  If the heap is
+When tracing, `mmc` mostly marks objects in place.  If the heap is
 too fragmented, it can compact the heap by choosing to evacuate
 sparsely-populated heap blocks instead of marking in place.  However
-evacuation is strictly optional, which means that `whippet` is also
+evacuation is strictly optional, which means that `mmc` is also
 compatible with conservative root-finding, making it a good replacement
 for embedders that currently use the [Boehm-Demers-Weiser
 collector](./collector-bdw.md).
@@ -33,7 +28,7 @@ recycled block from the global block store, it allocates into those
 holes.  For an exposition of Immix, see the lovely detailed [Rust
 implementation](http://users.cecs.anu.edu.au/~steveb/pubs/papers/rust-ismm-2016.pdf).
 
-The essential difference of `whippet` from Immix stems from a simple
+The essential difference of `mmc` from Immix stems from a simple
 observation: Immix needs a side table of line mark bytes and also a mark
 bit or bits in each object (or in a side table).  But if instead you
 choose to store mark bytes instead of bits (for concurrency reasons) in
@@ -54,13 +49,13 @@ just read the mark table and can avoid looking at object memory.
 
 ## Optional features
 
-The `whippet` collector has a few feature flags that can be turned on or
+The `mmc` collector has a few feature flags that can be turned on or
 off.  If you use the [standard embedder makefile include](../embed.mk),
-then there is a name for each combination of features: `whippet` has no
-additional features, `parallel-whippet` enables parallel marking,
-`parallel-generational-whippet` enables generations,
-`stack-conservative-parallel-generational-whippet` uses conservative
-root-finding, and `heap-conservative-parallel-generational-whippet`
+then there is a name for each combination of features: `mmc` has no
+additional features, `parallel-mmc` enables parallel marking,
+`parallel-generational-mmc` enables generations,
+`stack-conservative-parallel-generational-mmc` uses conservative
+root-finding, and `heap-conservative-parallel-generational-mmc`
 additionally traces the heap conservatively.  You can leave off
 components of the name to get a collector without those features.
 Underneath this corresponds to some pre-processor definitions passed to
@@ -68,7 +63,7 @@ the compiler on the command line.
 
 ### Generations
 
-Whippet supports generational tracing via the [sticky mark-bit
+`mmc` supports generational tracing via the [sticky mark-bit
 algorithm](https://wingolog.org/archives/2022/10/22/the-sticky-mark-bit-algorithm).
 This requires that the embedder emit [write
 barriers](https://github.com/wingo/whippet/blob/main/doc/manual.md#write-barriers);
@@ -84,7 +79,7 @@ two-megabyte aligned slabs.
 
 ### Parallel tracing
 
-You almost certainly want this on!  `parallel-whippet` uses a the
+You almost certainly want this on!  `parallel-mmc` uses a the
 [fine-grained work-stealing parallel tracer](../src/parallel-tracer.h).
 Each trace worker maintains a [local queue of objects that need
 tracing](../src/local-worklist.h), which currently has a capacity of
@@ -96,17 +91,17 @@ then will try to steal from other workers.
 
 The memory used for the external worklist is dynamically allocated from
 the OS and is not currently counted as contributing to the heap size.
-If you absolutely need to avoid dynamic allocation during GC, `whippet`
-(even serial whippet) would need some work for your use case, to
-allocate a fixed-size space for a marking queue and to gracefully handle
-mark queue overflow.
+If you absolutely need to avoid dynamic allocation during GC, `mmc`
+(even `serial-mmc`) would need some work for your use case, to allocate
+a fixed-size space for a marking queue and to gracefully handle mark
+queue overflow.
 
 ### Conservative stack scanning
 
 With `semi` and `pcc`, embedders must precisely enumerate the set of
 *roots*: the edges into the heap from outside.  Commonly, roots include
 global variables, as well as working variables from each mutator's
-stack.  Whippet can optionally mark mutator stacks *conservatively*:
+stack.  `mmc` can optionally mark mutator stacks *conservatively*:
 treating each word on the stack as if it may be an object reference, and
 marking any object at that address.
 
@@ -124,7 +119,7 @@ place roots in traceable locations published to the garbage collector.
 And the [performance question is still
 open](https://dl.acm.org/doi/10.1145/2660193.2660198).
 
-Anyway.  Whippet can scan roots conservatively.  Those roots are pinned
+Anyway.  `mmc` can scan roots conservatively.  Those roots are pinned
 for the collection; even if the collection will compact via evacuation,
 referents of conservative roots won't be moved.  Objects not directly
 referenced by roots can be evacuated, however.
@@ -133,14 +128,14 @@ referenced by roots can be evacuated, however.
 
 In addition to stack and global references, the Boehm-Demers-Weiser
 collector scans heap objects conservatively as well, treating each word
-of each heap object as if it were a reference.  Whippet can do that, if
+of each heap object as if it were a reference.  `mmc` can do that, if
 the embedder is unable to provide a `gc_trace_object` implementation.
 However this is generally a performance lose, and it prevents
 evacuation.
 
 ## Other implementation tidbits
 
-`whippet` does lazy sweeping: as a mutator grabs a fresh block, it
+`mmc` does lazy sweeping: as a mutator grabs a fresh block, it
 reclaims memory that was unmarked in the previous collection before
 making the memory available for allocation.  This makes sweeping
 naturally cache-friendly and parallel.

@@ -12,50 +12,59 @@ allocation, and provides a number of implementations of that API.
 
 See the [documentation](./doc/README.md).
 
+## Features
+
+ - Per-object pinning (with `mmc` collectors)
+ - Finalization (supporting resuscitation)
+ - Ephemerons (except on `bdw`, which has a polyfill)
+ - Conservative roots (optionally with `mmc` or always with `bdw`)
+ - Precise roots (optionally with `mmc` or always with `semi` / `pcc` /
+   `scc`)
+ - Precise embedder-parameterized heap tracing (except with `bdw`)
+ - Conservative heap tracing (optionally with `mmc`, always with `bdw`)
+ - Parallel tracing (except `semi` and `scc`)
+ - Parallel mutators (except `semi`)
+ - Inline allocation / write barrier fast paths (supporting JIT)
+ - One unified API with no-overhead abstraction: switch collectors when
+   you like
+
 ## Source repository structure
 
  * [api/](./api/): The user-facing API.  Also, the "embedder API"; see
    the [manual](./doc/manual.md) for more.
  * [doc/](./doc/): Documentation, such as it is.
- * [src/](./src/): The actual GC implementation.  The specific
-   implementations of the Whippet API are [`semi.c`](./src/semi.c), a
-   semi-space collector; [`bdw.c`](./src/bdw.c), the third-party
-   [BDW-GC](https://github.com/ivmai/bdwgc) conservative parallel
-   stop-the-world mark-sweep segregated-fits collector with lazy
-   sweeping; and [`whippet.c`](./src/whippet.c), the whippet collector.
+ * [src/](./src/): The actual GC implementation, containing a number of
+   collector implementations.  The embedder chooses which collector to
+   use at compile-time.  See the [documentation](./doc/collectors.md)
+   for more on the different collectors (`semi`, `bdw`, `scc`, `pcc`,
+   and the different flavors of `mmc`).
  * [benchmarks/](./benchmarks/): Benchmarks.  A work in progress.
  * [test/](./test/): A dusty attic of minimal testing.
 
-## To do
+## Status and roadmap
 
-### Missing features before Guile can use Whippet
+As of September 2024, Whippet is almost feature-complete.  The main
+missing feature is dynamic heap growth and shrinkage
+(https://github.com/wingo/whippet/issues/5), which should land soon.
 
- - [X] Pinning
- - [X] Conservative stacks
- - [X] Conservative data segments
- - [ ] Heap growth/shrinking
- - [ ] Debugging/tracing
- - [X] Finalizers
- - [X] Weak references / weak maps
+After that, the next phase on the roadmap is support for tracing, and
+some performance noodling.
 
-### Features that would improve Whippet performance
-
- - [X] Immix-style opportunistic evacuation
- - ~~[ ] Overflow allocation~~ (should just evacuate instead)
- - [X] Generational GC via sticky mark bits
- - [ ] Generational GC with semi-space nursery
- - [ ] Concurrent marking with SATB barrier
+Once that is done, the big task is integrating Whippet into the [Guile
+Scheme](https://gnu.org/s/guile) language run-time, replacing BDW-GC.
+Fingers crossed!
 
 ## About the name
 
 It sounds better than WIP (work-in-progress) garbage collector, doesn't
 it?  Also apparently a whippet is a kind of dog that is fast for its
-size.  It would be nice if whippet-gc turns out to have this property.
+size.  It would be nice if the Whippet collectors turn out to have this
+property.
 
 ## License
 
 ```
-Copyright (c) 2022-2023 Andy Wingo
+Copyright (c) 2022-2024 Andy Wingo
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the

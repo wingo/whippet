@@ -21,7 +21,7 @@ for full details, but for a cheat sheet, you might do something like
 this to copy Whippet into the `whippet/` directory of your project root:
 
 ```
-git remote add whippet https://github.com/wingo/whippet-gc
+git remote add whippet https://github.com/wingo/whippet
 git fetch whippet
 git merge -s ours --no-commit --allow-unrelated-histories whippet/main
 git read-tree --prefix=whippet/ -u whippet/main
@@ -92,7 +92,7 @@ that all "large" or potentially large objects have a flag bit reserved
 for use of the garbage collector.  A large object is one whose size
 exceeds the `gc_allocator_large_threshold()` (see
 [`gc-attrs.h`](../api/gc-attrs.h)), which is a collector-specific value.
-Currently the only generational collector is the in-place Whippet
+Currently the only generational collector is the in-place `mmc`
 collector, whose large object threshold is 4096 bytes.  The
 `gc_object_set_remembered`, `gc_object_is_remembered_nonatomic`, and
 `gc_object_clear_remembered_nonatomic` embedder functions manage the
@@ -187,15 +187,10 @@ implementations of that API: `semi`, a simple semi-space collector;
 `pcc`, a parallel copying collector (like semi but multithreaded);
 `bdw`, an implementation via the third-party
 [Boehm-Demers-Weiser](https://github.com/ivmai/bdwgc) conservative
-collector; and `whippet`, an Immix-like collector.
-
-There is a bit of name overloading between the Whippet abstract API, the
-collection of GC implementations, and the specific Whippet collector;
-our apologies.  It's just like that, and we hope to make the usage
-obvious from context.
+collector; and `mmc`, a mostly-marking collector inspired by Immix.
 
 The program that embeds Whippet selects the collector implementation at
-build-time.  In the case of the specific Whippet collector, the program
+build-time.  In the case of the `mmc` collector, the program
 also configures a specific collector mode, again at build-time:
 generational or not, parallel or not, stack-conservative or not, and
 heap-conservative or not.  It may be nice in the future to be able to
@@ -353,15 +348,26 @@ $(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 \
   -include foo-embedder.h -o gc.o -c bdw.c
 ```
 
-#### Building `whippet`
+#### Building `pcc`
 
-Finally, there is the whippet collector.  It can collect roots precisely
-or conservatively, trace precisely or conservatively, be parallel or
-not, and be generational or not.
+The parallel copying collector is like `semi` but better in every way:
+it supports multiple mutator threads, and evacuates in parallel if
+multiple threads are available.
+
+```
+$(COMPILE) -DGC_PARALLEL=1 -DGC_PRECISE_ROOTS=1 \
+  -include foo-embedder.h -o gc.o -c pcc.c
+```
+
+#### Building `mmc`
+
+Finally, there is the mostly-marking collector.  It can collect roots
+precisely or conservatively, trace precisely or conservatively, be
+parallel or not, and be generational or not.
 
 ```
 $(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1 \
-  -include foo-embedder.h -o gc.o -c whippet.c
+  -include foo-embedder.h -o gc.o -c mvv.c
 ```
 
 ### Compiling your program
@@ -370,12 +376,12 @@ Any compilation unit that uses the GC API should have the same set of
 compile-time options defined as when compiling the collector.
 Additionally those compilation units should include the "attributes"
 header for the collector in question, namely `semi-attrs.h`,
-`bdw-attrs.h`, or `whippet-attrs.h`.  For example, for parallel
-generational whippet, you might have:
+`bdw-attrs.h`, `pcc-attrs.h`, or `mmc-attrs.h`.  For example, for
+parallel generational mmc, you might have:
 
 ```
 $(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1 \
-  -include whippet-attrs.h -o my-program.o -c my-program.c
+  -include mmc-attrs.h -o my-program.o -c my-program.c
 ```
 
 ### Linking the collector into your program
@@ -462,7 +468,7 @@ defined for all collectors:
 
 You can set these options via `gc_option_set_int` and so on; see
 [`gc-options.h`](../api/gc-options.h).  Or, you can parse options from
-strings: `heap-size-policy`, `heap-size`, `maximum-heap-size`, and so
+trings: `heap-size-policy`, `heap-size`, `maximum-heap-size`, and so
 on.  Use `gc_option_from_string` to determine if a string is really an
 option.  Use `gc_option_parse_and_set` to parse a value for an option.
 Use `gc_options_parse_and_set_many` to parse a number of comma-delimited

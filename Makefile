@@ -5,21 +5,21 @@ COLLECTORS = \
 	scc \
 	pcc \
 	\
-	whippet \
-	stack-conservative-whippet \
-	heap-conservative-whippet \
+	mmc \
+	stack-conservative-mmc \
+	heap-conservative-mmc \
 	\
-	parallel-whippet \
-	stack-conservative-parallel-whippet \
-	heap-conservative-parallel-whippet \
+	parallel-mmc \
+	stack-conservative-parallel-mmc \
+	heap-conservative-parallel-mmc \
 	\
-	generational-whippet \
-	stack-conservative-generational-whippet \
-	heap-conservative-generational-whippet \
+	generational-mmc \
+	stack-conservative-generational-mmc \
+	heap-conservative-generational-mmc \
 	\
-	parallel-generational-whippet \
-	stack-conservative-parallel-generational-whippet \
-	heap-conservative-parallel-generational-whippet
+	parallel-generational-mmc \
+	stack-conservative-parallel-generational-mmc \
+	heap-conservative-parallel-generational-mmc
 
 DEFAULT_BUILD := opt
 
@@ -70,28 +70,28 @@ GC_CFLAGS_scc     = -DGC_PRECISE_ROOTS=1
 GC_STEM_pcc       = pcc
 GC_CFLAGS_pcc     = -DGC_PRECISE_ROOTS=1 -DGC_PARALLEL=1
 
-define whippet_variant
-GC_STEM_$(1)       = whippet
+define mmc_variant
+GC_STEM_$(1)       = mmc
 GC_CFLAGS_$(1)     = $(2)
 endef
 
-define generational_whippet_variants
-$(call whippet_variant,$(1)whippet,$(2))
-$(call whippet_variant,$(1)generational_whippet,$(2) -DGC_GENERATIONAL=1)
+define generational_mmc_variants
+$(call mmc_variant,$(1)mmc,$(2))
+$(call mmc_variant,$(1)generational_mmc,$(2) -DGC_GENERATIONAL=1)
 endef
 
-define parallel_whippet_variants
-$(call generational_whippet_variants,$(1),$(2))
-$(call generational_whippet_variants,$(1)parallel_,$(2) -DGC_PARALLEL=1)
+define parallel_mmc_variants
+$(call generational_mmc_variants,$(1),$(2))
+$(call generational_mmc_variants,$(1)parallel_,$(2) -DGC_PARALLEL=1)
 endef
 
-define trace_whippet_variants
-$(call parallel_whippet_variants,,-DGC_PRECISE_ROOTS=1)
-$(call parallel_whippet_variants,stack_conservative_,-DGC_CONSERVATIVE_ROOTS=1)
-$(call parallel_whippet_variants,heap_conservative_,-DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1)
+define trace_mmc_variants
+$(call parallel_mmc_variants,,-DGC_PRECISE_ROOTS=1)
+$(call parallel_mmc_variants,stack_conservative_,-DGC_CONSERVATIVE_ROOTS=1)
+$(call parallel_mmc_variants,heap_conservative_,-DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1)
 endef
 
-$(eval $(call trace_whippet_variants))
+$(eval $(call trace_mmc_variants))
 
 # $(1) is the benchmark, $(2) is the collector configuration
 make_gc_var    = $$($(1)$(subst -,_,$(2)))

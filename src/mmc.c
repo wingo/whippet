@@ -26,7 +26,7 @@
 #include "serial-tracer.h"
 #endif
 #include "spin.h"
-#include "whippet-attrs.h"
+#include "mmc-attrs.h"
 
 #define LARGE_OBJECT_THRESHOLD 8192
 

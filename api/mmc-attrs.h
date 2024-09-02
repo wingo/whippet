@@ -1,5 +1,5 @@
-#ifndef WHIPPET_ATTRS_H
-#define WHIPPET_ATTRS_H
+#ifndef MMC_ATTRS_H
+#define MMC_ATTRS_H
 
 #include "gc-config.h"
 #include "gc-assert.h"
@@ -61,4 +61,4 @@ static inline enum gc_safepoint_mechanism gc_safepoint_mechanism(void) {
   return GC_SAFEPOINT_MECHANISM_COOPERATIVE;
 }
 
-#endif // WHIPPET_ATTRS_H
+#endif // MMC_ATTRS_H
