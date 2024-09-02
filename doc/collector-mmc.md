@@ -1,4 +1,4 @@
-# Mostly-copying collector
+# Mostly-marking collector
 
 The `mmc` collector is mainly a mark-region collector, inspired by
 [Immix](http://users.cecs.anu.edu.au/~steveb/pubs/papers/immix-pldi-2008.pdf).
