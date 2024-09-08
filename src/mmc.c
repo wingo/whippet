@@ -1185,7 +1185,8 @@ gc_set_finalizer_callback(struct gc_heap *heap,
   gc_finalizer_state_set_callback(heap->finalizer_state, callback);
 }
 
-static int heap_prepare_pending_ephemerons(struct gc_heap *heap) {
+static int
+heap_prepare_pending_ephemerons(struct gc_heap *heap) {
   struct gc_pending_ephemerons *cur = heap->pending_ephemerons;
   size_t target = heap->size * heap->pending_ephemerons_size_factor;
   double slop = heap->pending_ephemerons_size_slop;
@@ -1198,31 +1199,44 @@ static int heap_prepare_pending_ephemerons(struct gc_heap *heap) {
 struct gc_options {
   struct gc_common_options common;
 };
-int gc_option_from_string(const char *str) {
+
+int
+gc_option_from_string(const char *str) {
   return gc_common_option_from_string(str);
 }
-struct gc_options* gc_allocate_options(void) {
+
+struct gc_options*
+gc_allocate_options(void) {
   struct gc_options *ret = malloc(sizeof(struct gc_options));
   gc_init_common_options(&ret->common);
   return ret;
 }
-int gc_options_set_int(struct gc_options *options, int option, int value) {
+
+int
+gc_options_set_int(struct gc_options *options, int option, int value) {
   return gc_common_options_set_int(&options->common, option, value);
 }
-int gc_options_set_size(struct gc_options *options, int option,
-                        size_t value) {
+
+int
+gc_options_set_size(struct gc_options *options, int option,
+                    size_t value) {
   return gc_common_options_set_size(&options->common, option, value);
 }
-int gc_options_set_double(struct gc_options *options, int option,
-                          double value) {
+
+int
+gc_options_set_double(struct gc_options *options, int option,
+                      double value) {
   return gc_common_options_set_double(&options->common, option, value);
 }
-int gc_options_parse_and_set(struct gc_options *options, int option,
-                             const char *value) {
+
+int
+gc_options_parse_and_set(struct gc_options *options, int option,
+                         const char *value) {
   return gc_common_options_parse_and_set(&options->common, option, value);
 }
 
-static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
+static int
+heap_init(struct gc_heap *heap, const struct gc_options *options) {
   // *heap is already initialized to 0.
 
   pthread_mutex_init(&heap->lock, NULL);
@@ -1252,10 +1266,11 @@ static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   return 1;
 }
 
-int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
-            struct gc_heap **heap, struct gc_mutator **mut,
-            struct gc_event_listener event_listener,
-            void *event_listener_data) {
+int
+gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
+        struct gc_heap **heap, struct gc_mutator **mut,
+        struct gc_event_listener event_listener,
+        void *event_listener_data) {
   GC_ASSERT_EQ(gc_allocator_small_granule_size(), NOFL_GRANULE_SIZE);
   GC_ASSERT_EQ(gc_allocator_large_threshold(), LARGE_OBJECT_THRESHOLD);
   GC_ASSERT_EQ(gc_allocator_allocation_pointer_offset(),
@@ -1305,7 +1320,8 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   return 1;
 }
 
-struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *stack_base,
+struct gc_mutator*
+gc_init_for_thread(struct gc_stack_addr *stack_base,
                                       struct gc_heap *heap) {
   struct gc_mutator *ret = calloc(1, sizeof(struct gc_mutator));
   if (!ret)
@@ -1315,13 +1331,15 @@ struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *stack_base,
   return ret;
 }
 
-void gc_finish_for_thread(struct gc_mutator *mut) {
+void
+gc_finish_for_thread(struct gc_mutator *mut) {
   remove_mutator(mutator_heap(mut), mut);
   mutator_mark_buf_destroy(&mut->mark_buf);
   free(mut);
 }
 
-static void deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
+static void
+deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mut->next == NULL);
   nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
   heap_lock(heap);
@@ -1334,7 +1352,8 @@ static void deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   heap_unlock(heap);
 }
 
-static void reactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
+static void
+reactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   heap_lock(heap);
   while (mutators_are_stopping(heap))
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
