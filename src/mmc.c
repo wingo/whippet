@@ -40,7 +40,6 @@ struct gc_heap {
   pthread_cond_t mutator_cond;
   size_t size;
   int collecting;
-  int mark_while_stopping;
   int check_pending_ephemerons;
   struct gc_pending_ephemerons *pending_ephemerons;
   struct gc_finalizer_state *finalizer_state;
@@ -50,10 +49,9 @@ struct gc_heap {
   size_t paused_mutator_count;
   size_t inactive_mutator_count;
   struct gc_heap_roots *roots;
-  struct gc_mutator *mutator_trace_list;
+  struct gc_mutator *mutators;
   long count;
   uint8_t last_collection_was_minor;
-  struct gc_mutator *inactive_mutators;
   struct gc_tracer tracer;
   double fragmentation_low_threshold;
   double fragmentation_high_threshold;
@@ -71,24 +69,14 @@ struct gc_heap {
 #define MUTATOR_EVENT(mut, event, ...)                                  \
   (mut)->heap->event_listener.event((mut)->event_listener_data, ##__VA_ARGS__)
 
-struct gc_mutator_mark_buf {
-  size_t size;
-  size_t capacity;
-  struct gc_ref *objects;
-};
-
 struct gc_mutator {
   struct nofl_allocator allocator;
   struct gc_heap *heap;
   struct gc_stack stack;
   struct gc_mutator_roots *roots;
-  struct gc_mutator_mark_buf mark_buf;
   void *event_listener_data;
-  // Three uses for this in-object linked-list pointer:
-  //  - inactive (blocked in syscall) mutators
-  //  - grey objects when stopping active mutators for mark-in-place
-  //  - untraced mutators when stopping active mutators for evacuation
   struct gc_mutator *next;
+  struct gc_mutator *prev;
 };
 
 struct gc_trace_worker_data {
@@ -125,9 +113,6 @@ gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
   f(tracer, heap, worker, &data);
   nofl_allocator_finish(&data.allocator, heap_nofl_space(heap));
 }
-
-static void collect(struct gc_mutator *mut,
-                    enum gc_collection_kind requested_kind) GC_NEVER_INLINE;
 
 static inline int
 do_trace(struct gc_heap *heap, struct gc_edge edge, struct gc_ref ref,
@@ -180,34 +165,6 @@ gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
   GC_CRASH();
 }
 
-static inline struct gc_ref
-do_trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
-                          int possibly_interior) {
-  if (!gc_conservative_ref_might_be_a_heap_object(ref, possibly_interior))
-    return gc_ref_null();
-
-  struct nofl_space *nofl_space = heap_nofl_space(heap);
-  if (GC_LIKELY(nofl_space_contains_conservative_ref(nofl_space, ref)))
-    return nofl_space_mark_conservative_ref(nofl_space, ref, possibly_interior);
-
-  struct large_object_space *lospace = heap_large_object_space(heap);
-  return large_object_space_mark_conservative_ref(lospace, ref,
-                                                  possibly_interior);
-}
-
-static inline struct gc_ref
-trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
-                       int possibly_interior) {
-  struct gc_ref ret = do_trace_conservative_ref(heap, ref, possibly_interior);
-
-  if (gc_ref_is_heap_object(ret) &&
-      GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
-                                       memory_order_relaxed)))
-    gc_resolve_pending_ephemerons(ret, heap);
-
-  return ret;
-}
-
 static int
 mutators_are_stopping(struct gc_heap *heap) {
   return atomic_load_explicit(&heap->collecting, memory_order_relaxed);
@@ -241,6 +198,13 @@ add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
   if (heap->mutator_count == 1)
     heap->multithreaded = 1;
+  mut->next = mut->prev = NULL;
+  struct gc_mutator *tail = heap->mutators;
+  if (tail) {
+    mut->next = tail;
+    tail->prev = mut;
+  }
+  heap->mutators = mut;
   heap->mutator_count++;
   heap_unlock(heap);
 }
@@ -252,6 +216,12 @@ remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->heap = NULL;
   heap_lock(heap);
   heap->mutator_count--;
+  if (mut->next)
+    mut->next->prev = mut->prev;
+  if (mut->prev)
+    mut->prev->next = mut->next;
+  else
+    heap->mutators = mut->next;
   // We have no roots.  If there is a GC stop currently in progress,
   // maybe tell the controller it can continue.
   if (mutators_are_stopping(heap) && all_mutators_stopped(heap))
@@ -285,72 +255,6 @@ heap_reset_large_object_pages(struct gc_heap *heap, size_t npages) {
   nofl_space_reacquire_memory(heap_nofl_space(heap), bytes);
 }
 
-static void
-mutator_mark_buf_grow(struct gc_mutator_mark_buf *buf) {
-  size_t old_capacity = buf->capacity;
-  size_t old_bytes = old_capacity * sizeof(struct gc_ref);
-
-  size_t new_bytes = old_bytes ? old_bytes * 2 : getpagesize();
-  size_t new_capacity = new_bytes / sizeof(struct gc_ref);
-
-  void *mem = mmap(NULL, new_bytes, PROT_READ|PROT_WRITE,
-                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-  if (mem == MAP_FAILED) {
-    perror("allocating mutator mark buffer failed");
-    GC_CRASH();
-  }
-  if (old_bytes) {
-    memcpy(mem, buf->objects, old_bytes);
-    munmap(buf->objects, old_bytes);
-  }
-  buf->objects = mem;
-  buf->capacity = new_capacity;
-}
-
-static void
-mutator_mark_buf_push(struct gc_mutator_mark_buf *buf, struct gc_ref ref) {
-  if (GC_UNLIKELY(buf->size == buf->capacity))
-    mutator_mark_buf_grow(buf);
-  buf->objects[buf->size++] = ref;
-}
-
-static void
-mutator_mark_buf_release(struct gc_mutator_mark_buf *buf) {
-  size_t bytes = buf->size * sizeof(struct gc_ref);
-  if (bytes >= getpagesize())
-    madvise(buf->objects, align_up(bytes, getpagesize()), MADV_DONTNEED);
-  buf->size = 0;
-}
-
-static void
-mutator_mark_buf_destroy(struct gc_mutator_mark_buf *buf) {
-  size_t bytes = buf->capacity * sizeof(struct gc_ref);
-  if (bytes)
-    munmap(buf->objects, bytes);
-}
-
-static void
-enqueue_mutator_for_tracing(struct gc_mutator *mut) {
-  struct gc_heap *heap = mutator_heap(mut);
-  GC_ASSERT(mut->next == NULL);
-  struct gc_mutator *next =
-    atomic_load_explicit(&heap->mutator_trace_list, memory_order_acquire);
-  do {
-    mut->next = next;
-  } while (!atomic_compare_exchange_weak(&heap->mutator_trace_list,
-                                         &next, mut));
-}
-
-static int
-heap_should_mark_while_stopping(struct gc_heap *heap) {
-  return atomic_load_explicit(&heap->mark_while_stopping, memory_order_acquire);
-}
-
-static int
-mutator_should_mark_while_stopping(struct gc_mutator *mut) {
-  return heap_should_mark_while_stopping(mutator_heap(mut));
-}
-
 void
 gc_mutator_set_roots(struct gc_mutator *mut, struct gc_mutator_roots *roots) {
   mut->roots = roots;
@@ -373,68 +277,42 @@ tracer_visit(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
     gc_trace_worker_enqueue(worker, gc_edge_ref(edge));
 }
 
-static void
-trace_and_enqueue_locally(struct gc_edge edge, struct gc_heap *heap,
-                          void *data) {
-  struct gc_mutator *mut = data;
-  if (trace_edge(heap, edge, NULL))
-    mutator_mark_buf_push(&mut->mark_buf, gc_edge_ref(edge));
+static inline struct gc_ref
+do_trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
+                          int possibly_interior) {
+  if (!gc_conservative_ref_might_be_a_heap_object(ref, possibly_interior))
+    return gc_ref_null();
+
+  struct nofl_space *nofl_space = heap_nofl_space(heap);
+  if (GC_LIKELY(nofl_space_contains_conservative_ref(nofl_space, ref)))
+    return nofl_space_mark_conservative_ref(nofl_space, ref, possibly_interior);
+
+  struct large_object_space *lospace = heap_large_object_space(heap);
+  return large_object_space_mark_conservative_ref(lospace, ref,
+                                                  possibly_interior);
+}
+
+static inline struct gc_ref
+trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
+                       int possibly_interior) {
+  struct gc_ref ret = do_trace_conservative_ref(heap, ref, possibly_interior);
+
+  if (gc_ref_is_heap_object(ret) &&
+      GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
+                                       memory_order_relaxed)))
+    gc_resolve_pending_ephemerons(ret, heap);
+
+  return ret;
 }
 
 static inline void
-do_trace_conservative_ref_and_enqueue_locally(struct gc_conservative_ref ref,
-                                              struct gc_heap *heap,
-                                              void *data,
-                                              int possibly_interior) {
-  struct gc_mutator *mut = data;
-  struct gc_ref object = trace_conservative_ref(heap, ref, possibly_interior);
-  if (gc_ref_is_heap_object(object))
-    mutator_mark_buf_push(&mut->mark_buf, object);
-}
-
-static void
-trace_possibly_interior_conservative_ref_and_enqueue_locally(struct gc_conservative_ref ref,
-                                                             struct gc_heap *heap,
-                                                             void *data) {
-  return do_trace_conservative_ref_and_enqueue_locally(ref, heap, data, 1);
-}
-
-static void
-trace_conservative_ref_and_enqueue_locally(struct gc_conservative_ref ref,
-                                           struct gc_heap *heap,
-                                           void *data) {
-  return do_trace_conservative_ref_and_enqueue_locally(ref, heap, data, 0);
-}
-
-static void
-trace_and_enqueue_globally(struct gc_edge edge, struct gc_heap *heap,
-                           void *unused) {
-  if (trace_edge(heap, edge, NULL))
-    gc_tracer_enqueue_root(&heap->tracer, gc_edge_ref(edge));
-}
-
-static inline void
-do_trace_conservative_ref_and_enqueue_globally(struct gc_conservative_ref ref,
-                                               struct gc_heap *heap,
-                                               void *data,
-                                               int possibly_interior) {
-  struct gc_ref object = trace_conservative_ref(heap, ref, possibly_interior);
-  if (gc_ref_is_heap_object(object))
-    gc_tracer_enqueue_root(&heap->tracer, object);
-}
-
-static void
-trace_possibly_interior_conservative_ref_and_enqueue_globally(struct gc_conservative_ref ref,
-                                                              struct gc_heap *heap,
-                                                              void *data) {
-  return do_trace_conservative_ref_and_enqueue_globally(ref, heap, data, 1);
-}
-
-static void
-trace_conservative_ref_and_enqueue_globally(struct gc_conservative_ref ref,
-                                            struct gc_heap *heap,
-                                            void *data) {
-  return do_trace_conservative_ref_and_enqueue_globally(ref, heap, data, 0);
+tracer_trace_conservative_ref(struct gc_conservative_ref ref,
+                              struct gc_heap *heap,
+                              struct gc_trace_worker *worker,
+                              int possibly_interior) {
+  struct gc_ref resolved = trace_conservative_ref(heap, ref, possibly_interior);
+  if (gc_ref_is_heap_object(resolved))
+    gc_trace_worker_enqueue(worker, resolved);
 }
 
 static inline struct gc_conservative_ref
@@ -446,26 +324,13 @@ load_conservative_ref(uintptr_t addr) {
 }
 
 static inline void
-trace_conservative_edges(uintptr_t low,
-                         uintptr_t high,
-                         void (*trace)(struct gc_conservative_ref,
-                                       struct gc_heap *, void *),
-                         struct gc_heap *heap,
-                         void *data) {
+trace_conservative_edges(uintptr_t low, uintptr_t high, int possibly_interior,
+                         struct gc_heap *heap, struct gc_trace_worker *worker) {
   GC_ASSERT(low == align_down(low, sizeof(uintptr_t)));
   GC_ASSERT(high == align_down(high, sizeof(uintptr_t)));
   for (uintptr_t addr = low; addr < high; addr += sizeof(uintptr_t))
-    trace(load_conservative_ref(addr), heap, data);
-}
-
-static inline void
-tracer_trace_conservative_ref(struct gc_conservative_ref ref,
-                              struct gc_heap *heap, void *data) {
-  struct gc_trace_worker *worker = data;
-  int possibly_interior = 0;
-  struct gc_ref resolved = trace_conservative_ref(heap, ref, possibly_interior);
-  if (gc_ref_is_heap_object(resolved))
-    gc_trace_worker_enqueue(worker, resolved);
+    tracer_trace_conservative_ref(load_conservative_ref(addr), heap, worker,
+                                  possibly_interior);
 }
 
 static inline void
@@ -486,10 +351,10 @@ trace_one_conservatively(struct gc_ref ref, struct gc_heap *heap,
   } else {
     bytes = large_object_space_object_size(heap_large_object_space(heap), ref);
   }
-  trace_conservative_edges(gc_ref_value(ref),
-                           gc_ref_value(ref) + bytes,
-                           tracer_trace_conservative_ref, heap,
-                           worker);
+  // Intraheap edges are not interior.
+  int possibly_interior = 0;
+  trace_conservative_edges(gc_ref_value(ref), gc_ref_value(ref) + bytes,
+                           possibly_interior, heap, worker);
 }
 
 static inline void
@@ -511,6 +376,14 @@ trace_root(struct gc_root root, struct gc_heap *heap,
   case GC_ROOT_KIND_MUTATOR:
     gc_trace_mutator_roots(root.mutator->roots, tracer_visit, heap, worker);
     break;
+  case GC_ROOT_KIND_CONSERVATIVE_EDGES:
+    trace_conservative_edges(root.range.lo_addr, root.range.hi_addr, 0,
+                             heap, worker);
+    break;
+  case GC_ROOT_KIND_CONSERVATIVE_POSSIBLY_INTERIOR_EDGES:
+    trace_conservative_edges(root.range.lo_addr, root.range.hi_addr, 1,
+                             heap, worker);
+    break;
   case GC_ROOT_KIND_RESOLVED_EPHEMERONS:
     gc_trace_resolved_ephemerons(root.resolved_ephemerons, tracer_visit,
                                  heap, worker);
@@ -518,101 +391,52 @@ trace_root(struct gc_root root, struct gc_heap *heap,
   case GC_ROOT_KIND_EDGE:
     tracer_visit(root.edge, heap, worker);
     break;
+  case GC_ROOT_KIND_REMEMBERED_OBJECT:
+    trace_one(root.ref, heap, worker);
+    break;
+  case GC_ROOT_KIND_REMEMBERED_SLAB:
+    nofl_space_trace_remembered_slab(heap_nofl_space(heap), root.idx,
+                                     trace_one, heap, worker);
+    break;
   default:
     GC_CRASH();
   }
 }
 
 static void
-visit_root_edge(struct gc_edge edge, struct gc_heap *heap, void *unused) {
-  gc_tracer_add_root(&heap->tracer, gc_root_edge(edge));
+enqueue_conservative_roots(uintptr_t low, uintptr_t high,
+                           struct gc_heap *heap, void *data) {
+  int *possibly_interior = data;
+  gc_tracer_add_root(&heap->tracer,
+                     gc_root_conservative_edges(low, high, *possibly_interior));
 }
 
 static void
-mark_and_globally_enqueue_mutator_conservative_roots(uintptr_t low,
-                                                     uintptr_t high,
-                                                     struct gc_heap *heap,
-                                                     void *data) {
-  trace_conservative_edges(low, high,
-                           gc_mutator_conservative_roots_may_be_interior()
-                           ? trace_possibly_interior_conservative_ref_and_enqueue_globally
-                           : trace_conservative_ref_and_enqueue_globally,
-                           heap, data);
+enqueue_mutator_conservative_roots(struct gc_heap *heap) {
+  if (gc_has_mutator_conservative_roots()) {
+    int possibly_interior = gc_mutator_conservative_roots_may_be_interior();
+    for (struct gc_mutator *mut = heap->mutators;
+         mut;
+         mut = mut->next)
+      gc_stack_visit(&mut->stack, enqueue_conservative_roots, heap,
+                     &possibly_interior);
+  }
 }
 
 static void
-mark_and_globally_enqueue_heap_conservative_roots(uintptr_t low,
-                                                  uintptr_t high,
-                                                  struct gc_heap *heap,
-                                                  void *data) {
-  trace_conservative_edges(low, high,
-                           trace_conservative_ref_and_enqueue_globally,
-                           heap, data);
+enqueue_global_conservative_roots(struct gc_heap *heap) {
+  if (gc_has_global_conservative_roots()) {
+    int possibly_interior = 0;
+    gc_platform_visit_global_conservative_roots
+      (enqueue_conservative_roots, heap, &possibly_interior);
+  }
 }
 
 static void
-mark_and_locally_enqueue_mutator_conservative_roots(uintptr_t low,
-                                                    uintptr_t high,
-                                                    struct gc_heap *heap,
-                                                    void *data) {
-  trace_conservative_edges(low, high,
-                           gc_mutator_conservative_roots_may_be_interior()
-                           ? trace_possibly_interior_conservative_ref_and_enqueue_locally
-                           : trace_conservative_ref_and_enqueue_locally,
-                           heap, data);
-}
-
-static inline void
-trace_mutator_conservative_roots(struct gc_mutator *mut,
-                                 void (*trace_range)(uintptr_t low,
-                                                     uintptr_t high,
-                                                     struct gc_heap *heap,
-                                                     void *data),
-                                 struct gc_heap *heap,
-                                 void *data) {
-  if (gc_has_mutator_conservative_roots())
-    gc_stack_visit(&mut->stack, trace_range, heap, data);
-}
-
-// Mark the roots of a mutator that is stopping for GC.  We can't
-// enqueue them directly, so we send them to the controller in a buffer.
-static void
-trace_stopping_mutator_roots(struct gc_mutator *mut) {
-  GC_ASSERT(mutator_should_mark_while_stopping(mut));
-  struct gc_heap *heap = mutator_heap(mut);
-  trace_mutator_conservative_roots(mut,
-                                   mark_and_locally_enqueue_mutator_conservative_roots,
-                                   heap, mut);
-  gc_trace_mutator_roots(mut->roots, trace_and_enqueue_locally, heap, mut);
-}
-
-static void
-trace_mutator_conservative_roots_with_lock(struct gc_mutator *mut) {
-  trace_mutator_conservative_roots(mut,
-                                   mark_and_globally_enqueue_mutator_conservative_roots,
-                                   mutator_heap(mut),
-                                   NULL);
-}
-
-static void
-trace_mutator_roots_with_lock(struct gc_mutator *mut) {
-  trace_mutator_conservative_roots_with_lock(mut);
-  gc_trace_mutator_roots(mut->roots, trace_and_enqueue_globally,
-                         mutator_heap(mut), NULL);
-}
-
-static void
-trace_mutator_roots_with_lock_before_stop(struct gc_mutator *mut) {
-  gc_stack_capture_hot(&mut->stack);
-  if (mutator_should_mark_while_stopping(mut))
-    trace_mutator_roots_with_lock(mut);
-  else
-    enqueue_mutator_for_tracing(mut);
-}
-
-static void
-release_stopping_mutator_roots(struct gc_mutator *mut) {
-  mutator_mark_buf_release(&mut->mark_buf);
+enqueue_pinned_roots(struct gc_heap *heap) {
+  GC_ASSERT(!heap_nofl_space(heap)->evacuating);
+  enqueue_mutator_conservative_roots(heap);
+  enqueue_global_conservative_roots(heap);
 }
 
 static void
@@ -622,77 +446,11 @@ wait_for_mutators_to_stop(struct gc_heap *heap) {
     pthread_cond_wait(&heap->collector_cond, &heap->lock);
 }
 
-static void
-trace_mutator_conservative_roots_after_stop(struct gc_heap *heap) {
-  int active_mutators_already_marked = heap_should_mark_while_stopping(heap);
-  if (!active_mutators_already_marked)
-    for (struct gc_mutator *mut = atomic_load(&heap->mutator_trace_list);
-         mut;
-         mut = mut->next)
-      trace_mutator_conservative_roots_with_lock(mut);
-
-  for (struct gc_mutator *mut = heap->inactive_mutators;
-       mut;
-       mut = mut->next)
-    trace_mutator_conservative_roots_with_lock(mut);
-}
-
-static void
-trace_mutator_roots_after_stop(struct gc_heap *heap) {
-  struct gc_mutator *mut = atomic_load(&heap->mutator_trace_list);
-  int active_mutators_already_marked = heap_should_mark_while_stopping(heap);
-  while (mut) {
-    // Also collect any already-marked grey objects and put them on the
-    // global trace queue.
-    if (active_mutators_already_marked)
-      gc_tracer_enqueue_roots(&heap->tracer, mut->mark_buf.objects,
-                              mut->mark_buf.size);
-    else
-      trace_mutator_roots_with_lock(mut);
-    // Also unlink mutator_trace_list chain.
-    struct gc_mutator *next = mut->next;
-    mut->next = NULL;
-    mut = next;
-  }
-  atomic_store(&heap->mutator_trace_list, NULL);
-
-  for (struct gc_mutator *mut = heap->inactive_mutators; mut; mut = mut->next)
-    trace_mutator_roots_with_lock(mut);
-}
-
-static void
-trace_global_conservative_roots(struct gc_heap *heap) {
-  if (gc_has_global_conservative_roots())
-    gc_platform_visit_global_conservative_roots
-      (mark_and_globally_enqueue_heap_conservative_roots, heap, NULL);
-}
-
-static void
-enqueue_generational_root(struct gc_ref ref, struct gc_heap *heap) {
-  gc_tracer_enqueue_root(&heap->tracer, ref);
-}
-
 void
 gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
                         struct gc_edge edge, struct gc_ref new_val) {
   GC_ASSERT(obj_size > gc_allocator_large_threshold());
   gc_object_set_remembered(obj);
-}
-
-static void
-trace_generational_roots(struct gc_heap *heap) {
-  // TODO: Add lospace nursery.
-  if (atomic_load(&heap->gc_kind) == GC_COLLECTION_MINOR) {
-    nofl_space_trace_remembered_set(heap_nofl_space(heap),
-                                    enqueue_generational_root,
-                                    heap);
-    large_object_space_trace_remembered_set(heap_large_object_space(heap),
-                                            enqueue_generational_root,
-                                            heap);
-  } else {
-    nofl_space_clear_remembered_set(heap_nofl_space(heap));
-    large_object_space_clear_remembered_set(heap_large_object_space(heap));
-  }
 }
 
 static enum gc_collection_kind
@@ -733,11 +491,6 @@ pause_mutator_for_collection_with_lock(struct gc_mutator *mut) {
   MUTATOR_EVENT(mut, mutator_stopping);
   nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
   gc_stack_capture_hot(&mut->stack);
-  if (mutator_should_mark_while_stopping(mut))
-    // No need to collect results in mark buf; we can enqueue roots directly.
-    trace_mutator_roots_with_lock(mut);
-  else
-    enqueue_mutator_for_tracing(mut);
   return pause_mutator_for_collection(heap, mut);
 }
 
@@ -749,13 +502,9 @@ pause_mutator_for_collection_without_lock(struct gc_mutator *mut) {
   MUTATOR_EVENT(mut, mutator_stopping);
   nofl_finish_sweeping(&mut->allocator, heap_nofl_space(heap));
   gc_stack_capture_hot(&mut->stack);
-  if (mutator_should_mark_while_stopping(mut))
-    trace_stopping_mutator_roots(mut);
-  enqueue_mutator_for_tracing(mut);
   heap_lock(heap);
   pause_mutator_for_collection(heap, mut);
   heap_unlock(heap);
-  release_stopping_mutator_roots(mut);
 }
 
 static inline void
@@ -838,7 +587,6 @@ determine_collection_kind(struct gc_heap *heap,
   struct nofl_space *nofl_space = heap_nofl_space(heap);
   enum gc_collection_kind previous_gc_kind = atomic_load(&heap->gc_kind);
   enum gc_collection_kind gc_kind;
-  int mark_while_stopping = 1;
   double yield = heap_last_gc_yield(heap);
   double fragmentation = heap_fragmentation(heap);
   ssize_t pending = atomic_load_explicit(&nofl_space->pending_unavailable_bytes,
@@ -856,17 +604,6 @@ determine_collection_kind(struct gc_heap *heap,
     // free blocks, and we decided not to expand the heap.  Let's do an
     // evacuating major collection to maximize the free block yield.
     gc_kind = GC_COLLECTION_COMPACTING;
-
-    // Generally speaking, we allow mutators to mark their own stacks
-    // before pausing.  This is a limited form of concurrent marking, as
-    // other mutators might be running, not having received the signal
-    // to stop yet.  In a compacting collection, this results in pinned
-    // roots, because we haven't started evacuating yet and instead mark
-    // in place.  However as in this case we are trying to reclaim free
-    // blocks, try to avoid any pinning caused by the ragged-stop
-    // marking.  Of course if the mutator has conservative roots we will
-    // have pinning anyway and might as well allow ragged stops.
-    mark_while_stopping = gc_has_conservative_roots();
   } else if (previous_gc_kind == GC_COLLECTION_COMPACTING
              && fragmentation >= heap->fragmentation_low_threshold) {
     DEBUG("continuing evacuation due to fragmentation %.2f%% > %.2f%%\n",
@@ -912,7 +649,6 @@ determine_collection_kind(struct gc_heap *heap,
       gc_kind == GC_COLLECTION_COMPACTING) {
     DEBUG("welp.  conservative heap scanning, no evacuation for you\n");
     gc_kind = GC_COLLECTION_MAJOR;
-    mark_while_stopping = 1;
   }
 
   // If this is the first in a series of minor collections, reset the
@@ -927,34 +663,49 @@ determine_collection_kind(struct gc_heap *heap,
           yield * 100., clamped * 100.);
   }
 
-  atomic_store_explicit(&heap->mark_while_stopping, mark_while_stopping,
-                        memory_order_release);
-
   atomic_store(&heap->gc_kind, gc_kind);
   return gc_kind;
 }
 
 static void
-trace_conservative_roots_after_stop(struct gc_heap *heap) {
-  GC_ASSERT(!heap_nofl_space(heap)->evacuating);
-  if (gc_has_mutator_conservative_roots())
-    trace_mutator_conservative_roots_after_stop(heap);
-  if (gc_has_global_conservative_roots())
-    trace_global_conservative_roots(heap);
+enqueue_root_edge(struct gc_edge edge, struct gc_heap *heap, void *unused) {
+  gc_tracer_add_root(&heap->tracer, gc_root_edge(edge));
 }
 
 static void
-trace_pinned_roots_after_stop(struct gc_heap *heap) {
-  GC_ASSERT(!heap_nofl_space(heap)->evacuating);
-  trace_conservative_roots_after_stop(heap);
+enqueue_remembered_object(struct gc_ref ref, struct gc_heap *heap) {
+  gc_tracer_add_root(&heap->tracer, gc_root_remembered_object(ref));
 }
 
 static void
-trace_roots_after_stop(struct gc_heap *heap) {
-  trace_mutator_roots_after_stop(heap);
-  gc_trace_heap_roots(heap->roots, trace_and_enqueue_globally, heap, NULL);
-  gc_visit_finalizer_roots(heap->finalizer_state, visit_root_edge, heap, NULL);
-  trace_generational_roots(heap);
+enqueue_generational_roots(struct gc_heap *heap,
+                           enum gc_collection_kind gc_kind) {
+  // TODO: Add lospace nursery.
+  if (gc_kind == GC_COLLECTION_MINOR) {
+    for (size_t i = 0; i < heap_nofl_space(heap)->nslabs; i++)
+      gc_tracer_add_root(&heap->tracer, gc_root_remembered_slab(i));
+    large_object_space_trace_remembered_set(heap_large_object_space(heap),
+                                            enqueue_remembered_object,
+                                            heap);
+  } else {
+    nofl_space_clear_remembered_set(heap_nofl_space(heap));
+    large_object_space_clear_remembered_set(heap_large_object_space(heap));
+  }
+}
+
+static void
+enqueue_relocatable_roots(struct gc_heap *heap,
+                          enum gc_collection_kind gc_kind) {
+  for (struct gc_mutator *mut = heap->mutators;
+       mut;
+       mut = mut->next) {
+    if (mut->roots)
+      gc_tracer_add_root(&heap->tracer, gc_root_mutator(mut));
+  }
+  if (heap->roots)
+    gc_tracer_add_root(&heap->tracer, gc_root_heap(heap));
+  gc_visit_finalizer_roots(heap->finalizer_state, enqueue_root_edge, heap, NULL);
+  enqueue_generational_roots(heap, gc_kind);
 }
 
 static void
@@ -968,15 +719,6 @@ resolve_ephemerons_eagerly(struct gc_heap *heap) {
   atomic_store_explicit(&heap->check_pending_ephemerons, 1,
                         memory_order_release);
   gc_scan_pending_ephemerons(heap->pending_ephemerons, heap, 0, 1);
-}
-
-static int
-enqueue_resolved_ephemerons(struct gc_heap *heap) {
-  struct gc_ephemeron *resolved = gc_pop_resolved_ephemerons(heap);
-  if (!resolved)
-    return 0;
-  gc_trace_resolved_ephemerons(resolved, trace_and_enqueue_globally, heap, NULL);
-  return 1;
 }
 
 static void
@@ -995,7 +737,7 @@ resolve_finalizers(struct gc_heap *heap) {
        priority < gc_finalizer_priority_count();
        priority++) {
     if (gc_resolve_finalizers(heap->finalizer_state, priority,
-                              visit_root_edge, heap, NULL)) {
+                              enqueue_root_edge, heap, NULL)) {
       gc_tracer_trace(&heap->tracer);
       trace_resolved_ephemerons(heap);
     }
@@ -1008,6 +750,8 @@ sweep_ephemerons(struct gc_heap *heap) {
   return gc_sweep_pending_ephemerons(heap->pending_ephemerons, 0, 1);
 }
 
+static void collect(struct gc_mutator *mut,
+                    enum gc_collection_kind requested_kind) GC_NEVER_INLINE;
 static void
 collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
@@ -1020,6 +764,13 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   }
   MUTATOR_EVENT(mut, mutator_cause_gc);
   DEBUG("start collect #%ld:\n", heap->count);
+  HEAP_EVENT(heap, requesting_stop);
+  request_mutators_to_stop(heap);
+  gc_stack_capture_hot(&mut->stack);
+  nofl_finish_sweeping(&mut->allocator, nofl_space);
+  HEAP_EVENT(heap, waiting_for_stop);
+  wait_for_mutators_to_stop(heap);
+  HEAP_EVENT(heap, mutators_stopped);
   enum gc_collection_kind gc_kind =
     determine_collection_kind(heap, requested_kind);
   int is_minor = gc_kind == GC_COLLECTION_MINOR;
@@ -1029,22 +780,17 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   gc_extern_space_start_gc(exspace, is_minor);
   resolve_ephemerons_lazily(heap);
   gc_tracer_prepare(&heap->tracer);
-  HEAP_EVENT(heap, requesting_stop);
-  request_mutators_to_stop(heap);
-  trace_mutator_roots_with_lock_before_stop(mut);
-  nofl_finish_sweeping(&mut->allocator, nofl_space);
-  HEAP_EVENT(heap, waiting_for_stop);
-  wait_for_mutators_to_stop(heap);
-  HEAP_EVENT(heap, mutators_stopped);
   double yield = heap_last_gc_yield(heap);
   double fragmentation = heap_fragmentation(heap);
   HEAP_EVENT(heap, live_data_size, heap->size * (1 - yield));
   DEBUG("last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
   detect_out_of_memory(heap);
-  trace_pinned_roots_after_stop(heap);
-  nofl_space_start_gc(nofl_space, gc_kind);
-  trace_roots_after_stop(heap);
+  enqueue_pinned_roots(heap);
+  if (gc_kind == GC_COLLECTION_COMPACTING)
+    gc_tracer_trace_roots(&heap->tracer);
   HEAP_EVENT(heap, roots_traced);
+  enqueue_relocatable_roots(heap, gc_kind);
+  nofl_space_start_gc(nofl_space, gc_kind);
   gc_tracer_trace(&heap->tracer);
   HEAP_EVENT(heap, heap_traced);
   resolve_ephemerons_eagerly(heap);
@@ -1334,7 +1080,6 @@ gc_init_for_thread(struct gc_stack_addr *stack_base,
 void
 gc_finish_for_thread(struct gc_mutator *mut) {
   remove_mutator(mutator_heap(mut), mut);
-  mutator_mark_buf_destroy(&mut->mark_buf);
   free(mut);
 }
 
@@ -1343,8 +1088,6 @@ deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mut->next == NULL);
   nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
   heap_lock(heap);
-  mut->next = heap->inactive_mutators;
-  heap->inactive_mutators = mut;
   heap->inactive_mutator_count++;
   gc_stack_capture_hot(&mut->stack);
   if (all_mutators_stopped(heap))
@@ -1357,18 +1100,12 @@ reactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   heap_lock(heap);
   while (mutators_are_stopping(heap))
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
-  struct gc_mutator **prev = &heap->inactive_mutators;
-  while (*prev != mut)
-    prev = &(*prev)->next;
-  *prev = mut->next;
-  mut->next = NULL;
   heap->inactive_mutator_count--;
   heap_unlock(heap);
 }
 
-void* gc_call_without_gc(struct gc_mutator *mut,
-                         void* (*f)(void*),
-                         void *data) {
+void*
+gc_call_without_gc(struct gc_mutator *mut, void* (*f)(void*), void *data) {
   struct gc_heap *heap = mutator_heap(mut);
   deactivate_mutator(heap, mut);
   void *ret = f(data);

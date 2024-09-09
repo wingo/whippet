@@ -57,6 +57,7 @@ struct gc_tracer {
   long epoch;
   pthread_mutex_t lock;
   pthread_cond_t cond;
+  int trace_roots_only;
   struct root_worklist roots;
   struct gc_trace_worker workers[TRACE_WORKERS_MAX_COUNT];
 };
@@ -112,6 +113,7 @@ gc_tracer_init(struct gc_tracer *tracer, struct gc_heap *heap,
   tracer->heap = heap;
   atomic_init(&tracer->active_tracers, 0);
   tracer->epoch = 0;
+  tracer->trace_roots_only = 0;
   pthread_mutex_init(&tracer->lock, NULL);
   pthread_cond_init(&tracer->cond, NULL);
   root_worklist_init(&tracer->roots);
@@ -299,32 +301,52 @@ trace_with_data(struct gc_tracer *tracer,
   atomic_fetch_add_explicit(&tracer->active_tracers, 1, memory_order_acq_rel);
   worker->data = data;
 
-  size_t n = 0;
   DEBUG("tracer #%zu: running trace loop\n", worker->id);
 
-  do {
-    struct gc_root root = root_worklist_pop(&tracer->roots);
-    if (root.kind == GC_ROOT_KIND_NONE)
-      break;
-    trace_root(root, heap, worker);
-  } while (1);
-
-  do {
-    while (1) {
-      struct gc_ref ref;
-      if (!local_worklist_empty(&worker->local)) {
-        ref = local_worklist_pop(&worker->local);
-      } else {
-        ref = trace_worker_steal(worker);
-        if (!gc_ref_is_heap_object(ref))
-          break;
-      }
-      trace_one(ref, heap, worker);
+  {
+    DEBUG("tracer #%zu: tracing roots\n", worker->id);
+    size_t n = 0;
+    do {
+      struct gc_root root = root_worklist_pop(&tracer->roots);
+      if (root.kind == GC_ROOT_KIND_NONE)
+        break;
+      trace_root(root, heap, worker);
       n++;
-    }
-  } while (trace_worker_should_continue(worker));
+    } while (1);
 
-  DEBUG("tracer #%zu: done tracing, %zu objects traced\n", worker->id, n);
+    DEBUG("tracer #%zu: done tracing roots, %zu roots traced\n", worker->id, n);
+  }
+
+  if (tracer->trace_roots_only) {
+    // Unlike the full trace where work is generated during the trace, a
+    // roots-only trace consumes work monotonically; any object enqueued as a
+    // result of marking roots isn't ours to deal with.  However we do need to
+    // synchronize with remote workers to ensure they have completed their
+    // work items.
+    if (worker->id == 0) {
+      for (size_t i = 1; i < tracer->worker_count; i++)
+        pthread_mutex_lock(&tracer->workers[i].lock);
+    }
+  } else {
+    DEBUG("tracer #%zu: tracing objects\n", worker->id);
+    size_t n = 0;
+    do {
+      while (1) {
+        struct gc_ref ref;
+        if (!local_worklist_empty(&worker->local)) {
+          ref = local_worklist_pop(&worker->local);
+        } else {
+          ref = trace_worker_steal(worker);
+          if (!gc_ref_is_heap_object(ref))
+            break;
+        }
+        trace_one(ref, heap, worker);
+        n++;
+      }
+    } while (trace_worker_should_continue(worker));
+
+    DEBUG("tracer #%zu: done tracing, %zu objects traced\n", worker->id, n);
+  }
 
   worker->data = NULL;
   atomic_fetch_sub_explicit(&tracer->active_tracers, 1, memory_order_acq_rel);
@@ -336,17 +358,28 @@ trace_worker_trace(struct gc_trace_worker *worker) {
                                  worker->heap, worker);
 }
 
-static inline void
-gc_tracer_enqueue_root(struct gc_tracer *tracer, struct gc_ref ref) {
-  struct shared_worklist *worker0_deque = &tracer->workers[0].shared;
-  shared_worklist_push(worker0_deque, ref);
-}
+static inline int
+gc_tracer_should_parallelize(struct gc_tracer *tracer) {
+  if (root_worklist_size(&tracer->roots) > 1)
+    return 1;
 
-static inline void
-gc_tracer_enqueue_roots(struct gc_tracer *tracer, struct gc_ref *objv,
-                        size_t count) {
-  struct shared_worklist *worker0_deque = &tracer->workers[0].shared;
-  shared_worklist_push_many(worker0_deque, objv, count);
+  if (tracer->trace_roots_only)
+    return 0;
+
+  size_t nonempty_worklists = 0;
+  ssize_t parallel_threshold =
+    LOCAL_WORKLIST_SIZE - LOCAL_WORKLIST_SHARE_AMOUNT;
+  for (size_t i = 0; i < tracer->worker_count; i++) {
+    ssize_t size = shared_worklist_size(&tracer->workers[i].shared);
+    if (!size)
+      continue;
+    nonempty_worklists++;
+    if (nonempty_worklists > 1)
+      return 1;
+    if (size >= parallel_threshold)
+      return 1;
+  }
+  return 0;
 }
 
 static inline void
@@ -356,10 +389,7 @@ gc_tracer_trace(struct gc_tracer *tracer) {
   for (int i = 1; i < tracer->worker_count; i++)
     pthread_mutex_unlock(&tracer->workers[i].lock);
 
-  ssize_t parallel_threshold =
-    LOCAL_WORKLIST_SIZE - LOCAL_WORKLIST_SHARE_AMOUNT;
-  if (root_worklist_size(&tracer->roots) > 1 ||
-      shared_worklist_size(&tracer->workers[0].shared) >= parallel_threshold) {
+  if (gc_tracer_should_parallelize(tracer)) {
     DEBUG("waking workers\n");
     tracer_unpark_all_workers(tracer);
   } else {
@@ -370,6 +400,18 @@ gc_tracer_trace(struct gc_tracer *tracer) {
   root_worklist_reset(&tracer->roots);
 
   DEBUG("trace finished\n");
+}
+
+static inline void
+gc_tracer_trace_roots(struct gc_tracer *tracer) {
+  DEBUG("starting roots-only trace\n");
+
+  tracer->trace_roots_only = 1;
+  gc_tracer_trace(tracer);
+  tracer->trace_roots_only = 0;
+  
+  GC_ASSERT_EQ(atomic_load(&tracer->active_tracers), 0);
+  DEBUG("roots-only trace finished\n");
 }
 
 #endif // PARALLEL_TRACER_H

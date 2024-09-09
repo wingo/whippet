@@ -47,11 +47,8 @@ static void gc_tracer_prepare(struct gc_tracer *tracer);
 static void gc_tracer_release(struct gc_tracer *tracer);
 
 // Add root objects to the trace.  Call before tracer_trace.
-static inline void gc_tracer_enqueue_root(struct gc_tracer *tracer,
-                                          struct gc_ref obj);
-static inline void gc_tracer_enqueue_roots(struct gc_tracer *tracer,
-                                           struct gc_ref *objs,
-                                           size_t count);
+static inline void gc_tracer_add_root(struct gc_tracer *tracer,
+                                      struct gc_root root);
 
 // Given that an object has been shaded grey, enqueue for tracing.
 static inline void gc_trace_worker_enqueue(struct gc_trace_worker *worker,
@@ -59,10 +56,10 @@ static inline void gc_trace_worker_enqueue(struct gc_trace_worker *worker,
 static inline struct gc_trace_worker_data*
 gc_trace_worker_data(struct gc_trace_worker *worker) GC_ALWAYS_INLINE;
 
-static inline void gc_tracer_add_root(struct gc_tracer *tracer,
-                                      struct gc_root root);
+// Just trace roots.
+static inline void gc_tracer_trace_roots(struct gc_tracer *tracer);
 
-// Run the full trace.
+// Run the full trace, including roots.
 static inline void gc_tracer_trace(struct gc_tracer *tracer);
 
 #endif // TRACER_H

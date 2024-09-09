@@ -808,14 +808,19 @@ nofl_space_set_ephemeron_flag(struct gc_ref ref) {
   }
 }
 
+struct gc_trace_worker;
+
 // Note that it's quite possible (and even likely) that any given remset
 // byte doesn't hold any roots, if all stores were to nursery objects.
 STATIC_ASSERT_EQ(NOFL_GRANULES_PER_REMSET_BYTE % 8, 0);
 static void
 nofl_space_trace_card(struct nofl_space *space, struct nofl_slab *slab,
                       size_t card,
-                      void (*enqueue)(struct gc_ref, struct gc_heap*),
-                      struct gc_heap *heap) {
+                      void (*trace_object)(struct gc_ref,
+                                           struct gc_heap*,
+                                           struct gc_trace_worker*),
+                      struct gc_heap *heap,
+                      struct gc_trace_worker *worker) {
   uintptr_t first_addr_in_slab = (uintptr_t) &slab->blocks[0];
   size_t granule_base = card * NOFL_GRANULES_PER_REMSET_BYTE;
   for (size_t granule_in_remset = 0;
@@ -829,32 +834,33 @@ nofl_space_trace_card(struct nofl_space *space, struct nofl_slab *slab,
       size_t granule = granule_base + granule_offset;
       uintptr_t addr = first_addr_in_slab + granule * NOFL_GRANULE_SIZE;
       GC_ASSERT(nofl_metadata_byte_for_addr(addr) == &slab->metadata[granule]);
-      enqueue(gc_ref(addr), heap);
+      trace_object(gc_ref(addr), heap, worker);
     }
   }
 }
 
 static void
-nofl_space_trace_remembered_set(struct nofl_space *space,
-                                void (*enqueue)(struct gc_ref,
-                                                struct gc_heap*),
-                                struct gc_heap *heap) {
-  GC_ASSERT(!space->evacuating);
-  for (size_t s = 0; s < space->nslabs; s++) {
-    struct nofl_slab *slab = space->slabs[s];
-    uint8_t *remset = slab->remembered_set;
-    for (size_t card_base = 0;
-         card_base < NOFL_REMSET_BYTES_PER_SLAB;
-         card_base += 8) {
-      uint64_t remset_bytes = load_eight_aligned_bytes(remset + card_base);
-      if (!remset_bytes) continue;
-      memset(remset + card_base, 0, 8);
-      while (remset_bytes) {
-        size_t card_offset = count_zero_bytes(remset_bytes);
-        remset_bytes &= ~(((uint64_t)0xff) << (card_offset * 8));
-        nofl_space_trace_card(space, slab, card_base + card_offset,
-                              enqueue, heap);
-      }
+nofl_space_trace_remembered_slab(struct nofl_space *space,
+                                 size_t slab_idx,
+                                 void (*trace_object)(struct gc_ref,
+                                                      struct gc_heap*,
+                                                      struct gc_trace_worker*),
+                                 struct gc_heap *heap,
+                                 struct gc_trace_worker *worker) {
+  GC_ASSERT(slab_idx < space->nslabs);
+  struct nofl_slab *slab = space->slabs[slab_idx];
+  uint8_t *remset = slab->remembered_set;
+  for (size_t card_base = 0;
+       card_base < NOFL_REMSET_BYTES_PER_SLAB;
+       card_base += 8) {
+    uint64_t remset_bytes = load_eight_aligned_bytes(remset + card_base);
+    if (!remset_bytes) continue;
+    memset(remset + card_base, 0, 8);
+    while (remset_bytes) {
+      size_t card_offset = count_zero_bytes(remset_bytes);
+      remset_bytes &= ~(((uint64_t)0xff) << (card_offset * 8));
+      nofl_space_trace_card(space, slab, card_base + card_offset,
+                            trace_object, heap, worker);
     }
   }
 }
