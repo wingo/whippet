@@ -1,6 +1,6 @@
 # Whippet collectors
 
-Whippet has five collectors currently:
+Whippet has four collectors currently:
  - [Semi-space collector (`semi`)](./collector-semi.md): For
    single-threaded embedders who are not too tight on memory.
  - [Parallel copying collector (`pcc`)](./collector-pcc.md): Like `semi`,
