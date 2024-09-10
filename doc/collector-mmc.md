@@ -143,12 +143,6 @@ naturally cache-friendly and parallel.
 The mark byte array facilitates conservative collection by being an
 oracle for "does this address start an object".
 
-There is some support for concurrent marking by having three mark bit
-states (dead, survivor, marked) that rotate at each collection; some
-collector configurations can have mutators mark before waiting for other
-mutators to stop.  True concurrent marking and associated barriers
-are not yet implemented.
-
 For a detailed introduction, see [Whippet: Towards a new local
 maximum](https://wingolog.org/archives/2023/02/07/whippet-towards-a-new-local-maximum),
 a talk given at FOSDEM 2023.
