@@ -40,6 +40,15 @@ static inline void gc_basic_stats_init(void *data, size_t heap_size) {
   stats->heap_size = stats->max_heap_size = heap_size;
 }
 
+static inline void gc_basic_stats_requesting_stop(void *data) {
+  struct gc_basic_stats *stats = data;
+  uint64_t now = gc_basic_stats_now();
+  stats->elapsed_mutator_usec += now - stats->last_time_usec;
+  stats->last_time_usec = now;
+}
+static inline void gc_basic_stats_waiting_for_stop(void *data) {}
+static inline void gc_basic_stats_mutators_stopped(void *data) {}
+
 static inline void gc_basic_stats_prepare_gc(void *data,
                                              enum gc_collection_kind kind) {
   struct gc_basic_stats *stats = data;
@@ -47,14 +56,8 @@ static inline void gc_basic_stats_prepare_gc(void *data,
     stats->minor_collection_count++;
   else
     stats->major_collection_count++;
-  uint64_t now = gc_basic_stats_now();
-  stats->elapsed_mutator_usec += now - stats->last_time_usec;
-  stats->last_time_usec = now;
 }
 
-static inline void gc_basic_stats_requesting_stop(void *data) {}
-static inline void gc_basic_stats_waiting_for_stop(void *data) {}
-static inline void gc_basic_stats_mutators_stopped(void *data) {}
 static inline void gc_basic_stats_roots_traced(void *data) {}
 static inline void gc_basic_stats_heap_traced(void *data) {}
 static inline void gc_basic_stats_ephemerons_traced(void *data) {}
@@ -94,10 +97,10 @@ static inline void gc_basic_stats_live_data_size(void *data, size_t size) {
 #define GC_BASIC_STATS                                                  \
   ((struct gc_event_listener) {                                         \
     gc_basic_stats_init,                                                \
-    gc_basic_stats_prepare_gc,                                          \
     gc_basic_stats_requesting_stop,                                     \
     gc_basic_stats_waiting_for_stop,                                    \
     gc_basic_stats_mutators_stopped,                                    \
+    gc_basic_stats_prepare_gc,                                          \
     gc_basic_stats_roots_traced,                                        \
     gc_basic_stats_heap_traced,                                         \
     gc_basic_stats_ephemerons_traced,                                   \

@@ -3,9 +3,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <string.h>
-#include <unistd.h>
 
 #include "gc-api.h"
 
@@ -88,7 +85,7 @@ gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
                                struct gc_heap *heap,
                                struct gc_trace_worker *worker) {
   struct gc_trace_worker_data data;
-  copy_space_allocator_init(&data.allocator, heap_copy_space(heap));
+  copy_space_allocator_init(&data.allocator);
   f(tracer, heap, worker, &data);
   copy_space_allocator_finish(&data.allocator, heap_copy_space(heap));
 }
@@ -153,7 +150,7 @@ static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->heap = heap;
   mut->event_listener_data =
     heap->event_listener.mutator_added(heap->event_listener_data);
-  copy_space_allocator_init(&mut->allocator, heap_copy_space(heap));
+  copy_space_allocator_init(&mut->allocator);
   heap_lock(heap);
   // We have no roots.  If there is a GC currently in progress, we have
   // nothing to add.  Just wait until it's done.
@@ -171,9 +168,9 @@ static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
 }
 
 static void remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
+  copy_space_allocator_finish(&mut->allocator, heap_copy_space(heap));
   MUTATOR_EVENT(mut, mutator_removed);
   mut->heap = NULL;
-  copy_space_allocator_finish(&mut->allocator, heap_copy_space(heap));
   heap_lock(heap);
   heap->mutator_count--;
   if (mut->next)
@@ -187,29 +184,6 @@ static void remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   if (mutators_are_stopping(heap) && all_mutators_stopped(heap))
     pthread_cond_signal(&heap->collector_cond);
   heap_unlock(heap);
-}
-
-static void request_mutators_to_stop(struct gc_heap *heap) {
-  GC_ASSERT(!mutators_are_stopping(heap));
-  atomic_store_explicit(&heap->collecting, 1, memory_order_relaxed);
-}
-
-static void allow_mutators_to_continue(struct gc_heap *heap) {
-  GC_ASSERT(mutators_are_stopping(heap));
-  GC_ASSERT(all_mutators_stopped(heap));
-  heap->paused_mutator_count--;
-  atomic_store_explicit(&heap->collecting, 0, memory_order_relaxed);
-  GC_ASSERT(!mutators_are_stopping(heap));
-  pthread_cond_broadcast(&heap->mutator_cond);
-}
-
-static void heap_reset_large_object_pages(struct gc_heap *heap, size_t npages) {
-  size_t previous = heap->large_object_pages;
-  heap->large_object_pages = npages;
-  GC_ASSERT(npages <= previous);
-  size_t bytes = (previous - npages) <<
-    heap_large_object_space(heap)->page_size_log2;
-  copy_space_reacquire_memory(heap_copy_space(heap), bytes);
 }
 
 void gc_mutator_set_roots(struct gc_mutator *mut,
@@ -263,14 +237,33 @@ static inline void trace_root(struct gc_root root, struct gc_heap *heap,
   }
 }
 
+static void request_mutators_to_stop(struct gc_heap *heap) {
+  GC_ASSERT(!mutators_are_stopping(heap));
+  atomic_store_explicit(&heap->collecting, 1, memory_order_relaxed);
+}
+
+static void allow_mutators_to_continue(struct gc_heap *heap) {
+  GC_ASSERT(mutators_are_stopping(heap));
+  GC_ASSERT(all_mutators_stopped(heap));
+  heap->paused_mutator_count--;
+  atomic_store_explicit(&heap->collecting, 0, memory_order_relaxed);
+  GC_ASSERT(!mutators_are_stopping(heap));
+  pthread_cond_broadcast(&heap->mutator_cond);
+}
+
+static void heap_reset_large_object_pages(struct gc_heap *heap, size_t npages) {
+  size_t previous = heap->large_object_pages;
+  heap->large_object_pages = npages;
+  GC_ASSERT(npages <= previous);
+  size_t bytes = (previous - npages) <<
+    heap_large_object_space(heap)->page_size_log2;
+  copy_space_reacquire_memory(heap_copy_space(heap), bytes);
+}
+
 static void wait_for_mutators_to_stop(struct gc_heap *heap) {
   heap->paused_mutator_count++;
   while (!all_mutators_stopped(heap))
     pthread_cond_wait(&heap->collector_cond, &heap->lock);
-}
-
-void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
-                             struct gc_edge edge, struct gc_ref new_val) {
 }
 
 static void
@@ -380,16 +373,16 @@ static void collect(struct gc_mutator *mut) {
   struct gc_extern_space *exspace = heap_extern_space(heap);
   MUTATOR_EVENT(mut, mutator_cause_gc);
   DEBUG("start collect #%ld:\n", heap->count);
-  HEAP_EVENT(heap, prepare_gc, GC_COLLECTION_COMPACTING);
-  large_object_space_start_gc(lospace, 0);
-  gc_extern_space_start_gc(exspace, 0);
-  resolve_ephemerons_lazily(heap);
   HEAP_EVENT(heap, requesting_stop);
   request_mutators_to_stop(heap);
   HEAP_EVENT(heap, waiting_for_stop);
   wait_for_mutators_to_stop(heap);
   HEAP_EVENT(heap, mutators_stopped);
+  HEAP_EVENT(heap, prepare_gc, GC_COLLECTION_COMPACTING);
   copy_space_flip(copy_space);
+  large_object_space_start_gc(lospace, 0);
+  gc_extern_space_start_gc(exspace, 0);
+  resolve_ephemerons_lazily(heap);
   gc_tracer_prepare(&heap->tracer);
   add_roots(heap);
   HEAP_EVENT(heap, roots_traced);
@@ -481,6 +474,10 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
 
 void* gc_allocate_pointerless(struct gc_mutator *mut, size_t size) {
   return gc_allocate(mut, size);
+}
+
+void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
+                             struct gc_edge edge, struct gc_ref new_val) {
 }
 
 struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {

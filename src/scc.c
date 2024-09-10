@@ -88,7 +88,7 @@ gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
                                struct gc_heap *heap,
                                struct gc_trace_worker *worker) {
   struct gc_trace_worker_data data;
-  copy_space_allocator_init(&data.allocator, heap_copy_space(heap));
+  copy_space_allocator_init(&data.allocator);
   f(tracer, heap, worker, &data);
   copy_space_allocator_finish(&data.allocator, heap_copy_space(heap));
 }
@@ -152,7 +152,7 @@ static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->heap = heap;
   mut->event_listener_data =
     heap->event_listener.mutator_added(heap->event_listener_data);
-  copy_space_allocator_init(&mut->allocator, heap_copy_space(heap));
+  copy_space_allocator_init(&mut->allocator);
   heap_lock(heap);
   // We have no roots.  If there is a GC currently in progress, we have
   // nothing to add.  Just wait until it's done.
@@ -377,7 +377,6 @@ static void collect(struct gc_mutator *mut) {
   struct gc_extern_space *exspace = heap_extern_space(heap);
   MUTATOR_EVENT(mut, mutator_cause_gc);
   DEBUG("start collect #%ld:\n", heap->count);
-  HEAP_EVENT(heap, prepare_gc, GC_COLLECTION_COMPACTING);
   large_object_space_start_gc(lospace, 0);
   gc_extern_space_start_gc(exspace, 0);
   resolve_ephemerons_lazily(heap);
@@ -386,6 +385,7 @@ static void collect(struct gc_mutator *mut) {
   HEAP_EVENT(heap, waiting_for_stop);
   wait_for_mutators_to_stop(heap);
   HEAP_EVENT(heap, mutators_stopped);
+  HEAP_EVENT(heap, prepare_gc, GC_COLLECTION_COMPACTING);
   copy_space_flip(copy_space);
   gc_tracer_prepare(&heap->tracer);
   add_roots(heap);

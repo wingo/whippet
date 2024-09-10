@@ -386,11 +386,11 @@ static void collect(struct gc_mutator *mut, size_t for_alloc) {
   struct gc_heap *heap = mutator_heap(mut);
   int is_minor = 0;
   int is_compacting = 1;
-  HEAP_EVENT(heap, prepare_gc, GC_COLLECTION_COMPACTING);
 
   HEAP_EVENT(heap, requesting_stop);
   HEAP_EVENT(heap, waiting_for_stop);
   HEAP_EVENT(heap, mutators_stopped);
+  HEAP_EVENT(heap, prepare_gc, GC_COLLECTION_COMPACTING);
 
   struct semi_space *semi = heap_semi_space(heap);
   struct large_object_space *large = heap_large_object_space(heap);

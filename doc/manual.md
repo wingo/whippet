@@ -594,8 +594,6 @@ There are three heap events:
 The collection events form a kind of state machine, and are called in
 this order:
 
- * `prepare_gc(void* data, int is_minor, int is_compacting)`: Called at
-   the beginning of GC.  Some mutators may still be active.
  * `requesting_stop(void* data)`: Called when the collector asks
    mutators to stop.
  * `waiting_for_stop(void* data)`: Called when the collector has done
@@ -603,6 +601,8 @@ this order:
    mutators to stop.
  * `mutators_stopped(void* data)`: Called when all mutators have
    stopped; the trace phase follows.
+ * `prepare_gc(void* data, enum gc_collection_kind gc_kind)`: Called 
+   to indicate which kind of collection is happening.
  * `roots_traced(void* data)`: Called when roots have been visited.
  * `heap_traced(void* data)`: Called when the whole heap has been
    traced.

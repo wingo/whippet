@@ -412,13 +412,13 @@ gc_heap_pending_ephemerons(struct gc_heap *heap) {
 static void on_collection_event(GC_EventType event) {
   switch (event) {
   case GC_EVENT_START: {
-    HEAP_EVENT(prepare_gc, GC_COLLECTION_MAJOR);
     HEAP_EVENT(requesting_stop);
     HEAP_EVENT(waiting_for_stop);
     break;
   }
   case GC_EVENT_MARK_START:
     HEAP_EVENT(mutators_stopped);
+    HEAP_EVENT(prepare_gc, GC_COLLECTION_MAJOR);
     break;
   case GC_EVENT_MARK_END:
     HEAP_EVENT(roots_traced);

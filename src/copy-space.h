@@ -2,6 +2,7 @@
 #define COPY_SPACE_H
 
 #include <stdlib.h>
+#include <sys/mman.h>
 
 #include "gc-api.h"
 
@@ -541,8 +542,7 @@ copy_space_contains(struct copy_space *space, struct gc_ref ref) {
 }
 
 static inline void
-copy_space_allocator_init(struct copy_space_allocator *alloc,
-                          struct copy_space *space) {
+copy_space_allocator_init(struct copy_space_allocator *alloc) {
   memset(alloc, 0, sizeof(*alloc));
 }
 

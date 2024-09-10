@@ -20,13 +20,6 @@ static inline void gc_event_listener_chain_init(void *data, size_t heap_size) {
   chain->tail.init(chain->tail_data, heap_size);
 }
 
-static inline void gc_event_listener_chain_prepare_gc(void *data,
-                                             enum gc_collection_kind kind) {
-  struct gc_event_listener_chain *chain = data;
-  chain->head.prepare_gc(chain->head_data, kind);
-  chain->tail.prepare_gc(chain->tail_data, kind);
-}
-
 static inline void gc_event_listener_chain_requesting_stop(void *data) {
   struct gc_event_listener_chain *chain = data;
   chain->head.requesting_stop(chain->head_data);
@@ -41,6 +34,12 @@ static inline void gc_event_listener_chain_mutators_stopped(void *data) {
   struct gc_event_listener_chain *chain = data;
   chain->head.mutators_stopped(chain->head_data);
   chain->tail.mutators_stopped(chain->tail_data);
+}
+static inline void
+gc_event_listener_chain_prepare_gc(void *data, enum gc_collection_kind kind) {
+  struct gc_event_listener_chain *chain = data;
+  chain->head.prepare_gc(chain->head_data, kind);
+  chain->tail.prepare_gc(chain->tail_data, kind);
 }
 static inline void gc_event_listener_chain_roots_traced(void *data) {
   struct gc_event_listener_chain *chain = data;
@@ -121,10 +120,10 @@ static inline void gc_event_listener_chain_live_data_size(void *data, size_t siz
 #define GC_EVENT_LISTENER_CHAIN                                         \
   ((struct gc_event_listener) {                                         \
     gc_event_listener_chain_init,                                       \
-    gc_event_listener_chain_prepare_gc,                                 \
     gc_event_listener_chain_requesting_stop,                            \
     gc_event_listener_chain_waiting_for_stop,                           \
     gc_event_listener_chain_mutators_stopped,                           \
+    gc_event_listener_chain_prepare_gc,                                 \
     gc_event_listener_chain_roots_traced,                               \
     gc_event_listener_chain_heap_traced,                                \
     gc_event_listener_chain_ephemerons_traced,                          \

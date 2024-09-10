@@ -5,10 +5,10 @@
 
 struct gc_event_listener {
   void (*init)(void *data, size_t heap_size);
-  void (*prepare_gc)(void *data, enum gc_collection_kind kind);
   void (*requesting_stop)(void *data);
   void (*waiting_for_stop)(void *data);
   void (*mutators_stopped)(void *data);
+  void (*prepare_gc)(void *data, enum gc_collection_kind kind);
   void (*roots_traced)(void *data);
   void (*heap_traced)(void *data);
   void (*ephemerons_traced)(void *data);

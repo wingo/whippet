@@ -3,9 +3,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <string.h>
-#include <unistd.h>
 
 #include "gc-api.h"
 
@@ -44,14 +41,12 @@ struct gc_heap {
   struct gc_pending_ephemerons *pending_ephemerons;
   struct gc_finalizer_state *finalizer_state;
   enum gc_collection_kind gc_kind;
-  int multithreaded;
   size_t mutator_count;
   size_t paused_mutator_count;
   size_t inactive_mutator_count;
   struct gc_heap_roots *roots;
   struct gc_mutator *mutators;
   long count;
-  uint8_t last_collection_was_minor;
   struct gc_tracer tracer;
   double fragmentation_low_threshold;
   double fragmentation_high_threshold;
@@ -116,29 +111,24 @@ gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
 
 static inline int
 do_trace(struct gc_heap *heap, struct gc_edge edge, struct gc_ref ref,
-         struct gc_trace_worker *worker) {
+         struct gc_trace_worker_data *data) {
   if (!gc_ref_is_heap_object(ref))
     return 0;
-  if (GC_LIKELY(nofl_space_contains(heap_nofl_space(heap), ref))) {
-    struct nofl_allocator *alloc =
-      worker ? &gc_trace_worker_data(worker)->allocator : NULL;
+  if (GC_LIKELY(nofl_space_contains(heap_nofl_space(heap), ref)))
     return nofl_space_evacuate_or_mark_object(heap_nofl_space(heap), edge, ref,
-                                              alloc);
-  } else if (large_object_space_contains(heap_large_object_space(heap), ref))
+                                              &data->allocator);
+  else if (large_object_space_contains(heap_large_object_space(heap), ref))
     return large_object_space_mark_object(heap_large_object_space(heap),
                                           ref);
   else
     return gc_extern_space_visit(heap_extern_space(heap), edge, ref);
 }
 
-static inline int trace_edge(struct gc_heap *heap,
-                             struct gc_edge edge,
-                             struct gc_trace_worker *worker) GC_ALWAYS_INLINE;
-
 static inline int
-trace_edge(struct gc_heap *heap, struct gc_edge edge, struct gc_trace_worker *worker) {
+trace_edge(struct gc_heap *heap, struct gc_edge edge,
+           struct gc_trace_worker_data *data) {
   struct gc_ref ref = gc_edge_ref(edge);
-  int is_new = do_trace(heap, edge, ref, worker);
+  int is_new = do_trace(heap, edge, ref, data);
 
   if (is_new &&
       GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
@@ -191,13 +181,12 @@ add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->heap = heap;
   mut->event_listener_data =
     heap->event_listener.mutator_added(heap->event_listener_data);
+  nofl_allocator_reset(&mut->allocator);
   heap_lock(heap);
   // We have no roots.  If there is a GC currently in progress, we have
   // nothing to add.  Just wait until it's done.
   while (mutators_are_stopping(heap))
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
-  if (heap->mutator_count == 1)
-    heap->multithreaded = 1;
   mut->next = mut->prev = NULL;
   struct gc_mutator *tail = heap->mutators;
   if (tail) {
@@ -229,32 +218,6 @@ remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   heap_unlock(heap);
 }
 
-static void
-request_mutators_to_stop(struct gc_heap *heap) {
-  GC_ASSERT(!mutators_are_stopping(heap));
-  atomic_store_explicit(&heap->collecting, 1, memory_order_relaxed);
-}
-
-static void
-allow_mutators_to_continue(struct gc_heap *heap) {
-  GC_ASSERT(mutators_are_stopping(heap));
-  GC_ASSERT(all_mutators_stopped(heap));
-  heap->paused_mutator_count = 0;
-  atomic_store_explicit(&heap->collecting, 0, memory_order_relaxed);
-  GC_ASSERT(!mutators_are_stopping(heap));
-  pthread_cond_broadcast(&heap->mutator_cond);
-}
-
-static void
-heap_reset_large_object_pages(struct gc_heap *heap, size_t npages) {
-  size_t previous = heap->large_object_pages;
-  heap->large_object_pages = npages;
-  GC_ASSERT(npages <= previous);
-  size_t bytes = (previous - npages) <<
-    heap_large_object_space(heap)->page_size_log2;
-  nofl_space_reacquire_memory(heap_nofl_space(heap), bytes);
-}
-
 void
 gc_mutator_set_roots(struct gc_mutator *mut, struct gc_mutator_roots *roots) {
   mut->roots = roots;
@@ -273,7 +236,7 @@ static inline void tracer_visit(struct gc_edge edge, struct gc_heap *heap,
 static inline void
 tracer_visit(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
   struct gc_trace_worker *worker = trace_data;
-  if (trace_edge(heap, edge, worker))
+  if (trace_edge(heap, edge, gc_trace_worker_data(worker)))
     gc_trace_worker_enqueue(worker, gc_edge_ref(edge));
 }
 
@@ -404,39 +367,29 @@ trace_root(struct gc_root root, struct gc_heap *heap,
 }
 
 static void
-enqueue_conservative_roots(uintptr_t low, uintptr_t high,
-                           struct gc_heap *heap, void *data) {
-  int *possibly_interior = data;
-  gc_tracer_add_root(&heap->tracer,
-                     gc_root_conservative_edges(low, high, *possibly_interior));
+request_mutators_to_stop(struct gc_heap *heap) {
+  GC_ASSERT(!mutators_are_stopping(heap));
+  atomic_store_explicit(&heap->collecting, 1, memory_order_relaxed);
 }
 
 static void
-enqueue_mutator_conservative_roots(struct gc_heap *heap) {
-  if (gc_has_mutator_conservative_roots()) {
-    int possibly_interior = gc_mutator_conservative_roots_may_be_interior();
-    for (struct gc_mutator *mut = heap->mutators;
-         mut;
-         mut = mut->next)
-      gc_stack_visit(&mut->stack, enqueue_conservative_roots, heap,
-                     &possibly_interior);
-  }
+allow_mutators_to_continue(struct gc_heap *heap) {
+  GC_ASSERT(mutators_are_stopping(heap));
+  GC_ASSERT(all_mutators_stopped(heap));
+  heap->paused_mutator_count--;
+  atomic_store_explicit(&heap->collecting, 0, memory_order_relaxed);
+  GC_ASSERT(!mutators_are_stopping(heap));
+  pthread_cond_broadcast(&heap->mutator_cond);
 }
 
 static void
-enqueue_global_conservative_roots(struct gc_heap *heap) {
-  if (gc_has_global_conservative_roots()) {
-    int possibly_interior = 0;
-    gc_platform_visit_global_conservative_roots
-      (enqueue_conservative_roots, heap, &possibly_interior);
-  }
-}
-
-static void
-enqueue_pinned_roots(struct gc_heap *heap) {
-  GC_ASSERT(!heap_nofl_space(heap)->evacuating);
-  enqueue_mutator_conservative_roots(heap);
-  enqueue_global_conservative_roots(heap);
+heap_reset_large_object_pages(struct gc_heap *heap, size_t npages) {
+  size_t previous = heap->large_object_pages;
+  heap->large_object_pages = npages;
+  GC_ASSERT(npages <= previous);
+  size_t bytes = (previous - npages) <<
+    heap_large_object_space(heap)->page_size_log2;
+  nofl_space_reacquire_memory(heap_nofl_space(heap), bytes);
 }
 
 static void
@@ -444,13 +397,6 @@ wait_for_mutators_to_stop(struct gc_heap *heap) {
   heap->paused_mutator_count++;
   while (!all_mutators_stopped(heap))
     pthread_cond_wait(&heap->collector_cond, &heap->lock);
-}
-
-void
-gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
-                        struct gc_edge edge, struct gc_ref new_val) {
-  GC_ASSERT(obj_size > gc_allocator_large_threshold());
-  gc_object_set_remembered(obj);
 }
 
 static enum gc_collection_kind
@@ -466,17 +412,10 @@ pause_mutator_for_collection(struct gc_heap *heap, struct gc_mutator *mut) {
   if (all_mutators_stopped(heap))
     pthread_cond_signal(&heap->collector_cond);
 
-  // Go to sleep and wake up when the collector is done.  Note,
-  // however, that it may be that some other mutator manages to
-  // trigger collection before we wake up.  In that case we need to
-  // mark roots, not just sleep again.  To detect a wakeup on this
-  // collection vs a future collection, we use the global GC count.
-  // This is safe because the count is protected by the heap lock,
-  // which we hold.
-  long epoch = heap->count;
   do
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
-  while (mutators_are_stopping(heap) && heap->count == epoch);
+  while (mutators_are_stopping(heap));
+  heap->paused_mutator_count--;
 
   MUTATOR_EVENT(mut, mutator_restarted);
   return collection_kind;
@@ -489,8 +428,6 @@ pause_mutator_for_collection_with_lock(struct gc_mutator *mut) {
   struct gc_heap *heap = mutator_heap(mut);
   GC_ASSERT(mutators_are_stopping(heap));
   MUTATOR_EVENT(mut, mutator_stopping);
-  nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
-  gc_stack_capture_hot(&mut->stack);
   return pause_mutator_for_collection(heap, mut);
 }
 
@@ -668,6 +605,42 @@ determine_collection_kind(struct gc_heap *heap,
 }
 
 static void
+enqueue_conservative_roots(uintptr_t low, uintptr_t high,
+                           struct gc_heap *heap, void *data) {
+  int *possibly_interior = data;
+  gc_tracer_add_root(&heap->tracer,
+                     gc_root_conservative_edges(low, high, *possibly_interior));
+}
+
+static void
+enqueue_mutator_conservative_roots(struct gc_heap *heap) {
+  if (gc_has_mutator_conservative_roots()) {
+    int possibly_interior = gc_mutator_conservative_roots_may_be_interior();
+    for (struct gc_mutator *mut = heap->mutators;
+         mut;
+         mut = mut->next)
+      gc_stack_visit(&mut->stack, enqueue_conservative_roots, heap,
+                     &possibly_interior);
+  }
+}
+
+static void
+enqueue_global_conservative_roots(struct gc_heap *heap) {
+  if (gc_has_global_conservative_roots()) {
+    int possibly_interior = 0;
+    gc_platform_visit_global_conservative_roots
+      (enqueue_conservative_roots, heap, &possibly_interior);
+  }
+}
+
+static void
+enqueue_pinned_roots(struct gc_heap *heap) {
+  GC_ASSERT(!heap_nofl_space(heap)->evacuating);
+  enqueue_mutator_conservative_roots(heap);
+  enqueue_global_conservative_roots(heap);
+}
+
+static void
 enqueue_root_edge(struct gc_edge edge, struct gc_heap *heap, void *unused) {
   gc_tracer_add_root(&heap->tracer, gc_root_edge(edge));
 }
@@ -766,7 +739,6 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   DEBUG("start collect #%ld:\n", heap->count);
   HEAP_EVENT(heap, requesting_stop);
   request_mutators_to_stop(heap);
-  gc_stack_capture_hot(&mut->stack);
   nofl_finish_sweeping(&mut->allocator, nofl_space);
   HEAP_EVENT(heap, waiting_for_stop);
   wait_for_mutators_to_stop(heap);
@@ -786,8 +758,11 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   DEBUG("last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
   detect_out_of_memory(heap);
   enqueue_pinned_roots(heap);
+  // Eagerly trace pinned roots if we are going to relocate objects.
   if (gc_kind == GC_COLLECTION_COMPACTING)
     gc_tracer_trace_roots(&heap->tracer);
+  // Process the rest of the roots in parallel.  This heap event should probably
+  // be removed, as there is no clear cutoff time.
   HEAP_EVENT(heap, roots_traced);
   enqueue_relocatable_roots(heap, gc_kind);
   nofl_space_start_gc(nofl_space, gc_kind);
@@ -804,7 +779,6 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   large_object_space_finish_gc(lospace, is_minor);
   gc_extern_space_finish_gc(exspace, is_minor);
   heap->count++;
-  heap->last_collection_was_minor = is_minor;
   heap_reset_large_object_pages(heap, lospace->live_pages_at_last_collection);
   HEAP_EVENT(heap, restarting_mutators);
   allow_mutators_to_continue(heap);
@@ -815,6 +789,8 @@ trigger_collection(struct gc_mutator *mut,
                    enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
   int prev_kind = -1;
+  gc_stack_capture_hot(&mut->stack);
+  nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
   heap_lock(heap);
   while (mutators_are_stopping(heap))
     prev_kind = pause_mutator_for_collection_with_lock(mut);
@@ -877,6 +853,13 @@ gc_allocate_slow(struct gc_mutator *mut, size_t size) {
 void*
 gc_allocate_pointerless(struct gc_mutator *mut, size_t size) {
   return gc_allocate(mut, size);
+}
+
+void
+gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
+                        struct gc_edge edge, struct gc_ref new_val) {
+  GC_ASSERT(obj_size > gc_allocator_large_threshold());
+  gc_object_set_remembered(obj);
 }
 
 struct gc_ephemeron*

@@ -4,11 +4,11 @@
 #include "gc-event-listener.h"
 
 static inline void gc_null_event_listener_init(void *data, size_t size) {}
-static inline void gc_null_event_listener_prepare_gc(void *data,
-                                                     enum gc_collection_kind) {}
 static inline void gc_null_event_listener_requesting_stop(void *data) {}
 static inline void gc_null_event_listener_waiting_for_stop(void *data) {}
 static inline void gc_null_event_listener_mutators_stopped(void *data) {}
+static inline void gc_null_event_listener_prepare_gc(void *data,
+                                                     enum gc_collection_kind) {}
 static inline void gc_null_event_listener_roots_traced(void *data) {}
 static inline void gc_null_event_listener_heap_traced(void *data) {}
 static inline void gc_null_event_listener_ephemerons_traced(void *data) {}
@@ -28,10 +28,10 @@ static inline void gc_null_event_listener_live_data_size(void *, size_t) {}
 #define GC_NULL_EVENT_LISTENER                                         \
   ((struct gc_event_listener) {                                        \
     gc_null_event_listener_init,                                       \
-    gc_null_event_listener_prepare_gc,                                 \
     gc_null_event_listener_requesting_stop,                            \
     gc_null_event_listener_waiting_for_stop,                           \
     gc_null_event_listener_mutators_stopped,                           \
+    gc_null_event_listener_prepare_gc,                                 \
     gc_null_event_listener_roots_traced,                               \
     gc_null_event_listener_heap_traced,                                \
     gc_null_event_listener_ephemerons_traced,                          \
