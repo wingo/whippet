@@ -15,7 +15,11 @@
 #include "gc-inline.h"
 #include "gc-trace.h"
 #include "large-object-space.h"
+#if GC_PARALLEL
 #include "parallel-tracer.h"
+#else
+#include "serial-tracer.h"
+#endif
 #include "spin.h"
 #include "pcc-attrs.h"
 

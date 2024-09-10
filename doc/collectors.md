@@ -3,10 +3,8 @@
 Whippet has five collectors currently:
  - [Semi-space collector (`semi`)](./collector-semi.md): For
    single-threaded embedders who are not too tight on memory.
- - [Serial copying collector (`scc`)](./collector-scc.md): Like `semi`,
-   but with support for multiple mutator threads.
- - [Parallel copying collector (`pcc`)](./collector-pcc.md): Like `scc`,
-   but with support for multiple tracing threads.
+ - [Parallel copying collector (`pcc`)](./collector-pcc.md): Like `semi`,
+   but with support for multiple mutator and tracing threads.
  - [Mostly marking collector (`mmc`)](./collector-mmc.md):
    Immix-inspired collector.  Optionally parallel, conservative (stack
    and/or heap), and/or generational.
@@ -25,8 +23,6 @@ out mutator/embedder bugs.  Then if memory is tight, switch to
 
 If you are aiming for maximum simplicity and minimal code size (ten
 kilobytes or so), use `semi`.
-
-Only use `scc` if you are investigating GC internals.
 
 If you are writing a new project, you have a choice as to whether to pay
 the development cost of precise roots or not.  If you choose to not have

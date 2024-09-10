@@ -18,11 +18,10 @@ See the [documentation](./doc/README.md).
  - Finalization (supporting resuscitation)
  - Ephemerons (except on `bdw`, which has a polyfill)
  - Conservative roots (optionally with `mmc` or always with `bdw`)
- - Precise roots (optionally with `mmc` or always with `semi` / `pcc` /
-   `scc`)
+ - Precise roots (optionally with `mmc` or always with `semi` / `pcc`)
  - Precise embedder-parameterized heap tracing (except with `bdw`)
  - Conservative heap tracing (optionally with `mmc`, always with `bdw`)
- - Parallel tracing (except `semi` and `scc`)
+ - Parallel tracing (except `semi`)
  - Parallel mutators (except `semi`)
  - Inline allocation / write barrier fast paths (supporting JIT)
  - One unified API with no-overhead abstraction: switch collectors when
@@ -36,8 +35,8 @@ See the [documentation](./doc/README.md).
  * [src/](./src/): The actual GC implementation, containing a number of
    collector implementations.  The embedder chooses which collector to
    use at compile-time.  See the [documentation](./doc/collectors.md)
-   for more on the different collectors (`semi`, `bdw`, `scc`, `pcc`,
-   and the different flavors of `mmc`).
+   for more on the different collectors (`semi`, `bdw`, `pcc`, and the
+   different flavors of `mmc`).
  * [benchmarks/](./benchmarks/): Benchmarks.  A work in progress.
  * [test/](./test/): A dusty attic of minimal testing.
 
