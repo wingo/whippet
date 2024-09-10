@@ -50,24 +50,21 @@ the trace worker grabs another, just like mutators do.
 
 Unlike the simple semi-space collector which uses a Cheney grey
 worklist, `pcc` uses an external worklist.  If parallelism is disabled
-at compile-time, it uses a [simple first-in, first-out queue of objects
-to be traced](../src/simple-worklist.h) originally developed for
-[Whippet's Immix-like collector](./collector-whippet.md).  Like a Cheney
-worklist, this should result in objects being copied in breadth-first
-order.  The literature would suggest that depth-first is generally
-better for locality, but that preserving allocation order is generally
-best.  This is something to experiment with in the future.
+at compile-time, it uses a simple first-in, first-out queue of objects
+to be traced.  Like a Cheney worklist, this should result in objects
+being copied in breadth-first order.  The literature would suggest that
+depth-first is generally better for locality, but that preserving
+allocation order is generally best.  This is something to experiment
+with in the future.
 
-If parallelism is enabled, as it is by default, `pcc` uses the
-[fine-grained work-stealing parallel tracer](../src/parallel-tracer.h)
-originally developed for [Whippet's Immix-like
-collector](./collector-whippet.md).  Each trace worker maintains a
-[local queue of objects that need tracing](../src/local-worklist.h),
-which currently has 1024 entries.  If the local queue becomes full, the
-worker will publish 3/4 of those entries to the worker's [shared
-worklist](../src/shared-worklist.h).  When a worker runs out of local
-work, it will first try to remove work from its own shared worklist,
-then will try to steal from other workers.
+If parallelism is enabled, as it is by default, `pcc` uses a
+[fine-grained work-stealing parallel tracer](../src/parallel-tracer.h).
+Each trace worker maintains a [local queue of objects that need
+tracing](../src/local-worklist.h), which currently has 1024 entries.  If
+the local queue becomes full, the worker will publish 3/4 of those
+entries to the worker's [shared worklist](../src/shared-worklist.h).
+When a worker runs out of local work, it will first try to remove work
+from its own shared worklist, then will try to steal from other workers.
 
 If only one tracing thread is enabled at run-time (`parallelism=1`) (or
 if parallelism is disabled at compile-time), `pcc` will evacuate by
