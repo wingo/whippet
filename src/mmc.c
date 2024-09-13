@@ -15,6 +15,7 @@
 #include "gc-platform.h"
 #include "gc-stack.h"
 #include "gc-trace.h"
+#include "heap-sizer.h"
 #include "large-object-space.h"
 #include "nofl-space.h"
 #if GC_PARALLEL
@@ -36,6 +37,8 @@ struct gc_heap {
   pthread_cond_t collector_cond;
   pthread_cond_t mutator_cond;
   size_t size;
+  size_t total_allocated_bytes_at_last_gc;
+  size_t size_at_last_gc;
   int collecting;
   int check_pending_ephemerons;
   struct gc_pending_ephemerons *pending_ephemerons;
@@ -55,6 +58,7 @@ struct gc_heap {
   double minimum_major_gc_yield_threshold;
   double pending_ephemerons_size_factor;
   double pending_ephemerons_size_slop;
+  struct gc_heap_sizer sizer;
   struct gc_event_listener event_listener;
   void *event_listener_data;
 };
@@ -450,27 +454,32 @@ maybe_pause_mutator_for_collection(struct gc_mutator *mut) {
     pause_mutator_for_collection_without_lock(mut);
 }
 
-static int maybe_grow_heap(struct gc_heap *heap) {
-  return 0;
+static void
+resize_heap(size_t new_size, void *data) {
+  struct gc_heap *heap = data;
+  if (new_size == heap->size)
+    return;
+  DEBUG("------ resizing heap\n");
+  DEBUG("------ old heap size: %zu bytes\n", heap->size);
+  DEBUG("------ new heap size: %zu bytes\n", new_size);
+  if (new_size < heap->size)
+    nofl_space_shrink(heap_nofl_space(heap), heap->size - new_size);
+  else
+    nofl_space_expand(heap_nofl_space(heap), new_size - heap->size);
+
+  heap->size = new_size;
+  HEAP_EVENT(heap, heap_resized, new_size);
 }
 
 static double
 heap_last_gc_yield(struct gc_heap *heap) {
-  struct nofl_space *nofl_space = heap_nofl_space(heap);
-  size_t nofl_yield = nofl_space_yield(nofl_space);
-  size_t evacuation_reserve = nofl_space_evacuation_reserve_bytes(nofl_space);
-  // FIXME: Size nofl evacuation reserve based on size of nofl space,
-  // not heap size.
-  size_t minimum_evacuation_reserve =
-    heap->size * nofl_space->evacuation_minimum_reserve;
-  if (evacuation_reserve > minimum_evacuation_reserve)
-    nofl_yield += evacuation_reserve - minimum_evacuation_reserve;
-  struct large_object_space *lospace = heap_large_object_space(heap);
-  size_t lospace_yield = lospace->pages_freed_by_last_collection;
-  lospace_yield <<= lospace->page_size_log2;
+  size_t live_size =
+    nofl_space_live_size_at_last_collection(heap_nofl_space(heap)) +
+    large_object_space_size_at_last_collection(heap_large_object_space(heap));
 
-  double yield = nofl_yield + lospace_yield;
-  return yield / heap->size;
+  if (live_size > heap->size_at_last_gc)
+    return 0;
+  return 1.0 - ((double) live_size) / heap->size_at_last_gc;
 }
 
 static double
@@ -480,31 +489,29 @@ heap_fragmentation(struct gc_heap *heap) {
   return ((double)fragmentation) / heap->size;
 }
 
+static size_t
+heap_estimate_live_data_after_gc(struct gc_heap *heap,
+                                 size_t last_live_bytes,
+                                 double last_yield) {
+  size_t bytes =
+    nofl_space_estimate_live_bytes_after_gc(heap_nofl_space(heap),
+                                            last_yield)
+    + large_object_space_size_at_last_collection(heap_large_object_space(heap));
+  if (bytes < last_live_bytes)
+    return last_live_bytes;
+  return bytes;
+}
+
 static void
-detect_out_of_memory(struct gc_heap *heap) {
-  struct nofl_space *nofl_space = heap_nofl_space(heap);
-  struct large_object_space *lospace = heap_large_object_space(heap);
-
-  if (heap->count == 0)
+detect_out_of_memory(struct gc_heap *heap, uintptr_t allocation_since_last_gc) {
+  if (heap->sizer.policy != GC_HEAP_SIZE_FIXED)
     return;
 
-  double last_yield = heap_last_gc_yield(heap);
-  double fragmentation = heap_fragmentation(heap);
-
-  double yield_epsilon = NOFL_BLOCK_SIZE * 1.0 / heap->size;
-  double fragmentation_epsilon = LARGE_OBJECT_THRESHOLD * 1.0 / NOFL_BLOCK_SIZE;
-
-  if (last_yield - fragmentation > yield_epsilon)
+  if (allocation_since_last_gc > nofl_space_fragmentation(heap_nofl_space(heap)))
     return;
 
-  if (fragmentation > fragmentation_epsilon
-      && atomic_load(&nofl_space->evacuation_targets.count))
-    return;
-
-  // No yield in last gc and we do not expect defragmentation to
-  // be able to yield more space: out of memory.
-  fprintf(stderr, "ran out of space, heap size %zu (%zu slabs)\n",
-          heap->size, nofl_space->nslabs);
+  // No allocation since last gc: out of memory.
+  fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
   GC_CRASH();
 }
 
@@ -731,10 +738,7 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   struct nofl_space *nofl_space = heap_nofl_space(heap);
   struct large_object_space *lospace = heap_large_object_space(heap);
   struct gc_extern_space *exspace = heap_extern_space(heap);
-  if (maybe_grow_heap(heap)) {
-    DEBUG("grew heap instead of collecting #%ld:\n", heap->count);
-    return;
-  }
+  uint64_t start_ns = gc_platform_monotonic_nanoseconds();
   MUTATOR_EVENT(mut, mutator_cause_gc);
   DEBUG("start collect #%ld:\n", heap->count);
   HEAP_EVENT(heap, requesting_stop);
@@ -747,6 +751,11 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
     determine_collection_kind(heap, requested_kind);
   int is_minor = gc_kind == GC_COLLECTION_MINOR;
   HEAP_EVENT(heap, prepare_gc, gc_kind);
+  uint64_t allocation_counter = 0;
+  nofl_space_add_to_allocation_counter(nofl_space, &allocation_counter);
+  large_object_space_add_to_allocation_counter(lospace, &allocation_counter);
+  heap->total_allocated_bytes_at_last_gc += allocation_counter;
+  detect_out_of_memory(heap, allocation_counter);
   nofl_space_prepare_gc(nofl_space, gc_kind);
   large_object_space_start_gc(lospace, is_minor);
   gc_extern_space_start_gc(exspace, is_minor);
@@ -754,9 +763,9 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   gc_tracer_prepare(&heap->tracer);
   double yield = heap_last_gc_yield(heap);
   double fragmentation = heap_fragmentation(heap);
-  HEAP_EVENT(heap, live_data_size, heap->size * (1 - yield));
+  size_t live_bytes = heap->size * (1.0 - yield);
+  HEAP_EVENT(heap, live_data_size, live_bytes);
   DEBUG("last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
-  detect_out_of_memory(heap);
   enqueue_pinned_roots(heap);
   // Eagerly trace pinned roots if we are going to relocate objects.
   if (gc_kind == GC_COLLECTION_COMPACTING)
@@ -780,6 +789,13 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   gc_extern_space_finish_gc(exspace, is_minor);
   heap->count++;
   heap_reset_large_object_pages(heap, lospace->live_pages_at_last_collection);
+  uint64_t pause_ns = gc_platform_monotonic_nanoseconds() - start_ns;
+  size_t live_bytes_estimate =
+    heap_estimate_live_data_after_gc(heap, live_bytes, yield);
+  DEBUG("--- total live bytes estimate: %zu\n", live_bytes_estimate);
+  gc_heap_sizer_on_gc(heap->sizer, heap->size, live_bytes_estimate, pause_ns,
+                      resize_heap, heap);
+  heap->size_at_last_gc = heap->size;
   HEAP_EVENT(heap, restarting_mutators);
   allow_mutators_to_continue(heap);
 }
@@ -971,7 +987,7 @@ heap_init(struct gc_heap *heap, const struct gc_options *options) {
   pthread_mutex_init(&heap->lock, NULL);
   pthread_cond_init(&heap->mutator_cond, NULL);
   pthread_cond_init(&heap->collector_cond, NULL);
-  heap->size = options->common.heap_size;
+  heap->size = heap->size_at_last_gc = options->common.heap_size;
 
   if (!gc_tracer_init(&heap->tracer, heap, options->common.parallelism))
     GC_CRASH();
@@ -995,6 +1011,24 @@ heap_init(struct gc_heap *heap, const struct gc_options *options) {
   return 1;
 }
 
+static uint64_t allocation_counter_from_thread(void *data) {
+  struct gc_heap *heap = data;
+  uint64_t ret = heap->total_allocated_bytes_at_last_gc;
+  if (pthread_mutex_trylock(&heap->lock)) return ret;
+  nofl_space_add_to_allocation_counter(heap_nofl_space(heap), &ret);
+  large_object_space_add_to_allocation_counter(heap_large_object_space(heap),
+                                               &ret);
+  pthread_mutex_unlock(&heap->lock);
+  return ret;
+}
+
+static void set_heap_size_from_thread(size_t size, void *data) {
+  struct gc_heap *heap = data;
+  if (pthread_mutex_trylock(&heap->lock)) return;
+  resize_heap(size, heap);
+  pthread_mutex_unlock(&heap->lock);
+}
+
 int
 gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
         struct gc_heap **heap, struct gc_mutator **mut,
@@ -1013,11 +1047,6 @@ gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
     GC_ASSERT_EQ(gc_write_barrier_card_table_alignment(), NOFL_SLAB_SIZE);
     GC_ASSERT_EQ(gc_write_barrier_card_size(),
                  NOFL_BLOCK_SIZE / NOFL_REMSET_BYTES_PER_BLOCK);
-  }
-
-  if (options->common.heap_size_policy != GC_HEAP_SIZE_FIXED) {
-    fprintf(stderr, "fixed heap size is currently required\n");
-    return 0;
   }
 
   *heap = calloc(1, sizeof(struct gc_heap));
@@ -1041,6 +1070,11 @@ gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   
   if (!large_object_space_init(heap_large_object_space(*heap), *heap))
     GC_CRASH();
+
+  (*heap)->sizer = gc_make_heap_sizer(*heap, &options->common,
+                                      allocation_counter_from_thread,
+                                      set_heap_size_from_thread,
+                                      (*heap));
 
   *mut = calloc(1, sizeof(struct gc_mutator));
   if (!*mut) GC_CRASH();

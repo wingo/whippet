@@ -117,7 +117,7 @@ struct copy_space {
   size_t allocated_bytes_at_last_gc;
   size_t fragmentation_at_last_gc;
   struct extents *extents;
-  struct copy_space_slab *slabs;
+  struct copy_space_slab **slabs;
   size_t nslabs;
 };
 
@@ -231,17 +231,25 @@ copy_space_page_out_blocks_until_memory_released(struct copy_space *space) {
   return 1;
 }
 
-static void
-copy_space_reacquire_memory(struct copy_space *space, size_t bytes) {
+static ssize_t
+copy_space_maybe_reacquire_memory(struct copy_space *space, size_t bytes) {
   ssize_t pending =
     atomic_fetch_sub(&space->bytes_to_page_out, bytes) - bytes;
   while (pending + COPY_SPACE_BLOCK_SIZE <= 0) {
     struct copy_space_block *block = copy_space_page_in_block(space);
-    GC_ASSERT(block);
+    if (!block) break;
     copy_space_push_empty_block(space, block);
-    pending = (atomic_fetch_add(&space->bytes_to_page_out, COPY_SPACE_BLOCK_SIZE)
+    pending = (atomic_fetch_add(&space->bytes_to_page_out,
+                                COPY_SPACE_BLOCK_SIZE)
                + COPY_SPACE_BLOCK_SIZE);
   }
+  return pending;
+}
+
+static void
+copy_space_reacquire_memory(struct copy_space *space, size_t bytes) {
+  ssize_t pending = copy_space_maybe_reacquire_memory(space, bytes);
+  GC_ASSERT(pending + COPY_SPACE_BLOCK_SIZE > 0);
 }
 
 static inline void
@@ -393,6 +401,12 @@ copy_space_finish_gc(struct copy_space *space) {
   // Mutators stopped, can access nonatomically.
   space->allocated_bytes_at_last_gc = space->allocated_bytes;
   space->fragmentation_at_last_gc = space->fragmentation;
+}
+
+static void
+copy_space_add_to_allocation_counter(struct copy_space *space,
+                                     uintptr_t *counter) {
+  *counter += space->allocated_bytes - space->allocated_bytes_at_last_gc;
 }
 
 static void
@@ -578,6 +592,50 @@ copy_space_allocate_slabs(size_t nslabs) {
   return (struct copy_space_slab*) aligned_base;
 }
 
+static void
+copy_space_add_slabs(struct copy_space *space, struct copy_space_slab *slabs,
+                     size_t nslabs) {
+  size_t old_size = space->nslabs * sizeof(struct copy_space_slab*);
+  size_t additional_size = nslabs * sizeof(struct copy_space_slab*);
+  space->extents = extents_adjoin(space->extents, slabs,
+                                  nslabs * sizeof(struct copy_space_slab));
+  space->slabs = realloc(space->slabs, old_size + additional_size);
+  if (!space->slabs)
+    GC_CRASH();
+  while (nslabs--)
+    space->slabs[space->nslabs++] = slabs++;
+}
+
+static void
+copy_space_shrink(struct copy_space *space, size_t bytes) {
+  ssize_t pending = copy_space_request_release_memory(space, bytes);
+  copy_space_page_out_blocks_until_memory_released(space);
+  
+  // It still may be the case we need to page out more blocks.  Only collection
+  // can help us then!
+}
+      
+static void
+copy_space_expand(struct copy_space *space, size_t bytes) {
+  ssize_t to_acquire = -copy_space_maybe_reacquire_memory(space, bytes);
+  if (to_acquire <= 0) return;
+  size_t reserved = align_up(to_acquire, COPY_SPACE_SLAB_SIZE);
+  size_t nslabs = reserved / COPY_SPACE_SLAB_SIZE;
+  struct copy_space_slab *slabs = copy_space_allocate_slabs(nslabs);
+  copy_space_add_slabs(space, slabs, nslabs);
+
+  for (size_t slab = 0; slab < nslabs; slab++) {
+    for (size_t idx = 0; idx < COPY_SPACE_NONHEADER_BLOCKS_PER_SLAB; idx++) {
+      struct copy_space_block *block = &slabs[slab].headers[idx];
+      block->all_zeroes[0] = block->all_zeroes[1] = 1;
+      block->in_core = 0;
+      copy_space_push_paged_out_block(space, block);
+      reserved -= COPY_SPACE_BLOCK_SIZE;
+    }
+  }
+  copy_space_reacquire_memory(space, 0);
+}
+
 static int
 copy_space_init(struct copy_space *space, size_t size, int atomic) {
   size = align_up(size, COPY_SPACE_BLOCK_SIZE);
@@ -599,9 +657,7 @@ copy_space_init(struct copy_space *space, size_t size, int atomic) {
   space->allocated_bytes_at_last_gc = 0;
   space->fragmentation_at_last_gc = 0;
   space->extents = extents_allocate(10);
-  extents_adjoin(space->extents, slabs, reserved);
-  space->slabs = slabs;
-  space->nslabs = nslabs;
+  copy_space_add_slabs(space, slabs, nslabs);
   for (size_t slab = 0; slab < nslabs; slab++) {
     for (size_t idx = 0; idx < COPY_SPACE_NONHEADER_BLOCKS_PER_SLAB; idx++) {
       struct copy_space_block *block = &slabs[slab].headers[idx];

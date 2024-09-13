@@ -460,8 +460,9 @@ defined for all collectors:
  * `GC_OPTION_HEAP_SIZE_MULTIPLIER`: For growable heaps, the target heap
    multiplier.  A heap multiplier of 2.5 means that for 100 MB of live
    data, the heap should be 250 MB.
- * `GC_OPTION_HEAP_FRUGALITY`: Something that will be used in adaptive
-   heaps, apparently!  Not yet implemented.
+ * `GC_OPTION_HEAP_EXPANSIVENESS`: For adaptive heap sizing, an
+   indication of how much free space will be given to heaps, as a
+   proportion of the square root of the live data size.
  * `GC_OPTION_PARALLELISM`: How many threads to devote to collection
    tasks during GC pauses.  By default, the current number of
    processors, with a maximum of 8.

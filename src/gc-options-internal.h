@@ -12,7 +12,7 @@ struct gc_common_options {
   size_t heap_size;
   size_t maximum_heap_size;
   double heap_size_multiplier;
-  double heap_frugality;
+  double heap_expansiveness;
   int parallelism;
 };
 

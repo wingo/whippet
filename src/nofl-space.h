@@ -75,6 +75,7 @@ enum nofl_block_summary_flag {
   NOFL_BLOCK_EVACUATE = 0x1,
   NOFL_BLOCK_ZERO = 0x2,
   NOFL_BLOCK_UNAVAILABLE = 0x4,
+  NOFL_BLOCK_PAGED_OUT = 0x8,
   NOFL_BLOCK_FLAG_UNUSED_3 = 0x8,
   NOFL_BLOCK_FLAG_UNUSED_4 = 0x10,
   NOFL_BLOCK_FLAG_UNUSED_5 = 0x20,
@@ -95,7 +96,7 @@ struct nofl_block_summary {
       // Counters related to previous collection: how many holes there
       // were, and how much space they had.
       uint16_t hole_count;
-      uint16_t free_granules;
+      uint16_t hole_granules;
       // Counters related to allocation since previous collection:
       // wasted space due to fragmentation.  Also used by blocks on the
       // "partly full" list, which have zero holes_with_fragmentation
@@ -158,7 +159,9 @@ struct nofl_space {
   ssize_t pending_unavailable_bytes; // atomically
   struct nofl_slab **slabs;
   size_t nslabs;
-  uintptr_t granules_freed_by_last_collection; // atomically
+  uintptr_t old_generation_granules; // atomically
+  uintptr_t survivor_granules_at_last_collection; // atomically
+  uintptr_t allocated_granules_since_last_collection; // atomically
   uintptr_t fragmentation_granules_since_last_collection; // atomically
 };
 
@@ -271,7 +274,7 @@ nofl_block_summary_for_addr(uintptr_t addr) {
 static uintptr_t
 nofl_block_summary_has_flag(struct nofl_block_summary *summary,
                             enum nofl_block_summary_flag flag) {
-  return summary->next_and_flags & flag;
+  return (summary->next_and_flags & flag) == flag;
 }
 
 static void
@@ -405,11 +408,22 @@ nofl_block_count(struct nofl_block_list *list) {
 }
 
 static void
+nofl_push_paged_out_block(struct nofl_space *space,
+                          struct nofl_block_ref block) {
+  GC_ASSERT(nofl_block_has_flag(block,
+                                NOFL_BLOCK_ZERO | NOFL_BLOCK_PAGED_OUT));
+  nofl_block_set_flag(block, NOFL_BLOCK_UNAVAILABLE);
+  nofl_push_block(&space->unavailable, block);
+}
+
+static void
 nofl_push_unavailable_block(struct nofl_space *space,
                             struct nofl_block_ref block) {
-  nofl_block_set_flag(block, NOFL_BLOCK_ZERO | NOFL_BLOCK_UNAVAILABLE);
-  madvise((void*)block.addr, NOFL_BLOCK_SIZE, MADV_DONTNEED);
-  nofl_push_block(&space->unavailable, block);
+  if (!nofl_block_has_flag(block, NOFL_BLOCK_PAGED_OUT)) {
+    nofl_block_set_flag(block, NOFL_BLOCK_ZERO | NOFL_BLOCK_PAGED_OUT);
+    madvise((void*)block.addr, NOFL_BLOCK_SIZE, MADV_DONTNEED);
+  }
+  nofl_push_paged_out_block(space, block);
 }
 
 static struct nofl_block_ref
@@ -483,7 +497,7 @@ nofl_should_promote_block(struct nofl_space *space,
   // until after the next full GC.
   if (!GC_GENERATIONAL) return 0;
   size_t threshold = NOFL_GRANULES_PER_BLOCK * space->promotion_threshold;
-  return block.summary->free_granules < threshold;
+  return block.summary->hole_granules < threshold;
 }
 
 static void
@@ -492,8 +506,10 @@ nofl_allocator_release_full_block(struct nofl_allocator *alloc,
   GC_ASSERT(nofl_allocator_has_block(alloc));
   struct nofl_block_ref block = alloc->block;
   GC_ASSERT(alloc->alloc == alloc->sweep);
-  atomic_fetch_add(&space->granules_freed_by_last_collection,
-                   block.summary->free_granules);
+  atomic_fetch_add(&space->allocated_granules_since_last_collection,
+                   block.summary->hole_granules);
+  atomic_fetch_add(&space->survivor_granules_at_last_collection,
+                   NOFL_GRANULES_PER_BLOCK - block.summary->hole_granules);
   atomic_fetch_add(&space->fragmentation_granules_since_last_collection,
                    block.summary->fragmentation_granules);
 
@@ -515,15 +531,13 @@ nofl_allocator_release_full_evacuation_target(struct nofl_allocator *alloc,
   size_t hole_size = alloc->sweep - alloc->alloc;
   // FIXME: Check how this affects statistics.
   GC_ASSERT_EQ(block.summary->hole_count, 1);
-  GC_ASSERT_EQ(block.summary->free_granules, NOFL_GRANULES_PER_BLOCK);
-  atomic_fetch_add(&space->granules_freed_by_last_collection,
+  GC_ASSERT_EQ(block.summary->hole_granules, NOFL_GRANULES_PER_BLOCK);
+  atomic_fetch_add(&space->old_generation_granules,
                    NOFL_GRANULES_PER_BLOCK);
   if (hole_size) {
     hole_size >>= NOFL_GRANULE_SIZE_LOG_2;
     block.summary->holes_with_fragmentation = 1;
     block.summary->fragmentation_granules = hole_size / NOFL_GRANULE_SIZE;
-    atomic_fetch_add(&space->fragmentation_granules_since_last_collection,
-                     block.summary->fragmentation_granules);
   } else {
     GC_ASSERT_EQ(block.summary->fragmentation_granules, 0);
     GC_ASSERT_EQ(block.summary->holes_with_fragmentation, 0);
@@ -570,14 +584,14 @@ nofl_allocator_acquire_empty_block(struct nofl_allocator *alloc,
   if (nofl_block_is_null(block))
     return 0;
   block.summary->hole_count = 1;
-  block.summary->free_granules = NOFL_GRANULES_PER_BLOCK;
+  block.summary->hole_granules = NOFL_GRANULES_PER_BLOCK;
   block.summary->holes_with_fragmentation = 0;
   block.summary->fragmentation_granules = 0;
   alloc->block = block;
   alloc->alloc = block.addr;
   alloc->sweep = block.addr + NOFL_BLOCK_SIZE;
   if (nofl_block_has_flag(block, NOFL_BLOCK_ZERO))
-    nofl_block_clear_flag(block, NOFL_BLOCK_ZERO);
+    nofl_block_clear_flag(block, NOFL_BLOCK_ZERO | NOFL_BLOCK_PAGED_OUT);
   else
     nofl_clear_memory(block.addr, NOFL_BLOCK_SIZE);
   return NOFL_GRANULES_PER_BLOCK;
@@ -637,22 +651,22 @@ nofl_allocator_next_hole_in_block(struct nofl_allocator *alloc,
     return 0;
   }
 
-  size_t free_granules = scan_for_byte(metadata, limit_granules, sweep_mask);
-  size_t free_bytes = free_granules * NOFL_GRANULE_SIZE;
-  GC_ASSERT(free_granules);
-  GC_ASSERT(free_granules <= limit_granules);
+  size_t hole_granules = scan_for_byte(metadata, limit_granules, sweep_mask);
+  size_t free_bytes = hole_granules * NOFL_GRANULE_SIZE;
+  GC_ASSERT(hole_granules);
+  GC_ASSERT(hole_granules <= limit_granules);
 
-  memset(metadata, 0, free_granules);
+  memset(metadata, 0, hole_granules);
   memset((char*)sweep, 0, free_bytes);
 
   alloc->block.summary->hole_count++;
-  GC_ASSERT(free_granules <=
-            NOFL_GRANULES_PER_BLOCK - alloc->block.summary->free_granules);
-  alloc->block.summary->free_granules += free_granules;
+  GC_ASSERT(hole_granules <=
+            NOFL_GRANULES_PER_BLOCK - alloc->block.summary->hole_granules);
+  alloc->block.summary->hole_granules += hole_granules;
 
   alloc->alloc = sweep;
   alloc->sweep = sweep + free_bytes;
-  return free_granules;
+  return hole_granules;
 }
 
 static void
@@ -724,7 +738,7 @@ nofl_allocator_next_hole(struct nofl_allocator *alloc,
     // at the last collection.  As we allocate we'll record how
     // many granules were wasted because of fragmentation.
     alloc->block.summary->hole_count = 0;
-    alloc->block.summary->free_granules = 0;
+    alloc->block.summary->hole_granules = 0;
     alloc->block.summary->holes_with_fragmentation = 0;
     alloc->block.summary->fragmentation_granules = 0;
     size_t granules =
@@ -875,13 +889,53 @@ nofl_space_clear_remembered_set(struct nofl_space *space) {
 
 static void
 nofl_space_reset_statistics(struct nofl_space *space) {
-  space->granules_freed_by_last_collection = 0;
+  space->survivor_granules_at_last_collection = 0;
+  space->allocated_granules_since_last_collection = 0;
   space->fragmentation_granules_since_last_collection = 0;
 }
 
 static size_t
-nofl_space_yield(struct nofl_space *space) {
-  return space->granules_freed_by_last_collection * NOFL_GRANULE_SIZE;
+nofl_space_live_size_at_last_collection(struct nofl_space *space) {
+  size_t granules = space->old_generation_granules
+    + space->survivor_granules_at_last_collection;
+  return granules * NOFL_GRANULE_SIZE;
+}
+
+static void
+nofl_space_add_to_allocation_counter(struct nofl_space *space,
+                                     uint64_t *counter) {
+  *counter +=
+    atomic_load_explicit(&space->allocated_granules_since_last_collection,
+                         memory_order_relaxed) * NOFL_GRANULE_SIZE;
+}
+  
+static size_t
+nofl_space_estimate_live_bytes_after_gc(struct nofl_space *space,
+                                        double last_yield)
+{
+  // The nofl space mostly traces via marking, and as such doesn't precisely
+  // know the live data size until after sweeping.  But it is important to
+  // promptly compute the live size so that we can grow the heap if
+  // appropriate.  Therefore sometimes we will estimate the live data size
+  // instead of measuring it precisely.
+  size_t bytes = 0;
+  bytes += nofl_block_count(&space->full) * NOFL_BLOCK_SIZE;
+  bytes += nofl_block_count(&space->partly_full) * NOFL_BLOCK_SIZE / 2;
+  GC_ASSERT_EQ(nofl_block_count(&space->promoted), 0);
+  bytes += space->old_generation_granules * NOFL_GRANULE_SIZE;
+  bytes +=
+    nofl_block_count(&space->to_sweep) * NOFL_BLOCK_SIZE * (1 - last_yield);
+
+  DEBUG("--- nofl estimate before adjustment: %zu\n", bytes);
+/*
+  // Assume that if we have pending unavailable bytes after GC that there is a
+  // large object waiting to be allocated, and that probably it survives this GC
+  // cycle.
+  bytes += atomic_load_explicit(&space->pending_unavailable_bytes,
+                                memory_order_acquire);
+  DEBUG("--- nofl estimate after adjustment: %zu\n", bytes);
+*/
+  return bytes;
 }
 
 static size_t
@@ -891,8 +945,12 @@ nofl_space_evacuation_reserve_bytes(struct nofl_space *space) {
 
 static size_t
 nofl_space_fragmentation(struct nofl_space *space) {
-  size_t granules = space->fragmentation_granules_since_last_collection;
-  return granules * NOFL_GRANULE_SIZE;
+  size_t young = space->fragmentation_granules_since_last_collection;
+  GC_ASSERT(nofl_block_count(&space->old) * NOFL_GRANULES_PER_BLOCK >=
+            space->old_generation_granules);
+  size_t old = nofl_block_count(&space->old) * NOFL_GRANULES_PER_BLOCK -
+    space->old_generation_granules;
+  return (young + old) * NOFL_GRANULE_SIZE;
 }
 
 static void
@@ -933,7 +991,7 @@ nofl_space_prepare_evacuation(struct nofl_space *space) {
   for (struct nofl_block_ref b = nofl_block_for_addr(space->to_sweep.blocks);
        !nofl_block_is_null(b);
        b = nofl_block_next(b)) {
-    size_t survivor_granules = NOFL_GRANULES_PER_BLOCK - b.summary->free_granules;
+    size_t survivor_granules = NOFL_GRANULES_PER_BLOCK - b.summary->hole_granules;
     size_t bucket = (survivor_granules + bucket_size - 1) / bucket_size;
     histogram[bucket]++;
   }
@@ -956,7 +1014,7 @@ nofl_space_prepare_evacuation(struct nofl_space *space) {
   for (struct nofl_block_ref b = nofl_block_for_addr(space->to_sweep.blocks);
        !nofl_block_is_null(b);
        b = nofl_block_next(b)) {
-    size_t survivor_granules = NOFL_GRANULES_PER_BLOCK - b.summary->free_granules;
+    size_t survivor_granules = NOFL_GRANULES_PER_BLOCK - b.summary->hole_granules;
     size_t bucket = (survivor_granules + bucket_size - 1) / bucket_size;
     if (histogram[bucket]) {
       nofl_block_set_flag(b, NOFL_BLOCK_EVACUATE);
@@ -1012,6 +1070,7 @@ nofl_space_start_gc(struct nofl_space *space, enum gc_collection_kind gc_kind) {
       nofl_push_block(&space->to_sweep, block);
     while (!nofl_block_is_null(block = nofl_pop_block(&space->old)))
       nofl_push_block(&space->to_sweep, block);
+    space->old_generation_granules = 0;
   }
 
   if (gc_kind == GC_COLLECTION_COMPACTING)
@@ -1042,6 +1101,8 @@ nofl_space_promote_blocks(struct nofl_space *space) {
   while (!nofl_block_is_null(block = nofl_pop_block(&space->promoted))) {
     struct nofl_allocator alloc = { block.addr, block.addr, block };
     nofl_allocator_finish_sweeping_in_block(&alloc, space->sweep_mask);
+    atomic_fetch_add(&space->old_generation_granules,
+                     NOFL_GRANULES_PER_BLOCK - block.summary->hole_granules);
     nofl_push_block(&space->old, block);
   }
 }
@@ -1210,18 +1271,25 @@ nofl_space_request_release_memory(struct nofl_space *space, size_t bytes) {
   return atomic_fetch_add(&space->pending_unavailable_bytes, bytes) + bytes;
 }
 
-static void
-nofl_space_reacquire_memory(struct nofl_space *space, size_t bytes) {
+static ssize_t
+nofl_space_maybe_reacquire_memory(struct nofl_space *space, size_t bytes) {
   ssize_t pending =
     atomic_fetch_sub(&space->pending_unavailable_bytes, bytes) - bytes;
   while (pending + NOFL_BLOCK_SIZE <= 0) {
     struct nofl_block_ref block = nofl_pop_unavailable_block(space);
-    GC_ASSERT(!nofl_block_is_null(block));
+    if (nofl_block_is_null(block)) break;
     if (!nofl_push_evacuation_target_if_needed(space, block))
       nofl_push_empty_block(space, block);
     pending = atomic_fetch_add(&space->pending_unavailable_bytes, NOFL_BLOCK_SIZE)
       + NOFL_BLOCK_SIZE;
   }
+  return pending;
+}
+
+static void
+nofl_space_reacquire_memory(struct nofl_space *space, size_t bytes) {
+  ssize_t pending = nofl_space_maybe_reacquire_memory(space, bytes);
+  GC_ASSERT(pending + NOFL_BLOCK_SIZE > 0);
 }
 
 static int
@@ -1538,6 +1606,66 @@ nofl_space_add_slabs(struct nofl_space *space, struct nofl_slab *slabs,
     space->slabs[space->nslabs++] = slabs++;
 }
 
+static void
+nofl_space_shrink(struct nofl_space *space, size_t bytes) {
+  ssize_t pending = nofl_space_request_release_memory(space, bytes);
+  // First try to shrink by unmapping previously-identified empty blocks.
+  while (pending > 0) {
+    struct nofl_block_ref block = nofl_pop_empty_block(space);
+    if (nofl_block_is_null(block))
+      break;
+    nofl_push_unavailable_block(space, block);
+    pending = atomic_fetch_sub(&space->pending_unavailable_bytes,
+                               NOFL_BLOCK_SIZE);
+    pending -= NOFL_BLOCK_SIZE;
+  }
+  
+  // If we still need to shrink, steal from the evacuation reserve, if it's more
+  // than the minimum.  Not racy: evacuation target lists are built during eager
+  // lazy sweep, which is mutually exclusive with consumption, itself either
+  // during trace, synchronously from gc_heap_sizer_on_gc, or async but subject
+  // to the heap lock.
+  if (pending > 0) {
+    size_t total = space->nslabs * NOFL_NONMETA_BLOCKS_PER_SLAB;
+    size_t unavailable = nofl_block_count(&space->unavailable);
+    size_t target = space->evacuation_minimum_reserve * (total - unavailable);
+    ssize_t avail = nofl_block_count(&space->evacuation_targets);
+    while (avail > target && pending > 0) {
+      struct nofl_block_ref block = nofl_pop_block(&space->evacuation_targets);
+      GC_ASSERT(!nofl_block_is_null(block));
+      nofl_push_unavailable_block(space, block);
+      pending = atomic_fetch_sub(&space->pending_unavailable_bytes,
+                                 NOFL_BLOCK_SIZE);
+      pending -= NOFL_BLOCK_SIZE;
+    }
+  }
+
+  // It still may be the case we need to page out more blocks.  Only evacuation
+  // can help us then!
+}
+      
+static void
+nofl_space_expand(struct nofl_space *space, size_t bytes) {
+  double overhead = ((double)NOFL_META_BLOCKS_PER_SLAB) / NOFL_BLOCKS_PER_SLAB;
+  ssize_t to_acquire = -nofl_space_maybe_reacquire_memory(space, bytes);
+  if (to_acquire <= 0) return;
+  to_acquire *= (1 + overhead);
+  size_t reserved = align_up(to_acquire, NOFL_SLAB_SIZE);
+  size_t nslabs = reserved / NOFL_SLAB_SIZE;
+  struct nofl_slab *slabs = nofl_allocate_slabs(nslabs);
+  nofl_space_add_slabs(space, slabs, nslabs);
+
+  for (size_t slab = 0; slab < nslabs; slab++) {
+    for (size_t idx = 0; idx < NOFL_NONMETA_BLOCKS_PER_SLAB; idx++) {
+      uintptr_t addr = (uintptr_t)slabs[slab].blocks[idx].data;
+      struct nofl_block_ref block = nofl_block_for_addr(addr);
+      nofl_block_set_flag(block, NOFL_BLOCK_ZERO | NOFL_BLOCK_PAGED_OUT);
+      nofl_push_paged_out_block(space, block);
+    }
+  }
+  nofl_space_reacquire_memory(space, 0);
+}
+
 static int
 nofl_space_init(struct nofl_space *space, size_t size, int atomic,
                 double promotion_threshold) {
@@ -1556,12 +1684,12 @@ nofl_space_init(struct nofl_space *space, size_t size, int atomic,
   space->evacuation_reserve = space->evacuation_minimum_reserve;
   space->promotion_threshold = promotion_threshold;
   for (size_t slab = 0; slab < nslabs; slab++) {
-    for (size_t block = 0; block < NOFL_NONMETA_BLOCKS_PER_SLAB; block++) {
-      uintptr_t addr = (uintptr_t)slabs[slab].blocks[block].data;
+    for (size_t idx = 0; idx < NOFL_NONMETA_BLOCKS_PER_SLAB; idx++) {
+      uintptr_t addr = (uintptr_t)slabs[slab].blocks[idx].data;
       struct nofl_block_ref block = nofl_block_for_addr(addr);
-      nofl_block_set_flag(block, NOFL_BLOCK_ZERO);
+      nofl_block_set_flag(block, NOFL_BLOCK_ZERO | NOFL_BLOCK_PAGED_OUT);
       if (reserved > size) {
-        nofl_push_unavailable_block(space, block);
+        nofl_push_paged_out_block(space, block);
         reserved -= NOFL_BLOCK_SIZE;
       } else {
         if (!nofl_push_evacuation_target_if_needed(space, block))

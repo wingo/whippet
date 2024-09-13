@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <stdio.h>
+#include <time.h>
 #include <unistd.h>
 
 #define GC_IMPL 1
@@ -109,4 +110,14 @@ int gc_platform_processor_count(void) {
   if (sched_getaffinity(0, sizeof (set), &set) != 0)
     return 1;
   return CPU_COUNT(&set);
+}
+
+uint64_t gc_platform_monotonic_nanoseconds(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts))
+    GC_CRASH();
+  uint64_t s = ts.tv_sec;
+  uint64_t ns = ts.tv_nsec;
+  uint64_t ns_per_sec = 1000000000;
+  return s * ns_per_sec + ns;
 }

@@ -218,6 +218,14 @@ static void large_object_space_finish_gc(struct large_object_space *space,
   pthread_mutex_unlock(&space->lock);
 }
 
+static void
+large_object_space_add_to_allocation_counter(struct large_object_space *space,
+                                             uint64_t *counter) {
+  size_t pages = space->total_pages - space->free_pages;
+  pages -= space->live_pages_at_last_collection;
+  *counter += pages << space->page_size_log2;
+}
+
 static inline struct gc_ref
 large_object_space_mark_conservative_ref(struct large_object_space *space,
                                          struct gc_conservative_ref ref,

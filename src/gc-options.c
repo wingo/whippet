@@ -25,8 +25,8 @@
 #define FOR_EACH_DOUBLE_GC_OPTION(M)                                    \
   M(HEAP_SIZE_MULTIPLIER, heap_size_multiplier, "heap-size-multiplier", \
     double, double, 1.75, 1.0, 1e6)                                     \
-  M(HEAP_FRUGALITY, heap_frugality, "heap-frugality",                   \
-    double, double, 1e-1, 1e-6, 1e6)
+  M(HEAP_EXPANSIVENESS, heap_expansiveness, "heap-expansiveness",       \
+    double, double, 1.0, 0.0, 50.0)
 
 typedef int gc_option_int;
 typedef size_t gc_option_size;
