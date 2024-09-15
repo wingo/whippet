@@ -20,7 +20,8 @@ gc_make_heap_sizer(struct gc_heap *heap,
                    const struct gc_common_options *options,
                    uint64_t (*get_allocation_counter_from_thread)(void*),
                    void (*set_heap_size_from_thread)(size_t, void*),
-                   void *data) {
+                   void *data,
+                   struct gc_background_thread *thread) {
   struct gc_heap_sizer ret = { options->heap_size_policy, };
   switch (options->heap_size_policy) {
     case GC_HEAP_SIZE_FIXED:
@@ -35,7 +36,7 @@ gc_make_heap_sizer(struct gc_heap *heap,
         gc_make_adaptive_heap_sizer (options->heap_expansiveness,
                                      get_allocation_counter_from_thread,
                                      set_heap_size_from_thread,
-                                     heap);
+                                     heap, thread);
       break;
 
     default:

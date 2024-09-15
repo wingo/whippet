@@ -9,6 +9,7 @@
 #define GC_IMPL 1
 #include "gc-internal.h"
 
+#include "background-thread.h"
 #include "debug.h"
 #include "gc-align.h"
 #include "gc-inline.h"
@@ -58,6 +59,7 @@ struct gc_heap {
   double minimum_major_gc_yield_threshold;
   double pending_ephemerons_size_factor;
   double pending_ephemerons_size_slop;
+  struct gc_background_thread *background_thread;
   struct gc_heap_sizer sizer;
   struct gc_event_listener event_listener;
   void *event_listener_data;
@@ -1071,10 +1073,12 @@ gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   if (!large_object_space_init(heap_large_object_space(*heap), *heap))
     GC_CRASH();
 
+  (*heap)->background_thread = gc_make_background_thread();
   (*heap)->sizer = gc_make_heap_sizer(*heap, &options->common,
                                       allocation_counter_from_thread,
                                       set_heap_size_from_thread,
-                                      (*heap));
+                                      (*heap),
+                                      (*heap)->background_thread);
 
   *mut = calloc(1, sizeof(struct gc_mutator));
   if (!*mut) GC_CRASH();

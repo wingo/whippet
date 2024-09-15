@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "assert.h"
+#include "background-thread.h"
 #include "debug.h"
 #include "heap-sizer.h"
 #include "gc-platform.h"
@@ -37,10 +38,10 @@ struct gc_adaptive_heap_sizer {
   double maximum_multiplier;
   double minimum_free_space;
   double expansiveness;
-  int stopping;
-  pthread_t thread;
   pthread_mutex_t lock;
-  pthread_cond_t cond;
+  int background_task_id;
+  uint64_t last_bytes_allocated;
+  uint64_t last_heartbeat;
 };
 
 // With lock
@@ -86,46 +87,31 @@ gc_adaptive_heap_sizer_on_gc(struct gc_adaptive_heap_sizer *sizer,
   pthread_mutex_unlock(&sizer->lock);
 }
 
-static void*
-gc_adaptive_heap_sizer_thread(void *data) {
+static void
+gc_adaptive_heap_sizer_background_task(void *data) {
   struct gc_adaptive_heap_sizer *sizer = data;
-  uint64_t last_bytes_allocated =
+  uint64_t bytes_allocated =
     sizer->get_allocation_counter(sizer->callback_data);
-  uint64_t last_heartbeat = gc_platform_monotonic_nanoseconds();
-  pthread_mutex_lock(&sizer->lock);
-  while (!sizer->stopping) {
-    {
-      struct timespec ts;
-      if (clock_gettime(CLOCK_REALTIME, &ts)) {
-        perror("adaptive heap sizer thread: failed to get time!");
-        break;
-      }
-      ts.tv_sec += 1;
-      pthread_cond_timedwait(&sizer->cond, &sizer->lock, &ts);
-    }
-    uint64_t bytes_allocated =
-      sizer->get_allocation_counter(sizer->callback_data);
-    uint64_t heartbeat = gc_platform_monotonic_nanoseconds();
-    double rate = (double) (bytes_allocated - last_bytes_allocated) /
-      (double) (heartbeat - last_heartbeat);
-    // Just smooth the rate, under the assumption that the denominator is almost
-    // always 1.
-    sizer->smoothed_allocation_rate *= 1.0 - sizer->allocation_smoothing_factor;
-    sizer->smoothed_allocation_rate += rate * sizer->allocation_smoothing_factor;
-    last_heartbeat = heartbeat;
-    last_bytes_allocated = bytes_allocated;
-    sizer->set_heap_size(gc_adaptive_heap_sizer_calculate_size(sizer),
-                         sizer->callback_data);
-  }
+  uint64_t heartbeat = gc_platform_monotonic_nanoseconds();
+  double rate = (double) (bytes_allocated - sizer->last_bytes_allocated) /
+    (double) (heartbeat - sizer->last_heartbeat);
+  // Just smooth the rate, under the assumption that the denominator is almost
+  // always 1.
+  sizer->smoothed_allocation_rate *= 1.0 - sizer->allocation_smoothing_factor;
+  sizer->smoothed_allocation_rate += rate * sizer->allocation_smoothing_factor;
+  sizer->last_heartbeat = heartbeat;
+  sizer->last_bytes_allocated = bytes_allocated;
+  sizer->set_heap_size(gc_adaptive_heap_sizer_calculate_size(sizer),
+                       sizer->callback_data);
   pthread_mutex_unlock(&sizer->lock);
-  return NULL;
 }
 
 static struct gc_adaptive_heap_sizer*
 gc_make_adaptive_heap_sizer(double expansiveness,
                             uint64_t (*get_allocation_counter)(void *),
                             void (*set_heap_size)(size_t , void *),
-                            void *callback_data) {
+                            void *callback_data,
+                            struct gc_background_thread *thread) {
   struct gc_adaptive_heap_sizer *sizer;
   sizer = malloc(sizeof(*sizer));
   if (!sizer)
@@ -149,25 +135,15 @@ gc_make_adaptive_heap_sizer(double expansiveness,
   sizer->maximum_multiplier = 5;
   sizer->minimum_free_space = 4 * 1024 * 1024;
   sizer->expansiveness = expansiveness;
-  pthread_mutex_init(&sizer->lock, NULL);
-  pthread_cond_init(&sizer->cond, NULL);
-  if (pthread_create(&sizer->thread, NULL, gc_adaptive_heap_sizer_thread,
-                     sizer)) {
-    perror("spawning adaptive heap size thread failed");
-    GC_CRASH();
-  }
+  pthread_mutex_init(&thread->lock, NULL);
+  sizer->last_bytes_allocated = get_allocation_counter(callback_data);
+  sizer->last_heartbeat = gc_platform_monotonic_nanoseconds();
+  sizer->background_task_id = thread
+    ? gc_background_thread_add_task(thread, GC_BACKGROUND_TASK_FIRST,
+                                    gc_adaptive_heap_sizer_background_task,
+                                    sizer)
+    : -1;
   return sizer;
-}
-
-static void
-gc_destroy_adaptive_heap_sizer(struct gc_adaptive_heap_sizer *sizer) {
-  pthread_mutex_lock(&sizer->lock);
-  GC_ASSERT(!sizer->stopping);
-  sizer->stopping = 1;
-  pthread_mutex_unlock(&sizer->lock);
-  pthread_cond_signal(&sizer->cond);
-  pthread_join(sizer->thread, NULL);
-  free(sizer);
 }
 
 #endif // ADAPTIVE_HEAP_SIZER_H
