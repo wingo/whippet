@@ -90,6 +90,7 @@ gc_adaptive_heap_sizer_on_gc(struct gc_adaptive_heap_sizer *sizer,
 static void
 gc_adaptive_heap_sizer_background_task(void *data) {
   struct gc_adaptive_heap_sizer *sizer = data;
+  pthread_mutex_lock(&sizer->lock);
   uint64_t bytes_allocated =
     sizer->get_allocation_counter(sizer->callback_data);
   uint64_t heartbeat = gc_platform_monotonic_nanoseconds();
