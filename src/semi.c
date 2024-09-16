@@ -10,6 +10,8 @@
 #define GC_IMPL 1
 #include "gc-internal.h"
 
+#include "gc-platform.h"
+#include "heap-sizer.h"
 #include "semi-attrs.h"
 #include "large-object-space.h"
 
@@ -32,6 +34,7 @@ struct semi_space {
   struct region to_space;
   size_t page_size;
   size_t stolen_pages;
+  size_t live_bytes_at_last_gc;
 };
 struct gc_heap {
   struct semi_space semi_space;
@@ -42,10 +45,12 @@ struct gc_heap {
   double pending_ephemerons_size_factor;
   double pending_ephemerons_size_slop;
   size_t size;
+  size_t total_allocated_bytes_at_last_gc;
   long count;
   int check_pending_ephemerons;
   const struct gc_options *options;
   struct gc_heap_roots *roots;
+  struct gc_heap_sizer sizer;
   struct gc_event_listener event_listener;
   void *event_listener_data;
 };
@@ -134,8 +139,16 @@ static int semi_space_steal_pages(struct semi_space *space, size_t npages) {
 
 static void semi_space_finish_gc(struct semi_space *space,
                                  size_t large_object_pages) {
+  space->live_bytes_at_last_gc = space->hp - space->to_space.base;
   space->stolen_pages = large_object_pages;
   space->limit = 0; // set in adjust_heap_size_and_limits
+}
+
+static void
+semi_space_add_to_allocation_counter(struct semi_space *space,
+                                     uint64_t *counter) {
+  size_t base = space->to_space.base + space->live_bytes_at_last_gc;
+  *counter += space->hp - base;
 }
 
 static void flip(struct semi_space *space) {
@@ -258,10 +271,9 @@ static int grow_region_if_needed(struct region *region, size_t new_size) {
   if (new_size <= region->mapped_size)
     return 1;
 
-  new_size = max_size(new_size, region->mapped_size * 2);
-
   void *mem = mmap(NULL, new_size, PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+  DEBUG("new size %zx\n", new_size);
   if (mem == MAP_FAILED) {
     perror("mmap failed");
     return 0;
@@ -286,38 +298,9 @@ static void truncate_region(struct region *region, size_t new_size) {
   }
 }
 
-static size_t compute_new_heap_size(struct gc_heap *heap, size_t for_alloc) {
+static void resize_heap(struct gc_heap *heap, size_t new_heap_size) {
   struct semi_space *semi = heap_semi_space(heap);
-  struct large_object_space *large = heap_large_object_space(heap);
-  size_t live_bytes = semi->hp - semi->to_space.base;
-  live_bytes += large->live_pages_at_last_collection * semi->page_size;
-  live_bytes += for_alloc;
-
-  HEAP_EVENT(heap, live_data_size, live_bytes);
-
-  size_t new_heap_size = heap->size;
-  switch (heap->options->common.heap_size_policy) {
-    case GC_HEAP_SIZE_FIXED:
-      break;
-
-    case GC_HEAP_SIZE_GROWABLE: {
-      new_heap_size =
-        max_size(heap->size,
-                 live_bytes * heap->options->common.heap_size_multiplier);
-      break;
-    }
-
-    case GC_HEAP_SIZE_ADAPTIVE:
-    default:
-      GC_CRASH();
-  }
-  return align_up(new_heap_size, semi->page_size * 2);
-}
-
-static void adjust_heap_size_and_limits(struct gc_heap *heap,
-                                        size_t for_alloc) {
-  struct semi_space *semi = heap_semi_space(heap);
-  size_t new_heap_size = compute_new_heap_size(heap, for_alloc);
+  new_heap_size = align_up(new_heap_size, semi->page_size * 2);
   size_t new_region_size = new_heap_size / 2;
 
   // Note that there is an asymmetry in how heap size is adjusted: we
@@ -386,6 +369,7 @@ static void collect(struct gc_mutator *mut, size_t for_alloc) {
   struct gc_heap *heap = mutator_heap(mut);
   int is_minor = 0;
   int is_compacting = 1;
+  uint64_t start_ns = gc_platform_monotonic_nanoseconds();
 
   HEAP_EVENT(heap, requesting_stop);
   HEAP_EVENT(heap, waiting_for_stop);
@@ -395,6 +379,9 @@ static void collect(struct gc_mutator *mut, size_t for_alloc) {
   struct semi_space *semi = heap_semi_space(heap);
   struct large_object_space *large = heap_large_object_space(heap);
   // fprintf(stderr, "start collect #%ld:\n", space->count);
+  uint64_t *counter_loc = &heap->total_allocated_bytes_at_last_gc;
+  semi_space_add_to_allocation_counter(semi, counter_loc);
+  large_object_space_add_to_allocation_counter(large, counter_loc);
   large_object_space_start_gc(large, 0);
   gc_extern_space_start_gc(heap->extern_space, 0);
   flip(semi);
@@ -420,7 +407,15 @@ static void collect(struct gc_mutator *mut, size_t for_alloc) {
   gc_extern_space_finish_gc(heap->extern_space, 0);
   semi_space_finish_gc(semi, large->live_pages_at_last_collection);
   gc_sweep_pending_ephemerons(heap->pending_ephemerons, 0, 1);
-  adjust_heap_size_and_limits(heap, for_alloc);
+  size_t live_size = semi->live_bytes_at_last_gc;
+  live_size += large_object_space_size_at_last_collection(large);
+  live_size += for_alloc;
+  uint64_t pause_ns = gc_platform_monotonic_nanoseconds() - start_ns;
+  HEAP_EVENT(heap, live_data_size, live_size);
+  DEBUG("gc %zu: live size %zu, heap size %zu\n", heap->count, live_size,
+        heap->size);
+  gc_heap_sizer_on_gc(heap->sizer, heap->size, live_size, pause_ns,
+                      resize_heap);
 
   HEAP_EVENT(heap, restarting_mutators);
   // fprintf(stderr, "%zd bytes copied\n", (space->size>>1)-(space->limit-space->hp));
@@ -595,7 +590,7 @@ static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   if (!heap->finalizer_state)
     GC_CRASH();
 
-return heap_prepare_pending_ephemerons(heap);
+  return heap_prepare_pending_ephemerons(heap);
 }
 
 int gc_option_from_string(const char *str) {
@@ -622,6 +617,14 @@ int gc_options_parse_and_set(struct gc_options *options, int option,
   return gc_common_options_parse_and_set(&options->common, option, value);
 }
 
+static uint64_t get_allocation_counter(struct gc_heap *heap) {
+  return heap->total_allocated_bytes_at_last_gc;
+}
+
+static void ignore_async_heap_size_adjustment(struct gc_heap *heap,
+                                              size_t size) {
+}
+
 int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
             struct gc_heap **heap, struct gc_mutator **mut,
             struct gc_event_listener event_listener,
@@ -633,10 +636,6 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
 
   if (!options) options = gc_allocate_options();
 
-  if (options->common.heap_size_policy == GC_HEAP_SIZE_ADAPTIVE) {
-    fprintf(stderr, "adaptive heap size is currently unimplemented\n");
-    return 0;
-  }
   if (options->common.parallelism != 1)
     fprintf(stderr, "warning: parallelism unimplemented in semispace copying collector\n");
 
@@ -656,6 +655,11 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   if (!large_object_space_init(heap_large_object_space(*heap), *heap))
     return 0;
   
+  (*heap)->sizer = gc_make_heap_sizer(*heap, &options->common,
+                                      get_allocation_counter,
+                                      ignore_async_heap_size_adjustment,
+                                      NULL);
+
   // Ignore stack base, as we are precise.
   (*mut)->roots = NULL;
 

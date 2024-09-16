@@ -13,6 +13,7 @@
 // the heap.
 
 struct gc_growable_heap_sizer {
+  struct gc_heap *heap;
   double multiplier;
   pthread_mutex_t lock;
 };
@@ -29,22 +30,22 @@ static void
 gc_growable_heap_sizer_on_gc(struct gc_growable_heap_sizer *sizer,
                              size_t heap_size, size_t live_bytes,
                              uint64_t pause_ns,
-                             void (*set_heap_size)(size_t, void*),
-                             void *data) {
+                             void (*set_heap_size)(struct gc_heap*, size_t)) {
   pthread_mutex_lock(&sizer->lock);
   size_t target_size = live_bytes * sizer->multiplier;
   if (target_size > heap_size)
-    set_heap_size(target_size, data);
+    set_heap_size(sizer->heap, target_size);
   pthread_mutex_unlock(&sizer->lock);
 }
 
 static struct gc_growable_heap_sizer*
-gc_make_growable_heap_sizer(double multiplier) {
+gc_make_growable_heap_sizer(struct gc_heap *heap, double multiplier) {
   struct gc_growable_heap_sizer *sizer;
   sizer = malloc(sizeof(*sizer));
   if (!sizer)
     GC_CRASH();
   memset(sizer, 0, sizeof(*sizer));
+  sizer->heap = heap;
   sizer->multiplier = multiplier;
   pthread_mutex_init(&sizer->lock, NULL);
   return sizer;

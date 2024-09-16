@@ -9,8 +9,9 @@
 #include "assert.h"
 #include "background-thread.h"
 #include "debug.h"
-#include "heap-sizer.h"
+#include "gc-config.h"
 #include "gc-platform.h"
+#include "heap-sizer.h"
 
 // This is the MemBalancer algorithm from "Optimal Heap Limits for Reducing
 // Browser Memory Use" by Marisa Kirisame, Pranav Shenoy, and Pavel Panchekha
@@ -25,9 +26,9 @@
 // high on program startup.
 
 struct gc_adaptive_heap_sizer {
-  uint64_t (*get_allocation_counter)(void *callback_data);
-  void (*set_heap_size)(size_t size, void *callback_data);
-  void *callback_data;
+  uint64_t (*get_allocation_counter)(struct gc_heap *heap);
+  void (*set_heap_size)(struct gc_heap *heap, size_t size);
+  struct gc_heap *heap;
   uint64_t smoothed_pause_time;
   uint64_t smoothed_live_bytes;
   uint64_t live_bytes;
@@ -38,11 +39,27 @@ struct gc_adaptive_heap_sizer {
   double maximum_multiplier;
   double minimum_free_space;
   double expansiveness;
+#if GC_PARALLEL
   pthread_mutex_t lock;
+#endif
   int background_task_id;
   uint64_t last_bytes_allocated;
   uint64_t last_heartbeat;
 };
+
+static void
+gc_adaptive_heap_sizer_lock(struct gc_adaptive_heap_sizer *sizer) {
+#if GC_PARALLEL
+  pthread_mutex_lock(&sizer->lock);
+#endif
+}
+
+static void
+gc_adaptive_heap_sizer_unlock(struct gc_adaptive_heap_sizer *sizer) {
+#if GC_PARALLEL
+  pthread_mutex_unlock(&sizer->lock);
+#endif
+}
 
 // With lock
 static uint64_t
@@ -65,34 +82,33 @@ gc_adaptive_heap_sizer_calculate_size(struct gc_adaptive_heap_sizer *sizer) {
 static uint64_t
 gc_adaptive_heap_sizer_set_expansiveness(struct gc_adaptive_heap_sizer *sizer,
                                          double expansiveness) {
-  pthread_mutex_lock(&sizer->lock);
+  gc_adaptive_heap_sizer_lock(sizer);
   sizer->expansiveness = expansiveness;
   uint64_t heap_size = gc_adaptive_heap_sizer_calculate_size(sizer);
-  pthread_mutex_unlock(&sizer->lock);
+  gc_adaptive_heap_sizer_unlock(sizer);
   return heap_size;
 }
 
 static void
 gc_adaptive_heap_sizer_on_gc(struct gc_adaptive_heap_sizer *sizer,
                              size_t live_bytes, uint64_t pause_ns,
-                             void (*set_heap_size)(size_t, void*),
-                             void *data) {
-  pthread_mutex_lock(&sizer->lock);
+                             void (*set_heap_size)(struct gc_heap*, size_t)) {
+  gc_adaptive_heap_sizer_lock(sizer);
   sizer->live_bytes = live_bytes;
   sizer->smoothed_live_bytes *= 1.0 - sizer->collection_smoothing_factor;
   sizer->smoothed_live_bytes += sizer->collection_smoothing_factor * live_bytes;
   sizer->smoothed_pause_time *= 1.0 - sizer->collection_smoothing_factor;
   sizer->smoothed_pause_time += sizer->collection_smoothing_factor * pause_ns;
-  set_heap_size(gc_adaptive_heap_sizer_calculate_size(sizer), data);
-  pthread_mutex_unlock(&sizer->lock);
+  set_heap_size(sizer->heap, gc_adaptive_heap_sizer_calculate_size(sizer));
+  gc_adaptive_heap_sizer_unlock(sizer);
 }
 
 static void
 gc_adaptive_heap_sizer_background_task(void *data) {
   struct gc_adaptive_heap_sizer *sizer = data;
-  pthread_mutex_lock(&sizer->lock);
+  gc_adaptive_heap_sizer_lock(sizer);
   uint64_t bytes_allocated =
-    sizer->get_allocation_counter(sizer->callback_data);
+    sizer->get_allocation_counter(sizer->heap);
   uint64_t heartbeat = gc_platform_monotonic_nanoseconds();
   double rate = (double) (bytes_allocated - sizer->last_bytes_allocated) /
     (double) (heartbeat - sizer->last_heartbeat);
@@ -102,16 +118,15 @@ gc_adaptive_heap_sizer_background_task(void *data) {
   sizer->smoothed_allocation_rate += rate * sizer->allocation_smoothing_factor;
   sizer->last_heartbeat = heartbeat;
   sizer->last_bytes_allocated = bytes_allocated;
-  sizer->set_heap_size(gc_adaptive_heap_sizer_calculate_size(sizer),
-                       sizer->callback_data);
-  pthread_mutex_unlock(&sizer->lock);
+  sizer->set_heap_size(sizer->heap,
+                       gc_adaptive_heap_sizer_calculate_size(sizer));
+  gc_adaptive_heap_sizer_unlock(sizer);
 }
 
 static struct gc_adaptive_heap_sizer*
-gc_make_adaptive_heap_sizer(double expansiveness,
-                            uint64_t (*get_allocation_counter)(void *),
-                            void (*set_heap_size)(size_t , void *),
-                            void *callback_data,
+gc_make_adaptive_heap_sizer(struct gc_heap *heap, double expansiveness,
+                            uint64_t (*get_allocation_counter)(struct gc_heap*),
+                            void (*set_heap_size)(struct gc_heap*, size_t),
                             struct gc_background_thread *thread) {
   struct gc_adaptive_heap_sizer *sizer;
   sizer = malloc(sizeof(*sizer));
@@ -120,7 +135,7 @@ gc_make_adaptive_heap_sizer(double expansiveness,
   memset(sizer, 0, sizeof(*sizer));
   sizer->get_allocation_counter = get_allocation_counter;
   sizer->set_heap_size = set_heap_size;
-  sizer->callback_data = callback_data;
+  sizer->heap = heap;
   // Baseline estimate of GC speed: 10 MB/ms, or 10 bytes/ns.  However since we
   // observe this speed by separately noisy measurements, we have to provide
   // defaults for numerator and denominator; estimate 2ms for initial GC pauses
@@ -136,14 +151,17 @@ gc_make_adaptive_heap_sizer(double expansiveness,
   sizer->maximum_multiplier = 5;
   sizer->minimum_free_space = 4 * 1024 * 1024;
   sizer->expansiveness = expansiveness;
-  pthread_mutex_init(&thread->lock, NULL);
-  sizer->last_bytes_allocated = get_allocation_counter(callback_data);
+  sizer->last_bytes_allocated = get_allocation_counter(heap);
   sizer->last_heartbeat = gc_platform_monotonic_nanoseconds();
-  sizer->background_task_id = thread
-    ? gc_background_thread_add_task(thread, GC_BACKGROUND_TASK_MIDDLE,
-                                    gc_adaptive_heap_sizer_background_task,
-                                    sizer)
-    : -1;
+#if GC_PARALLEL
+  pthread_mutex_init(&thread->lock, NULL);
+  sizer->background_task_id =
+    gc_background_thread_add_task(thread, GC_BACKGROUND_TASK_MIDDLE,
+                                  gc_adaptive_heap_sizer_background_task,
+                                  sizer);
+#else
+  sizer->background_task_id = -1;
+#endif
   return sizer;
 }
 

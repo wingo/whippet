@@ -462,8 +462,7 @@ maybe_pause_mutator_for_collection(struct gc_mutator *mut) {
 }
 
 static void
-resize_heap(size_t new_size, void *data) {
-  struct gc_heap *heap = data;
+resize_heap(struct gc_heap *heap, size_t new_size) {
   if (new_size == heap->size)
     return;
   DEBUG("------ resizing heap\n");
@@ -801,7 +800,7 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
     heap_estimate_live_data_after_gc(heap, live_bytes, yield);
   DEBUG("--- total live bytes estimate: %zu\n", live_bytes_estimate);
   gc_heap_sizer_on_gc(heap->sizer, heap->size, live_bytes_estimate, pause_ns,
-                      resize_heap, heap);
+                      resize_heap);
   heap->size_at_last_gc = heap->size;
   HEAP_EVENT(heap, restarting_mutators);
   allow_mutators_to_continue(heap);
@@ -987,6 +986,22 @@ gc_options_parse_and_set(struct gc_options *options, int option,
   return gc_common_options_parse_and_set(&options->common, option, value);
 }
 
+static uint64_t allocation_counter_from_thread(struct gc_heap *heap) {
+  uint64_t ret = heap->total_allocated_bytes_at_last_gc;
+  if (pthread_mutex_trylock(&heap->lock)) return ret;
+  nofl_space_add_to_allocation_counter(heap_nofl_space(heap), &ret);
+  large_object_space_add_to_allocation_counter(heap_large_object_space(heap),
+                                               &ret);
+  pthread_mutex_unlock(&heap->lock);
+  return ret;
+}
+
+static void set_heap_size_from_thread(struct gc_heap *heap, size_t size) {
+  if (pthread_mutex_trylock(&heap->lock)) return;
+  resize_heap(heap, size);
+  pthread_mutex_unlock(&heap->lock);
+}
+
 static int
 heap_init(struct gc_heap *heap, const struct gc_options *options) {
   // *heap is already initialized to 0.
@@ -1016,26 +1031,12 @@ heap_init(struct gc_heap *heap, const struct gc_options *options) {
     GC_CRASH();
 
   heap->background_thread = gc_make_background_thread();
+  heap->sizer = gc_make_heap_sizer(heap, &options->common,
+                                   allocation_counter_from_thread,
+                                   set_heap_size_from_thread,
+                                   heap->background_thread);
 
   return 1;
-}
-
-static uint64_t allocation_counter_from_thread(void *data) {
-  struct gc_heap *heap = data;
-  uint64_t ret = heap->total_allocated_bytes_at_last_gc;
-  if (pthread_mutex_trylock(&heap->lock)) return ret;
-  nofl_space_add_to_allocation_counter(heap_nofl_space(heap), &ret);
-  large_object_space_add_to_allocation_counter(heap_large_object_space(heap),
-                                               &ret);
-  pthread_mutex_unlock(&heap->lock);
-  return ret;
-}
-
-static void set_heap_size_from_thread(size_t size, void *data) {
-  struct gc_heap *heap = data;
-  if (pthread_mutex_trylock(&heap->lock)) return;
-  resize_heap(size, heap);
-  pthread_mutex_unlock(&heap->lock);
 }
 
 int
@@ -1080,12 +1081,6 @@ gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   
   if (!large_object_space_init(heap_large_object_space(*heap), *heap))
     GC_CRASH();
-
-  (*heap)->sizer = gc_make_heap_sizer(*heap, &options->common,
-                                      allocation_counter_from_thread,
-                                      set_heap_size_from_thread,
-                                      (*heap),
-                                      (*heap)->background_thread);
 
   *mut = calloc(1, sizeof(struct gc_mutator));
   if (!*mut) GC_CRASH();
