@@ -606,6 +606,8 @@ static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   if (!heap->finalizer_state)
     GC_CRASH();
 
+  heap->background_thread = gc_make_background_thread();
+
   return 1;
 }
 
@@ -651,7 +653,8 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
 
   struct copy_space *space = heap_copy_space(*heap);
   int atomic_forward = options->common.parallelism > 1;
-  if (!copy_space_init(space, (*heap)->size, atomic_forward)) {
+  if (!copy_space_init(space, (*heap)->size, atomic_forward,
+                       (*heap)->background_thread)) {
     free(*heap);
     *heap = NULL;
     return 0;
@@ -670,6 +673,9 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   *mut = calloc(1, sizeof(struct gc_mutator));
   if (!*mut) GC_CRASH();
   add_mutator(*heap, *mut);
+
+  gc_background_thread_start((*heap)->background_thread);
+
   return 1;
 }
 

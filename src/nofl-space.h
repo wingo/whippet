@@ -137,6 +137,8 @@ struct nofl_block_list {
   uintptr_t blocks;
 };
 
+#define NOFL_PAGE_OUT_QUEUE_SIZE 4
+
 struct nofl_space {
   uint64_t sweep_mask;
   uint8_t live_mask;
@@ -146,7 +148,7 @@ struct nofl_space {
   size_t heap_size;
   uint8_t last_collection_was_minor;
   struct nofl_block_list empty;
-  struct nofl_block_list unavailable;
+  struct nofl_block_list paged_out[NOFL_PAGE_OUT_QUEUE_SIZE];
   struct nofl_block_list to_sweep;
   struct nofl_block_list partly_full;
   struct nofl_block_list full;
@@ -408,30 +410,25 @@ nofl_block_count(struct nofl_block_list *list) {
 }
 
 static void
-nofl_push_paged_out_block(struct nofl_space *space,
-                          struct nofl_block_ref block) {
-  GC_ASSERT(nofl_block_has_flag(block,
-                                NOFL_BLOCK_ZERO | NOFL_BLOCK_PAGED_OUT));
-  nofl_block_set_flag(block, NOFL_BLOCK_UNAVAILABLE);
-  nofl_push_block(&space->unavailable, block);
-}
-
-static void
 nofl_push_unavailable_block(struct nofl_space *space,
                             struct nofl_block_ref block) {
-  if (!nofl_block_has_flag(block, NOFL_BLOCK_PAGED_OUT)) {
-    nofl_block_set_flag(block, NOFL_BLOCK_ZERO | NOFL_BLOCK_PAGED_OUT);
-    madvise((void*)block.addr, NOFL_BLOCK_SIZE, MADV_DONTNEED);
-  }
-  nofl_push_paged_out_block(space, block);
+  nofl_block_set_flag(block, NOFL_BLOCK_UNAVAILABLE);
+  nofl_push_block(nofl_block_has_flag(block, NOFL_BLOCK_PAGED_OUT)
+                  ? &space->paged_out[NOFL_PAGE_OUT_QUEUE_SIZE-1]
+                  : &space->paged_out[0],
+                  block);
 }
 
 static struct nofl_block_ref
 nofl_pop_unavailable_block(struct nofl_space *space) {
-  struct nofl_block_ref block = nofl_pop_block(&space->unavailable);
-  if (!nofl_block_is_null(block))
-    nofl_block_clear_flag(block, NOFL_BLOCK_UNAVAILABLE);
-  return block;
+  for (int age = 0; age < NOFL_PAGE_OUT_QUEUE_SIZE; age++) {
+    struct nofl_block_ref block = nofl_pop_block(&space->paged_out[age]);
+    if (!nofl_block_is_null(block)) {
+      nofl_block_clear_flag(block, NOFL_BLOCK_UNAVAILABLE);
+      return block;
+    }
+  }
+  return nofl_block_null();
 }
 
 static void
@@ -445,14 +442,23 @@ nofl_pop_empty_block(struct nofl_space *space) {
   return nofl_pop_block(&space->empty);
 }
 
+static size_t
+nofl_active_block_count(struct nofl_space *space) {
+  size_t total = space->nslabs * NOFL_NONMETA_BLOCKS_PER_SLAB;
+  size_t unavailable = 0;
+  for (int age = 0; age < NOFL_PAGE_OUT_QUEUE_SIZE; age++)
+    unavailable += nofl_block_count(&space->paged_out[age]);
+  GC_ASSERT(unavailable <= total);
+  return total - unavailable;
+}
+
 static int
 nofl_maybe_push_evacuation_target(struct nofl_space *space,
                                   struct nofl_block_ref block,
                                   double reserve) {
   size_t targets = nofl_block_count(&space->evacuation_targets);
-  size_t total = space->nslabs * NOFL_NONMETA_BLOCKS_PER_SLAB;
-  size_t unavailable = nofl_block_count(&space->unavailable);
-  if (targets >= (total - unavailable) * reserve)
+  size_t active = nofl_active_block_count(space);
+  if (targets >= active * reserve)
     return 0;
 
   nofl_push_block(&space->evacuation_targets, block);
@@ -1084,9 +1090,8 @@ nofl_space_finish_evacuation(struct nofl_space *space) {
   // repopulate the reserve.
   GC_ASSERT(space->evacuating);
   space->evacuating = 0;
-  size_t total = space->nslabs * NOFL_NONMETA_BLOCKS_PER_SLAB;
-  size_t unavailable = nofl_block_count(&space->unavailable);
-  size_t reserve = space->evacuation_minimum_reserve * (total - unavailable);
+  size_t active = nofl_active_block_count(space);
+  size_t reserve = space->evacuation_minimum_reserve * active;
   GC_ASSERT(nofl_block_count(&space->evacuation_targets) == 0);
   while (reserve--) {
     struct nofl_block_ref block = nofl_pop_block(&space->empty);
@@ -1214,7 +1219,8 @@ nofl_space_verify_before_restart(struct nofl_space *space) {
   nofl_space_verify_swept_blocks(space, &space->full);
   nofl_space_verify_swept_blocks(space, &space->old);
   nofl_space_verify_empty_blocks(space, &space->empty, 1);
-  nofl_space_verify_empty_blocks(space, &space->unavailable, 0);
+  for (int age = 0; age < NOFL_PAGE_OUT_QUEUE_SIZE; age++)
+    nofl_space_verify_empty_blocks(space, &space->paged_out[age], 0);
   // GC_ASSERT(space->last_collection_was_minor || !nofl_block_count(&space->old));
 }
 
@@ -1229,9 +1235,8 @@ nofl_space_finish_gc(struct nofl_space *space,
     // If we were evacuating and preferentially allocated empty blocks
     // to the evacuation reserve, return those blocks to the empty set
     // for allocation by the mutator.
-    size_t total = space->nslabs * NOFL_NONMETA_BLOCKS_PER_SLAB;
-    size_t unavailable = nofl_block_count(&space->unavailable);
-    size_t target = space->evacuation_minimum_reserve * (total - unavailable);
+    size_t active = nofl_active_block_count(space);
+    size_t target = space->evacuation_minimum_reserve * active;
     size_t reserve = nofl_block_count(&space->evacuation_targets);
     while (reserve-- > target)
       nofl_push_block(&space->empty,
@@ -1626,9 +1631,8 @@ nofl_space_shrink(struct nofl_space *space, size_t bytes) {
   // during trace, synchronously from gc_heap_sizer_on_gc, or async but subject
   // to the heap lock.
   if (pending > 0) {
-    size_t total = space->nslabs * NOFL_NONMETA_BLOCKS_PER_SLAB;
-    size_t unavailable = nofl_block_count(&space->unavailable);
-    size_t target = space->evacuation_minimum_reserve * (total - unavailable);
+    size_t active = nofl_active_block_count(space);
+    size_t target = space->evacuation_minimum_reserve * active;
     ssize_t avail = nofl_block_count(&space->evacuation_targets);
     while (avail > target && pending > 0) {
       struct nofl_block_ref block = nofl_pop_block(&space->evacuation_targets);
@@ -1660,15 +1664,52 @@ nofl_space_expand(struct nofl_space *space, size_t bytes) {
       uintptr_t addr = (uintptr_t)slabs[slab].blocks[idx].data;
       struct nofl_block_ref block = nofl_block_for_addr(addr);
       nofl_block_set_flag(block, NOFL_BLOCK_ZERO | NOFL_BLOCK_PAGED_OUT);
-      nofl_push_paged_out_block(space, block);
+      nofl_push_unavailable_block(space, block);
     }
   }
   nofl_space_reacquire_memory(space, 0);
 }
 
+static void
+nofl_space_advance_page_out_queue(void *data) {
+  // When the nofl space goes to return a block to the OS, it goes on the head
+  // of the page-out queue.  Every second, the background thread will age the
+  // queue, moving all blocks from index 0 to index 1, and so on.  When a block
+  // reaches the end of the queue it is paged out (and stays at the end of the
+  // queue).  In this task, invoked by the background thread, we age queue
+  // items, except that we don't page out yet, as it could be that some other
+  // background task will need to pull pages back in.
+  struct nofl_space *space = data;
+  for (int age = NOFL_PAGE_OUT_QUEUE_SIZE - 3; age >= 0; age--) {
+    while (1) {
+      struct nofl_block_ref block = nofl_pop_block(&space->paged_out[age]);
+      if (nofl_block_is_null(block))
+        break;
+      nofl_push_block(&space->paged_out[age + 1], block);
+    }
+  }
+}
+
+static void
+nofl_space_page_out_blocks(void *data) {
+  // This task is invoked by the background thread after other tasks.  It
+  // actually pages out blocks that reached the end of the queue.
+  struct nofl_space *space = data;
+  int age = NOFL_PAGE_OUT_QUEUE_SIZE - 2;
+  while (1) {
+    struct nofl_block_ref block = nofl_pop_block(&space->paged_out[age]);
+    if (nofl_block_is_null(block))
+      break;
+    nofl_block_set_flag(block, NOFL_BLOCK_ZERO | NOFL_BLOCK_PAGED_OUT);
+    madvise((void*)block.addr, NOFL_BLOCK_SIZE, MADV_DONTNEED);
+    nofl_push_block(&space->paged_out[age + 1], block);
+  }
+}
+
 static int
 nofl_space_init(struct nofl_space *space, size_t size, int atomic,
-                double promotion_threshold) {
+                double promotion_threshold,
+                struct gc_background_thread *thread) {
   size = align_up(size, NOFL_BLOCK_SIZE);
   size_t reserved = align_up(size, NOFL_SLAB_SIZE);
   size_t nslabs = reserved / NOFL_SLAB_SIZE;
@@ -1689,7 +1730,7 @@ nofl_space_init(struct nofl_space *space, size_t size, int atomic,
       struct nofl_block_ref block = nofl_block_for_addr(addr);
       nofl_block_set_flag(block, NOFL_BLOCK_ZERO | NOFL_BLOCK_PAGED_OUT);
       if (reserved > size) {
-        nofl_push_paged_out_block(space, block);
+        nofl_push_unavailable_block(space, block);
         reserved -= NOFL_BLOCK_SIZE;
       } else {
         if (!nofl_push_evacuation_target_if_needed(space, block))
@@ -1697,6 +1738,12 @@ nofl_space_init(struct nofl_space *space, size_t size, int atomic,
       }
     }
   }
+  gc_background_thread_add_task(thread, GC_BACKGROUND_TASK_START,
+                                nofl_space_advance_page_out_queue,
+                                space);
+  gc_background_thread_add_task(thread, GC_BACKGROUND_TASK_END,
+                                nofl_space_page_out_blocks,
+                                space);
   return 1;
 }
 

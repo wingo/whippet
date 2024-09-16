@@ -1010,6 +1010,8 @@ heap_init(struct gc_heap *heap, const struct gc_options *options) {
   if (!heap->finalizer_state)
     GC_CRASH();
 
+  heap->background_thread = gc_make_background_thread();
+
   return 1;
 }
 
@@ -1064,7 +1066,8 @@ gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   struct nofl_space *space = heap_nofl_space(*heap);
   if (!nofl_space_init(space, (*heap)->size,
                        options->common.parallelism != 1,
-                       (*heap)->fragmentation_low_threshold)) {
+                       (*heap)->fragmentation_low_threshold,
+                       (*heap)->background_thread)) {
     free(*heap);
     *heap = NULL;
     return 0;
@@ -1073,7 +1076,6 @@ gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   if (!large_object_space_init(heap_large_object_space(*heap), *heap))
     GC_CRASH();
 
-  (*heap)->background_thread = gc_make_background_thread();
   (*heap)->sizer = gc_make_heap_sizer(*heap, &options->common,
                                       allocation_counter_from_thread,
                                       set_heap_size_from_thread,
@@ -1084,6 +1086,9 @@ gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   if (!*mut) GC_CRASH();
   gc_stack_init(&(*mut)->stack, stack_base);
   add_mutator(*heap, *mut);
+
+  gc_background_thread_start((*heap)->background_thread);
+  
   return 1;
 }
 

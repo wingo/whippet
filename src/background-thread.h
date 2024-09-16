@@ -9,9 +9,9 @@
 #include "debug.h"
 
 enum {
-  GC_BACKGROUND_TASK_FIRST = 0,
-  GC_BACKGROUND_TASK_NORMAL = 100,
-  GC_BACKGROUND_TASK_LAST = 200
+  GC_BACKGROUND_TASK_START = 0,
+  GC_BACKGROUND_TASK_MIDDLE = 100,
+  GC_BACKGROUND_TASK_END = 200
 };
 
 struct gc_background_task {
@@ -21,12 +21,18 @@ struct gc_background_task {
   void *data;
 };
 
+enum gc_background_thread_state {
+  GC_BACKGROUND_THREAD_STARTING,
+  GC_BACKGROUND_THREAD_RUNNING,
+  GC_BACKGROUND_THREAD_STOPPING
+};
+
 struct gc_background_thread {
   size_t count;
   size_t capacity;
   struct gc_background_task *tasks;
   int next_id;
-  int stopping;
+  enum gc_background_thread_state state;
   pthread_t thread;
   pthread_mutex_t lock;
   pthread_cond_t cond;
@@ -35,19 +41,20 @@ struct gc_background_thread {
 static void*
 gc_background_thread(void *data) {
   struct gc_background_thread *thread = data;
+  pthread_mutex_lock(&thread->lock);
+  while (thread->state == GC_BACKGROUND_THREAD_STARTING)
+    pthread_cond_wait(&thread->cond, &thread->lock);
   struct timespec ts;
   if (clock_gettime(CLOCK_REALTIME, &ts)) {
     perror("background thread: failed to get time!");
     return NULL;
   }
-  pthread_mutex_lock(&thread->lock);
-  while (!thread->stopping) {
+  while (thread->state == GC_BACKGROUND_THREAD_RUNNING) {
     ts.tv_sec += 1;
     pthread_cond_timedwait(&thread->cond, &thread->lock, &ts);
-    if (thread->stopping)
-      break;
-    for (size_t i = 0; i < thread->count; i++)
-      thread->tasks[i].run(thread->tasks[i].data);
+    if (thread->state == GC_BACKGROUND_THREAD_RUNNING)
+      for (size_t i = 0; i < thread->count; i++)
+        thread->tasks[i].run(thread->tasks[i].data);
   }
   pthread_mutex_unlock(&thread->lock);
   return NULL;
@@ -63,6 +70,7 @@ gc_make_background_thread(void) {
   thread->tasks = NULL;
   thread->count = 0;
   thread->capacity = 0;
+  thread->state = GC_BACKGROUND_THREAD_STARTING;
   pthread_mutex_init(&thread->lock, NULL);
   pthread_cond_init(&thread->cond, NULL);
   if (pthread_create(&thread->thread, NULL, gc_background_thread, thread)) {
@@ -70,6 +78,15 @@ gc_make_background_thread(void) {
     GC_CRASH();
   }
   return thread;
+}
+
+static void
+gc_background_thread_start(struct gc_background_thread *thread) {
+  pthread_mutex_lock(&thread->lock);
+  GC_ASSERT_EQ(thread->state, GC_BACKGROUND_THREAD_STARTING);
+  thread->state = GC_BACKGROUND_THREAD_RUNNING;
+  pthread_mutex_unlock(&thread->lock);
+  pthread_cond_signal(&thread->cond);
 }
 
 static int
@@ -126,8 +143,8 @@ gc_background_thread_remove_task(struct gc_background_thread *thread,
 static void
 gc_destroy_background_thread(struct gc_background_thread *thread) {
   pthread_mutex_lock(&thread->lock);
-  GC_ASSERT(!thread->stopping);
-  thread->stopping = 1;
+  GC_ASSERT(thread->state == GC_BACKGROUND_THREAD_RUNNING);
+  thread->state = GC_BACKGROUND_THREAD_STOPPING;
   pthread_mutex_unlock(&thread->lock);
   pthread_cond_signal(&thread->cond);
   pthread_join(thread->thread, NULL);

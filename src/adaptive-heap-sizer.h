@@ -139,7 +139,7 @@ gc_make_adaptive_heap_sizer(double expansiveness,
   sizer->last_bytes_allocated = get_allocation_counter(callback_data);
   sizer->last_heartbeat = gc_platform_monotonic_nanoseconds();
   sizer->background_task_id = thread
-    ? gc_background_thread_add_task(thread, GC_BACKGROUND_TASK_FIRST,
+    ? gc_background_thread_add_task(thread, GC_BACKGROUND_TASK_MIDDLE,
                                     gc_adaptive_heap_sizer_background_task,
                                     sizer)
     : -1;
