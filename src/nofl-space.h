@@ -1667,7 +1667,7 @@ nofl_space_expand(struct nofl_space *space, size_t bytes) {
       nofl_push_unavailable_block(space, block);
     }
   }
-  nofl_space_reacquire_memory(space, 0);
+  nofl_space_maybe_reacquire_memory(space, 0);
 }
 
 static void
