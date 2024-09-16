@@ -26,6 +26,8 @@ See the [documentation](./doc/README.md).
  - Inline allocation / write barrier fast paths (supporting JIT)
  - One unified API with no-overhead abstraction: switch collectors when
    you like
+ - Three policies for sizing heaps: fixed, proportional to live size, and
+   [MemBalancer](http://marisa.moe/balancer.html)
 
 ## Source repository structure
 
@@ -42,9 +44,9 @@ See the [documentation](./doc/README.md).
 
 ## Status and roadmap
 
-As of September 2024, Whippet is almost feature-complete.  The main
-missing feature is dynamic heap growth and shrinkage
-(https://github.com/wingo/whippet/issues/5), which should land soon.
+As of September 2024, Whippet is almost feature-complete.  We need to
+land a per-object pinning API, and an API for cooperative safepoints for
+use by threads that are looping without allocating.
 
 After that, the next phase on the roadmap is support for tracing, and
 some performance noodling.
