@@ -29,6 +29,8 @@ struct shared_worklist_buf {
 // Max size: 2 GB on 64-bit systems, 1 GB on 32-bit.
 #define shared_worklist_buf_max_log_size ((unsigned) 28)
 
+static const size_t shared_worklist_release_byte_threshold = 256 * 1024;
+
 static int
 shared_worklist_buf_init(struct shared_worklist_buf *buf, unsigned log_size) {
   ASSERT(log_size >= shared_worklist_buf_min_log_size);
@@ -59,8 +61,9 @@ shared_worklist_buf_byte_size(struct shared_worklist_buf *buf) {
 
 static void
 shared_worklist_buf_release(struct shared_worklist_buf *buf) {
-  if (buf->data)
-    madvise(buf->data, shared_worklist_buf_byte_size(buf), MADV_DONTNEED);
+  size_t byte_size = shared_worklist_buf_byte_size(buf);
+  if (buf->data && byte_size >= shared_worklist_release_byte_threshold)
+    madvise(buf->data, byte_size, MADV_DONTNEED);
 }
 
 static void
