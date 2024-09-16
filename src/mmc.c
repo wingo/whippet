@@ -395,7 +395,12 @@ heap_reset_large_object_pages(struct gc_heap *heap, size_t npages) {
   GC_ASSERT(npages <= previous);
   size_t bytes = (previous - npages) <<
     heap_large_object_space(heap)->page_size_log2;
-  nofl_space_reacquire_memory(heap_nofl_space(heap), bytes);
+  // If heap size is fixed, we won't need to allocate any more nofl blocks, as
+  // nothing uses paged-out blocks except large object allocation.  But if the
+  // heap can grow, growth can consume nofl-space blocks that were paged out to
+  // allow for lospace allocations, which means that here we may need to
+  // allocate additional slabs.
+  nofl_space_expand(heap_nofl_space(heap), bytes);
 }
 
 static void

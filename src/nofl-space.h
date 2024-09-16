@@ -1291,12 +1291,6 @@ nofl_space_maybe_reacquire_memory(struct nofl_space *space, size_t bytes) {
   return pending;
 }
 
-static void
-nofl_space_reacquire_memory(struct nofl_space *space, size_t bytes) {
-  ssize_t pending = nofl_space_maybe_reacquire_memory(space, bytes);
-  GC_ASSERT(pending + NOFL_BLOCK_SIZE > 0);
-}
-
 static int
 nofl_space_sweep_until_memory_released(struct nofl_space *space,
                                        struct nofl_allocator *alloc) {
