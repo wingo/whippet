@@ -322,6 +322,11 @@ static void resize_heap(struct gc_heap *heap, size_t new_heap_size) {
   heap->size = new_region_size * 2;
   if (heap->size != old_heap_size)
     HEAP_EVENT(heap, heap_resized, heap->size);
+}
+
+static void reset_heap_limits(struct gc_heap *heap) {
+  struct semi_space *semi = heap_semi_space(heap);
+  size_t new_region_size = align_up(heap->size, semi->page_size * 2) / 2;
   size_t stolen = align_up(semi->stolen_pages, 2) * semi->page_size;
   GC_ASSERT(new_region_size > stolen/2);
   size_t new_active_region_size = new_region_size - stolen/2;
@@ -416,6 +421,7 @@ static void collect(struct gc_mutator *mut, size_t for_alloc) {
         heap->size);
   gc_heap_sizer_on_gc(heap->sizer, heap->size, live_size, pause_ns,
                       resize_heap);
+  reset_heap_limits(heap);  
 
   HEAP_EVENT(heap, restarting_mutators);
   // fprintf(stderr, "%zd bytes copied\n", (space->size>>1)-(space->limit-space->hp));
@@ -578,6 +584,14 @@ unsigned gc_heap_ephemeron_trace_epoch(struct gc_heap *heap) {
   return heap->count;
 }
 
+static uint64_t get_allocation_counter(struct gc_heap *heap) {
+  return heap->total_allocated_bytes_at_last_gc;
+}
+
+static void ignore_async_heap_size_adjustment(struct gc_heap *heap,
+                                              size_t size) {
+}
+
 static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   heap->extern_space = NULL;
   heap->pending_ephemerons_size_factor = 0.01;
@@ -589,6 +603,11 @@ static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   heap->finalizer_state = gc_make_finalizer_state();
   if (!heap->finalizer_state)
     GC_CRASH();
+
+  heap->sizer = gc_make_heap_sizer(heap, &options->common,
+                                   get_allocation_counter,
+                                   ignore_async_heap_size_adjustment,
+                                   NULL);
 
   return heap_prepare_pending_ephemerons(heap);
 }
@@ -615,14 +634,6 @@ int gc_options_set_double(struct gc_options *options, int option,
 int gc_options_parse_and_set(struct gc_options *options, int option,
                              const char *value) {
   return gc_common_options_parse_and_set(&options->common, option, value);
-}
-
-static uint64_t get_allocation_counter(struct gc_heap *heap) {
-  return heap->total_allocated_bytes_at_last_gc;
-}
-
-static void ignore_async_heap_size_adjustment(struct gc_heap *heap,
-                                              size_t size) {
 }
 
 int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
@@ -655,11 +666,6 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   if (!large_object_space_init(heap_large_object_space(*heap), *heap))
     return 0;
   
-  (*heap)->sizer = gc_make_heap_sizer(*heap, &options->common,
-                                      get_allocation_counter,
-                                      ignore_async_heap_size_adjustment,
-                                      NULL);
-
   // Ignore stack base, as we are precise.
   (*mut)->roots = NULL;
 
