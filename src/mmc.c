@@ -516,6 +516,9 @@ detect_out_of_memory(struct gc_heap *heap, uintptr_t allocation_since_last_gc) {
   if (allocation_since_last_gc > nofl_space_fragmentation(heap_nofl_space(heap)))
     return;
 
+  if (heap->gc_kind == GC_COLLECTION_MINOR)
+    return;
+
   // No allocation since last gc: out of memory.
   fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
   GC_CRASH();
@@ -753,15 +756,15 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   HEAP_EVENT(heap, waiting_for_stop);
   wait_for_mutators_to_stop(heap);
   HEAP_EVENT(heap, mutators_stopped);
-  enum gc_collection_kind gc_kind =
-    determine_collection_kind(heap, requested_kind);
-  int is_minor = gc_kind == GC_COLLECTION_MINOR;
-  HEAP_EVENT(heap, prepare_gc, gc_kind);
   uint64_t allocation_counter = 0;
   nofl_space_add_to_allocation_counter(nofl_space, &allocation_counter);
   large_object_space_add_to_allocation_counter(lospace, &allocation_counter);
   heap->total_allocated_bytes_at_last_gc += allocation_counter;
   detect_out_of_memory(heap, allocation_counter);
+  enum gc_collection_kind gc_kind =
+    determine_collection_kind(heap, requested_kind);
+  int is_minor = gc_kind == GC_COLLECTION_MINOR;
+  HEAP_EVENT(heap, prepare_gc, gc_kind);
   nofl_space_prepare_gc(nofl_space, gc_kind);
   large_object_space_start_gc(lospace, is_minor);
   gc_extern_space_start_gc(exspace, is_minor);
