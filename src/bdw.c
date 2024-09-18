@@ -127,6 +127,10 @@ void* gc_allocate_pointerless(struct gc_mutator *mut,
   return GC_malloc_atomic(size);
 }
 
+void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
+  // Nothing to do.
+}
+
 void gc_collect(struct gc_mutator *mut,
                 enum gc_collection_kind requested_kind) {
   switch (requested_kind) {

@@ -538,6 +538,25 @@ Also, the BDW collector actually uses pre-emptive safepoints: it stops
 threads via POSIX signals.  `gc_safepoint` is (or will be) a no-op with
 BDW.
 
+### Pinning
+
+Sometimes a mutator or embedder would like to tell the collector to not
+move a particular object.  This can happen for example during a foreign
+function call, or if the embedder allows programs to access the address
+of an object, for example to compute an identity hash code.  To support
+this use case, some Whippet collectors allow the embedder to *pin*
+objects.  Call `gc_pin_object` to prevent the collector from relocating
+an object.
+
+Pinning is currently supported by the `bdw` collector, which never moves
+objects, and also by the various `mmc` collectors, which can move
+objects that have no inbound conservative references.
+
+Pinning is not supported on `semi` or `pcc`.
+
+Call `gc_can_pin_objects` to determine whether the current collector can
+pin objects.
+
 ### Statistics
 
 Sometimes a program would like some information from the GC: how many

@@ -206,4 +206,6 @@ static inline void gc_write_barrier(struct gc_ref obj, size_t obj_size,
   }
 }
 
+GC_API_ void gc_pin_object(struct gc_mutator *mut, struct gc_ref obj);
+
 #endif // GC_API_H_

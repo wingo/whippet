@@ -43,4 +43,6 @@ enum gc_safepoint_mechanism {
 };
 static inline enum gc_safepoint_mechanism gc_safepoint_mechanism(void) GC_ALWAYS_INLINE;
 
+static inline int gc_can_pin_objects(void) GC_ALWAYS_INLINE;
+
 #endif // GC_ATTRS_H

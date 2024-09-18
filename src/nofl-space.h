@@ -1328,8 +1328,11 @@ nofl_space_sweep_until_memory_released(struct nofl_space *space,
 }
 
 static inline int
-nofl_space_should_evacuate(struct nofl_space *space, struct gc_ref obj) {
+nofl_space_should_evacuate(struct nofl_space *space, uint8_t metadata_byte,
+                           struct gc_ref obj) {
   if (!space->evacuating)
+    return 0;
+  if (metadata_byte & NOFL_METADATA_BYTE_PINNED)
     return 0;
   return nofl_block_has_flag(nofl_block_for_addr(gc_ref_value(obj)),
                              NOFL_BLOCK_EVACUATE);
@@ -1351,6 +1354,20 @@ nofl_space_set_nonempty_mark(struct nofl_space *space, uint8_t *metadata,
   nofl_space_set_mark(space, metadata, byte);
   nofl_block_set_mark(gc_ref_value(ref));
   return 1;
+}
+
+static inline void
+nofl_space_pin_object(struct nofl_space *space, struct gc_ref ref) {
+  uint8_t *metadata = nofl_metadata_byte_for_object(ref);
+  uint8_t byte = atomic_load_explicit(metadata, memory_order_relaxed);
+  if (byte & NOFL_METADATA_BYTE_PINNED)
+    return;
+  uint8_t new_byte;
+  do {
+    new_byte = byte | NOFL_METADATA_BYTE_PINNED;
+  } while (!atomic_compare_exchange_weak_explicit(metadata, &byte, new_byte,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire));
 }
 
 static inline int
@@ -1429,7 +1446,7 @@ nofl_space_evacuate_or_mark_object(struct nofl_space *space,
   if (byte & space->marked_mask)
     return 0;
 
-  if (nofl_space_should_evacuate(space, old_ref))
+  if (nofl_space_should_evacuate(space, byte, old_ref))
     return nofl_space_evacuate(space, metadata, byte, edge, old_ref,
                                evacuate);
 
@@ -1490,7 +1507,7 @@ nofl_space_forward_or_mark_if_traced(struct nofl_space *space,
   if (byte & space->marked_mask)
     return 1;
 
-  if (!nofl_space_should_evacuate(space, ref))
+  if (!nofl_space_should_evacuate(space, byte, ref))
     return 0;
 
   return nofl_space_forward_if_evacuated(space, edge, ref);

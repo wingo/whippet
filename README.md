@@ -45,8 +45,8 @@ See the [documentation](./doc/README.md).
 ## Status and roadmap
 
 As of September 2024, Whippet is almost feature-complete.  We need to
-land a per-object pinning API, and an API for cooperative safepoints for
-use by threads that are looping without allocating.
+land an API for cooperative safepoints for use by threads that are
+looping without allocating.
 
 After that, the next phase on the roadmap is support for tracing, and
 some performance noodling.

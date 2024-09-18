@@ -505,6 +505,10 @@ void* gc_allocate_pointerless(struct gc_mutator *mut, size_t size) {
   return gc_allocate(mut, size);
 }
 
+void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
+  GC_CRASH();
+}
+
 struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {
   return gc_allocate(mut, gc_ephemeron_size());
 }
