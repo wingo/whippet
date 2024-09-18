@@ -531,12 +531,19 @@ temporarily mark itself as inactive by trampolining through
 for, for example, system calls that might block.  Periodic safepoints is
 better for code that is active but not allocating.
 
-Thing is, though, `gc_safepoint` is not yet implemented :)  It will be,
-though!
-
 Also, the BDW collector actually uses pre-emptive safepoints: it stops
-threads via POSIX signals.  `gc_safepoint` is (or will be) a no-op with
-BDW.
+threads via POSIX signals.  `gc_safepoint` is a no-op with BDW.
+
+Embedders can inline safepoint checks.  If
+`gc_cooperative_safepoint_kind()` is `GC_COOPERATIVE_SAFEPOINT_NONE`,
+then the collector doesn't need safepoints, as is the case for `bdw`
+which uses signals and `semi` which is single-threaded.  If it is
+`GC_COOPERATIVE_SAFEPOINT_HEAP_FLAG`, then calling
+`gc_safepoint_flag_loc` on a mutator will return the address of an `int`
+in memory, which if nonzero when loaded using relaxed atomics indicates
+that the mutator should call `gc_safepoint_slow`.  Similarly for
+`GC_COOPERATIVE_SAFEPOINT_MUTATOR_FLAG`, except that the address is
+per-mutator rather than global.
 
 ### Pinning
 

@@ -54,6 +54,10 @@ static inline enum gc_safepoint_mechanism gc_safepoint_mechanism(void) {
   return GC_SAFEPOINT_MECHANISM_SIGNAL;
 }
 
+static inline enum gc_cooperative_safepoint_kind gc_cooperative_safepoint_kind(void) {
+  return GC_COOPERATIVE_SAFEPOINT_NONE;
+}
+
 static inline int gc_can_pin_objects(void) {
   return 1;
 }

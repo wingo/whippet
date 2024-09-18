@@ -283,6 +283,7 @@ static void
 pause_mutator_for_collection(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mutators_are_stopping(heap));
   GC_ASSERT(!all_mutators_stopped(heap));
+  MUTATOR_EVENT(mut, mutator_stopping);
   MUTATOR_EVENT(mut, mutator_stopped);
   heap->paused_mutator_count++;
   if (all_mutators_stopped(heap))
@@ -294,32 +295,6 @@ pause_mutator_for_collection(struct gc_heap *heap, struct gc_mutator *mut) {
   heap->paused_mutator_count--;
 
   MUTATOR_EVENT(mut, mutator_restarted);
-}
-
-static void
-pause_mutator_for_collection_with_lock(struct gc_mutator *mut) GC_NEVER_INLINE;
-static void
-pause_mutator_for_collection_with_lock(struct gc_mutator *mut) {
-  struct gc_heap *heap = mutator_heap(mut);
-  GC_ASSERT(mutators_are_stopping(heap));
-  MUTATOR_EVENT(mut, mutator_stopping);
-  pause_mutator_for_collection(heap, mut);
-}
-
-static void pause_mutator_for_collection_without_lock(struct gc_mutator *mut) GC_NEVER_INLINE;
-static void pause_mutator_for_collection_without_lock(struct gc_mutator *mut) {
-  struct gc_heap *heap = mutator_heap(mut);
-  GC_ASSERT(mutators_are_stopping(heap));
-  MUTATOR_EVENT(mut, mutator_stopping);
-  copy_space_allocator_finish(&mut->allocator, heap_copy_space(heap));
-  heap_lock(heap);
-  pause_mutator_for_collection(heap, mut);
-  heap_unlock(heap);
-}
-
-static inline void maybe_pause_mutator_for_collection(struct gc_mutator *mut) {
-  while (mutators_are_stopping(mutator_heap(mut)))
-    pause_mutator_for_collection_without_lock(mut);
 }
 
 static void resize_heap(struct gc_heap *heap, size_t new_size) {
@@ -447,7 +422,7 @@ static void trigger_collection(struct gc_mutator *mut) {
   heap_lock(heap);
   long epoch = heap->count;
   while (mutators_are_stopping(heap))
-    pause_mutator_for_collection_with_lock(mut);
+    pause_mutator_for_collection(heap, mut);
   if (epoch == heap->count)
     collect(mut);
   heap_unlock(heap);
@@ -512,6 +487,19 @@ void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
                              struct gc_edge edge, struct gc_ref new_val) {
 }
 
+int* gc_safepoint_flag_loc(struct gc_mutator *mut) {
+  return &mutator_heap(mut)->collecting;
+}
+
+void gc_safepoint_slow(struct gc_mutator *mut) {
+  struct gc_heap *heap = mutator_heap(mut);
+  copy_space_allocator_finish(&mut->allocator, heap_copy_space(heap));
+  heap_lock(heap);
+  while (mutators_are_stopping(mutator_heap(mut)))
+    pause_mutator_for_collection(heap, mut);
+  heap_unlock(heap);
+}
+  
 struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {
   return gc_allocate(mut, gc_ephemeron_size());
 }

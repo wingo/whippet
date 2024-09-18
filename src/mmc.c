@@ -417,6 +417,7 @@ static enum gc_collection_kind
 pause_mutator_for_collection(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mutators_are_stopping(heap));
   GC_ASSERT(!all_mutators_stopped(heap));
+  MUTATOR_EVENT(mut, mutator_stopping);
   MUTATOR_EVENT(mut, mutator_stopped);
   heap->paused_mutator_count++;
   enum gc_collection_kind collection_kind = heap->gc_kind;
@@ -430,35 +431,6 @@ pause_mutator_for_collection(struct gc_heap *heap, struct gc_mutator *mut) {
 
   MUTATOR_EVENT(mut, mutator_restarted);
   return collection_kind;
-}
-
-static enum gc_collection_kind
-pause_mutator_for_collection_with_lock(struct gc_mutator *mut) GC_NEVER_INLINE;
-static enum gc_collection_kind
-pause_mutator_for_collection_with_lock(struct gc_mutator *mut) {
-  struct gc_heap *heap = mutator_heap(mut);
-  GC_ASSERT(mutators_are_stopping(heap));
-  MUTATOR_EVENT(mut, mutator_stopping);
-  return pause_mutator_for_collection(heap, mut);
-}
-
-static void pause_mutator_for_collection_without_lock(struct gc_mutator *mut) GC_NEVER_INLINE;
-static void
-pause_mutator_for_collection_without_lock(struct gc_mutator *mut) {
-  struct gc_heap *heap = mutator_heap(mut);
-  GC_ASSERT(mutators_are_stopping(heap));
-  MUTATOR_EVENT(mut, mutator_stopping);
-  nofl_finish_sweeping(&mut->allocator, heap_nofl_space(heap));
-  gc_stack_capture_hot(&mut->stack);
-  heap_lock(heap);
-  pause_mutator_for_collection(heap, mut);
-  heap_unlock(heap);
-}
-
-static inline void
-maybe_pause_mutator_for_collection(struct gc_mutator *mut) {
-  while (mutators_are_stopping(mutator_heap(mut)))
-    pause_mutator_for_collection_without_lock(mut);
 }
 
 static void
@@ -818,7 +790,7 @@ trigger_collection(struct gc_mutator *mut,
   nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
   heap_lock(heap);
   while (mutators_are_stopping(heap))
-    prev_kind = pause_mutator_for_collection_with_lock(mut);
+    prev_kind = pause_mutator_for_collection(heap, mut);
   if (prev_kind < (int)requested_kind)
     collect(mut, requested_kind);
   heap_unlock(heap);
@@ -827,6 +799,22 @@ trigger_collection(struct gc_mutator *mut,
 void
 gc_collect(struct gc_mutator *mut, enum gc_collection_kind kind) {
   trigger_collection(mut, kind);
+}
+
+int*
+gc_safepoint_flag_loc(struct gc_mutator *mut) {
+  return &mutator_heap(mut)->collecting;
+}
+
+void
+gc_safepoint_slow(struct gc_mutator *mut) {
+  struct gc_heap *heap = mutator_heap(mut);
+  gc_stack_capture_hot(&mut->stack);
+  nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
+  heap_lock(heap);
+  while (mutators_are_stopping(mutator_heap(mut)))
+    pause_mutator_for_collection(heap, mut);
+  heap_unlock(heap);
 }
 
 static void*
@@ -894,7 +882,7 @@ gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
   GC_ASSERT(obj_size > gc_allocator_large_threshold());
   gc_object_set_remembered(obj);
 }
-
+  
 struct gc_ephemeron*
 gc_allocate_ephemeron(struct gc_mutator *mut) {
   struct gc_ref ret =

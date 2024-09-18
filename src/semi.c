@@ -457,6 +457,9 @@ void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
                              struct gc_edge edge, struct gc_ref new_val) {
 }
 
+int* gc_safepoint_flag_loc(struct gc_mutator *mut) { GC_CRASH(); }
+void gc_safepoint_slow(struct gc_mutator *mut) { GC_CRASH(); }
+  
 static void collect_for_large_alloc(struct gc_mutator *mut, size_t npages) {
   collect_for_alloc(mut, npages * mutator_semi_space(mut)->page_size);
 }

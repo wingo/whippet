@@ -153,6 +153,9 @@ void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
                              struct gc_edge edge, struct gc_ref new_val) {
 }
 
+int* gc_safepoint_flag_loc(struct gc_mutator *mut) { GC_CRASH(); }
+void gc_safepoint_slow(struct gc_mutator *mut) { GC_CRASH(); }
+
 struct bdw_mark_state {
   struct GC_ms_entry *mark_stack_ptr;
   struct GC_ms_entry *mark_stack_limit;
