@@ -44,11 +44,11 @@ See the [documentation](./doc/README.md).
 
 ## Status and roadmap
 
-As of September 2024, Whippet is almost feature-complete.  We need to
-land an API for cooperative safepoints for use by threads that are
-looping without allocating.
+As of September 2024, Whippet is feature-complete!  Of course there will
+surely be new features to build as Whippet gets integrated it into
+language run-times, but the basics are there.
 
-After that, the next phase on the roadmap is support for tracing, and
+The next phase on the roadmap is support for tracing, and
 some performance noodling.
 
 Once that is done, the big task is integrating Whippet into the [Guile
