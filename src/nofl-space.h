@@ -18,6 +18,7 @@
 #include "gc-align.h"
 #include "gc-attrs.h"
 #include "gc-inline.h"
+#include "gc-lock.h"
 #include "spin.h"
 #include "swar.h"
 
@@ -146,10 +147,6 @@ struct nofl_block_stack {
   struct nofl_block_list list;
 };
 
-struct nofl_lock {
-  pthread_mutex_t *lock;
-};
-
 #define NOFL_PAGE_OUT_QUEUE_SIZE 4
 
 struct nofl_space {
@@ -208,15 +205,33 @@ struct nofl_allocator {
 //
 // When an object becomes dead after a GC, it will still have a bit set
 // -- maybe the young bit, or maybe a survivor bit.  The sweeper has to
-// clear these bits before the next collection.  But, for concurrent
-// marking, we will also be marking "live" objects, updating their mark
-// bits.  So there are four object states concurrently observable:
-// young, dead, survivor, and marked.  (If we didn't have concurrent
-// marking we would still need the "marked" state, because marking
-// mutator roots before stopping is also a form of concurrent marking.)
-// Even though these states are mutually exclusive, we use separate bits
-// for them because we have the space.  After each collection, the dead,
-// survivor, and marked states rotate by one bit.
+// clear these bits before the next collection.  But if we add
+// concurrent marking, we will also be marking "live" objects, updating
+// their mark bits.  So there are four object states concurrently
+// observable:  young, dead, survivor, and marked.  (We don't currently
+// have concurrent marking, though.)  Even though these states are
+// mutually exclusive, we use separate bits for them because we have the
+// space.  After each collection, the dead, survivor, and marked states
+// rotate by one bit.
+//
+// An object can be pinned, preventing it from being evacuated during
+// collection.  Pinning does not keep the object alive; if it is
+// otherwise unreachable, it will be collected.  To pin an object, a
+// running mutator can set the pinned bit, using atomic
+// compare-and-swap.
+//
+// For generational collectors, the nofl space supports a field-logging
+// write barrier.  The two logging bits correspond to the two words in a
+// granule.  When a field is written to, the write barrier should check
+// the logged bit; if it is unset, it should try to atomically set the
+// bit, and if that works, then we record the field location as a
+// generational root, adding it to a sequential-store buffer.
+//
+// Finally, for heap-conservative collectors, nofl generally traces all
+// objects in the same way, treating them as an array of conservative
+// edges.  But we need to know when we have an ephemeron.  In that case,
+// we re-use the pinned bit, because it's of no use to us anyway in that
+// configuration, as all objects are pinned.
 enum nofl_metadata_byte {
   NOFL_METADATA_BYTE_NONE = 0,
   NOFL_METADATA_BYTE_YOUNG = 1,
@@ -224,9 +239,10 @@ enum nofl_metadata_byte {
   NOFL_METADATA_BYTE_MARK_1 = 4,
   NOFL_METADATA_BYTE_MARK_2 = 8,
   NOFL_METADATA_BYTE_END = 16,
-  NOFL_METADATA_BYTE_EPHEMERON = 32,
-  NOFL_METADATA_BYTE_PINNED = 64,
-  NOFL_METADATA_BYTE_UNUSED_1 = 128
+  NOFL_METADATA_BYTE_PINNED = 32,
+  NOFL_METADATA_BYTE_LOGGED_0 = 64,
+  NOFL_METADATA_BYTE_LOGGED_1 = 128,
+  NOFL_METADATA_BYTE_EPHEMERON = NOFL_METADATA_BYTE_PINNED,
 };
 
 static uint8_t
@@ -236,22 +252,9 @@ nofl_rotate_dead_survivor_marked(uint8_t mask) {
   return ((mask << 1) | (mask >> 2)) & all;
 }
 
-static struct nofl_lock
-nofl_lock_acquire(pthread_mutex_t *lock) {
-  pthread_mutex_lock(lock);
-  return (struct nofl_lock){ lock };
-}
-
-static void
-nofl_lock_release(struct nofl_lock *lock) {
-  GC_ASSERT(lock->lock);
-  pthread_mutex_unlock(lock->lock);
-  lock->lock = NULL;
-}
-
-static struct nofl_lock
+static struct gc_lock
 nofl_space_lock(struct nofl_space *space) {
-  return nofl_lock_acquire(&space->lock);
+  return gc_lock_acquire(&space->lock);
 }
 
 static struct nofl_slab*
@@ -440,7 +443,7 @@ nofl_block_list_pop(struct nofl_block_list *list) {
 static void
 nofl_block_stack_push(struct nofl_block_stack *stack,
                       struct nofl_block_ref block,
-                      const struct nofl_lock *lock) {
+                      const struct gc_lock *lock) {
   struct nofl_block_list *list = &stack->list;
   list->count++;
   GC_ASSERT(nofl_block_is_null(nofl_block_next(block)));
@@ -451,7 +454,7 @@ nofl_block_stack_push(struct nofl_block_stack *stack,
 
 static struct nofl_block_ref
 nofl_block_stack_pop(struct nofl_block_stack *stack,
-                     const struct nofl_lock *lock) {
+                     const struct gc_lock *lock) {
   struct nofl_block_list *list = &stack->list;
   struct nofl_block_ref head = nofl_block_head(list);
   if (!nofl_block_is_null(head)) {
@@ -470,7 +473,7 @@ nofl_block_count(struct nofl_block_list *list) {
 static void
 nofl_push_unavailable_block(struct nofl_space *space,
                             struct nofl_block_ref block,
-                            const struct nofl_lock *lock) {
+                            const struct gc_lock *lock) {
   nofl_block_set_flag(block, NOFL_BLOCK_UNAVAILABLE);
   nofl_block_stack_push(nofl_block_has_flag(block, NOFL_BLOCK_PAGED_OUT)
                         ? &space->paged_out[NOFL_PAGE_OUT_QUEUE_SIZE-1]
@@ -480,7 +483,7 @@ nofl_push_unavailable_block(struct nofl_space *space,
 
 static struct nofl_block_ref
 nofl_pop_unavailable_block(struct nofl_space *space,
-                           const struct nofl_lock *lock) {
+                           const struct gc_lock *lock) {
   for (int age = 0; age < NOFL_PAGE_OUT_QUEUE_SIZE; age++) {
     struct nofl_block_ref block =
       nofl_block_stack_pop(&space->paged_out[age], lock);
@@ -495,21 +498,21 @@ nofl_pop_unavailable_block(struct nofl_space *space,
 static void
 nofl_push_empty_block(struct nofl_space *space,
                       struct nofl_block_ref block,
-                      const struct nofl_lock *lock) {
+                      const struct gc_lock *lock) {
   nofl_block_stack_push(&space->empty, block, lock);
 }
 
 static struct nofl_block_ref
 nofl_pop_empty_block_with_lock(struct nofl_space *space,
-                               const struct nofl_lock *lock) {
+                               const struct gc_lock *lock) {
   return nofl_block_stack_pop(&space->empty, lock);
 }
 
 static struct nofl_block_ref
 nofl_pop_empty_block(struct nofl_space *space) {
-  struct nofl_lock lock = nofl_space_lock(space);
+  struct gc_lock lock = nofl_space_lock(space);
   struct nofl_block_ref ret = nofl_pop_empty_block_with_lock(space, &lock);
-  nofl_lock_release(&lock);
+  gc_lock_release(&lock);
   return ret;
 }
 
@@ -635,19 +638,19 @@ nofl_allocator_release_partly_full_block(struct nofl_allocator *alloc,
   size_t hole_size = alloc->sweep - alloc->alloc;
   GC_ASSERT(hole_size);
   block.summary->fragmentation_granules = hole_size / NOFL_GRANULE_SIZE;
-  struct nofl_lock lock = nofl_space_lock(space);
+  struct gc_lock lock = nofl_space_lock(space);
   nofl_block_stack_push(&space->partly_full, block, &lock);
-  nofl_lock_release(&lock);
+  gc_lock_release(&lock);
   nofl_allocator_reset(alloc);
 }
 
 static size_t
 nofl_allocator_acquire_partly_full_block(struct nofl_allocator *alloc,
                                          struct nofl_space *space) {
-  struct nofl_lock lock = nofl_space_lock(space);
+  struct gc_lock lock = nofl_space_lock(space);
   struct nofl_block_ref block = nofl_block_stack_pop(&space->partly_full,
                                                      &lock);
-  nofl_lock_release(&lock);
+  gc_lock_release(&lock);
   if (nofl_block_is_null(block))
     return 0;
   GC_ASSERT_EQ(block.summary->holes_with_fragmentation, 0);
@@ -1039,11 +1042,11 @@ static void
 nofl_space_prepare_evacuation(struct nofl_space *space) {
   GC_ASSERT(!space->evacuating);
   struct nofl_block_ref block;
-  struct nofl_lock lock = nofl_space_lock(space);
+  struct gc_lock lock = nofl_space_lock(space);
   while (!nofl_block_is_null
          (block = nofl_block_list_pop(&space->evacuation_targets)))
     nofl_push_empty_block(space, block, &lock);
-  nofl_lock_release(&lock);
+  gc_lock_release(&lock);
   // Blocks are either to_sweep, empty, or unavailable.
   GC_ASSERT_EQ(nofl_block_count(&space->partly_full.list), 0);
   GC_ASSERT_EQ(nofl_block_count(&space->full), 0);
@@ -1164,7 +1167,7 @@ nofl_space_start_gc(struct nofl_space *space, enum gc_collection_kind gc_kind) {
 
 static void
 nofl_space_finish_evacuation(struct nofl_space *space,
-                             const struct nofl_lock *lock) {
+                             const struct gc_lock *lock) {
   // When evacuation began, the evacuation reserve was moved to the
   // empties list.  Now that evacuation is finished, attempt to
   // repopulate the reserve.
@@ -1308,7 +1311,7 @@ static void
 nofl_space_finish_gc(struct nofl_space *space,
                      enum gc_collection_kind gc_kind) {
   space->last_collection_was_minor = (gc_kind == GC_COLLECTION_MINOR);
-  struct nofl_lock lock = nofl_space_lock(space);
+  struct gc_lock lock = nofl_space_lock(space);
   if (space->evacuating)
     nofl_space_finish_evacuation(space, &lock);
   else {
@@ -1346,7 +1349,7 @@ nofl_space_finish_gc(struct nofl_space *space,
   }
 
   // FIXME: Promote concurrently instead of during the pause.
-  nofl_lock_release(&lock);
+  gc_lock_release(&lock);
   nofl_space_promote_blocks(space);
   nofl_space_reset_statistics(space);
   nofl_space_update_mark_patterns(space, 0);
@@ -1363,7 +1366,7 @@ static ssize_t
 nofl_space_maybe_reacquire_memory(struct nofl_space *space, size_t bytes) {
   ssize_t pending =
     atomic_fetch_sub(&space->pending_unavailable_bytes, bytes) - bytes;
-  struct nofl_lock lock = nofl_space_lock(space);
+  struct gc_lock lock = nofl_space_lock(space);
   while (pending + NOFL_BLOCK_SIZE <= 0) {
     struct nofl_block_ref block = nofl_pop_unavailable_block(space, &lock);
     if (nofl_block_is_null(block)) break;
@@ -1372,13 +1375,15 @@ nofl_space_maybe_reacquire_memory(struct nofl_space *space, size_t bytes) {
     pending = atomic_fetch_add(&space->pending_unavailable_bytes, NOFL_BLOCK_SIZE)
       + NOFL_BLOCK_SIZE;
   }
-  nofl_lock_release(&lock);
+  gc_lock_release(&lock);
   return pending;
 }
 
 static inline int
 nofl_space_should_evacuate(struct nofl_space *space, uint8_t metadata_byte,
                            struct gc_ref obj) {
+  if (gc_has_conservative_intraheap_edges())
+    return 0;
   if (!space->evacuating)
     return 0;
   if (metadata_byte & NOFL_METADATA_BYTE_PINNED)
@@ -1389,8 +1394,11 @@ nofl_space_should_evacuate(struct nofl_space *space, uint8_t metadata_byte,
 
 static inline int
 nofl_space_set_mark(struct nofl_space *space, uint8_t *metadata, uint8_t byte) {
+  // Clear logged bits when we mark: after marking, there will be no
+  // young objects.
   uint8_t mask = NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_MARK_0
-    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
+    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2
+    | NOFL_METADATA_BYTE_LOGGED_0 | NOFL_METADATA_BYTE_LOGGED_1;
   atomic_store_explicit(metadata,
                         (byte & ~mask) | space->marked_mask,
                         memory_order_relaxed);
@@ -1407,6 +1415,10 @@ nofl_space_set_nonempty_mark(struct nofl_space *space, uint8_t *metadata,
 
 static inline void
 nofl_space_pin_object(struct nofl_space *space, struct gc_ref ref) {
+  // For the heap-conservative configuration, all objects are pinned,
+  // and we re-use the pinned bit to identify ephemerons.
+  if (gc_has_conservative_intraheap_edges())
+    return;
   uint8_t *metadata = nofl_metadata_byte_for_object(ref);
   uint8_t byte = atomic_load_explicit(metadata, memory_order_relaxed);
   if (byte & NOFL_METADATA_BYTE_PINNED)
@@ -1674,7 +1686,7 @@ nofl_space_add_slabs(struct nofl_space *space, struct nofl_slab *slabs,
 static int
 nofl_space_shrink(struct nofl_space *space, size_t bytes) {
   ssize_t pending = nofl_space_request_release_memory(space, bytes);
-  struct nofl_lock lock = nofl_space_lock(space);
+  struct gc_lock lock = nofl_space_lock(space);
 
   // First try to shrink by unmapping previously-identified empty blocks.
   while (pending > 0) {
@@ -1707,7 +1719,7 @@ nofl_space_shrink(struct nofl_space *space, size_t bytes) {
     }
   }
 
-  nofl_lock_release(&lock);
+  gc_lock_release(&lock);
 
   // It still may be the case we need to page out more blocks.  Only evacuation
   // can help us then!
@@ -1725,7 +1737,7 @@ nofl_space_expand(struct nofl_space *space, size_t bytes) {
   struct nofl_slab *slabs = nofl_allocate_slabs(nslabs);
   nofl_space_add_slabs(space, slabs, nslabs);
 
-  struct nofl_lock lock = nofl_space_lock(space);
+  struct gc_lock lock = nofl_space_lock(space);
   for (size_t slab = 0; slab < nslabs; slab++) {
     for (size_t idx = 0; idx < NOFL_NONMETA_BLOCKS_PER_SLAB; idx++) {
       uintptr_t addr = (uintptr_t)slabs[slab].blocks[idx].data;
@@ -1734,7 +1746,7 @@ nofl_space_expand(struct nofl_space *space, size_t bytes) {
       nofl_push_unavailable_block(space, block, &lock);
     }
   }
-  nofl_lock_release(&lock);
+  gc_lock_release(&lock);
   nofl_space_maybe_reacquire_memory(space, 0);
 }
 
@@ -1748,7 +1760,7 @@ nofl_space_advance_page_out_queue(void *data) {
   // items, except that we don't page out yet, as it could be that some other
   // background task will need to pull pages back in.
   struct nofl_space *space = data;
-  struct nofl_lock lock = nofl_space_lock(space);
+  struct gc_lock lock = nofl_space_lock(space);
   for (int age = NOFL_PAGE_OUT_QUEUE_SIZE - 3; age >= 0; age--) {
     struct nofl_block_ref block =
       nofl_block_stack_pop(&space->paged_out[age], &lock);
@@ -1756,7 +1768,7 @@ nofl_space_advance_page_out_queue(void *data) {
       break;
     nofl_block_stack_push(&space->paged_out[age+1], block, &lock);
   }
-  nofl_lock_release(&lock);
+  gc_lock_release(&lock);
 }
 
 static void
@@ -1764,7 +1776,7 @@ nofl_space_page_out_blocks(void *data) {
   // This task is invoked by the background thread after other tasks.  It
   // actually pages out blocks that reached the end of the queue.
   struct nofl_space *space = data;
-  struct nofl_lock lock = nofl_space_lock(space);
+  struct gc_lock lock = nofl_space_lock(space);
   int age = NOFL_PAGE_OUT_QUEUE_SIZE - 2;
   while (1) {
     struct nofl_block_ref block =
@@ -1775,7 +1787,7 @@ nofl_space_page_out_blocks(void *data) {
     madvise((void*)block.addr, NOFL_BLOCK_SIZE, MADV_DONTNEED);
     nofl_block_stack_push(&space->paged_out[age + 1], block, &lock);
   }
-  nofl_lock_release(&lock);
+  gc_lock_release(&lock);
 }
 
 static int
@@ -1797,7 +1809,7 @@ nofl_space_init(struct nofl_space *space, size_t size, int atomic,
   space->evacuation_minimum_reserve = 0.02;
   space->evacuation_reserve = space->evacuation_minimum_reserve;
   space->promotion_threshold = promotion_threshold;
-  struct nofl_lock lock = nofl_space_lock(space);
+  struct gc_lock lock = nofl_space_lock(space);
   for (size_t slab = 0; slab < nslabs; slab++) {
     for (size_t idx = 0; idx < NOFL_NONMETA_BLOCKS_PER_SLAB; idx++) {
       uintptr_t addr = (uintptr_t)slabs[slab].blocks[idx].data;
@@ -1812,7 +1824,7 @@ nofl_space_init(struct nofl_space *space, size_t size, int atomic,
       }
     }
   }
-  nofl_lock_release(&lock);
+  gc_lock_release(&lock);
   gc_background_thread_add_task(thread, GC_BACKGROUND_TASK_START,
                                 nofl_space_advance_page_out_queue,
                                 space);

@@ -17,6 +17,7 @@
 #include "gc-align.h"
 #include "gc-attrs.h"
 #include "gc-inline.h"
+#include "gc-lock.h"
 #include "spin.h"
 
 // A copy space: a block-structured space that traces via evacuation.
@@ -114,10 +115,6 @@ struct copy_space_block_stack {
   struct copy_space_block_list list;
 };
 
-struct copy_space_lock {
-  pthread_mutex_t *lock;
-};
-
 struct copy_space {
   pthread_mutex_t lock;
   struct copy_space_block_stack empty;
@@ -145,22 +142,9 @@ struct copy_space_allocator {
   struct copy_space_block *block;
 };
 
-static struct copy_space_lock
-copy_space_lock_acquire(pthread_mutex_t *lock) {
-  pthread_mutex_lock(lock);
-  return (struct copy_space_lock){ lock };
-}
-
-static void
-copy_space_lock_release(struct copy_space_lock *lock) {
-  GC_ASSERT(lock->lock);
-  pthread_mutex_unlock(lock->lock);
-  lock->lock = NULL;
-}
-
-static struct copy_space_lock
+static struct gc_lock
 copy_space_lock(struct copy_space *space) {
-  return copy_space_lock_acquire(&space->lock);
+  return gc_lock_acquire(&space->lock);
 }
 
 static void
@@ -189,7 +173,7 @@ copy_space_block_list_pop(struct copy_space_block_list *list) {
 static void
 copy_space_block_stack_push(struct copy_space_block_stack *stack,
                             struct copy_space_block *block,
-                            const struct copy_space_lock *lock) {
+                            const struct gc_lock *lock) {
   struct copy_space_block *next = stack->list.head;
   block->next = next;
   stack->list.head = block;
@@ -197,7 +181,7 @@ copy_space_block_stack_push(struct copy_space_block_stack *stack,
 
 static struct copy_space_block*
 copy_space_block_stack_pop(struct copy_space_block_stack *stack,
-                           const struct copy_space_lock *lock) {
+                           const struct gc_lock *lock) {
   struct copy_space_block *head = stack->list.head;
   if (head) {
     stack->list.head = head->next;
@@ -208,7 +192,7 @@ copy_space_block_stack_pop(struct copy_space_block_stack *stack,
 
 static struct copy_space_block*
 copy_space_pop_empty_block(struct copy_space *space,
-                           const struct copy_space_lock *lock) {
+                           const struct gc_lock *lock) {
   struct copy_space_block *ret = copy_space_block_stack_pop(&space->empty,
                                                             lock);
   if (ret)
@@ -219,7 +203,7 @@ copy_space_pop_empty_block(struct copy_space *space,
 static void
 copy_space_push_empty_block(struct copy_space *space,
                             struct copy_space_block *block,
-                            const struct copy_space_lock *lock) {
+                            const struct gc_lock *lock) {
   copy_space_block_stack_push(&space->empty, block, lock);
 }
 
@@ -236,21 +220,21 @@ copy_space_push_full_block(struct copy_space *space,
 
 static struct copy_space_block*
 copy_space_pop_partly_full_block(struct copy_space *space,
-                                 const struct copy_space_lock *lock) {
+                                 const struct gc_lock *lock) {
   return copy_space_block_stack_pop(&space->partly_full, lock);
 }
 
 static void
 copy_space_push_partly_full_block(struct copy_space *space,
                                   struct copy_space_block *block,
-                                  const struct copy_space_lock *lock) {
+                                  const struct gc_lock *lock) {
   copy_space_block_stack_push(&space->partly_full, block, lock);
 }
 
 static void
 copy_space_page_out_block(struct copy_space *space,
                           struct copy_space_block *block,
-                          const struct copy_space_lock *lock) {
+                          const struct gc_lock *lock) {
   copy_space_block_stack_push
     (block->in_core
      ? &space->paged_out[0]
@@ -261,7 +245,7 @@ copy_space_page_out_block(struct copy_space *space,
 
 static struct copy_space_block*
 copy_space_page_in_block(struct copy_space *space,
-                         const struct copy_space_lock *lock) {
+                         const struct gc_lock *lock) {
   for (int age = 0; age < COPY_SPACE_PAGE_OUT_QUEUE_SIZE; age++) {
     struct copy_space_block *block =
       copy_space_block_stack_pop(&space->paged_out[age], lock);
@@ -278,7 +262,7 @@ copy_space_request_release_memory(struct copy_space *space, size_t bytes) {
 static int
 copy_space_page_out_blocks_until_memory_released(struct copy_space *space) {
   ssize_t pending = atomic_load(&space->bytes_to_page_out);
-  struct copy_space_lock lock = copy_space_lock(space);
+  struct gc_lock lock = copy_space_lock(space);
   while (pending > 0) {
     struct copy_space_block *block = copy_space_pop_empty_block(space, &lock);
     if (!block) break;
@@ -286,7 +270,7 @@ copy_space_page_out_blocks_until_memory_released(struct copy_space *space) {
     pending = (atomic_fetch_sub(&space->bytes_to_page_out, COPY_SPACE_BLOCK_SIZE)
                - COPY_SPACE_BLOCK_SIZE);
   }
-  copy_space_lock_release(&lock);
+  gc_lock_release(&lock);
   return pending <= 0;
 }
 
@@ -294,7 +278,7 @@ static ssize_t
 copy_space_maybe_reacquire_memory(struct copy_space *space, size_t bytes) {
   ssize_t pending =
     atomic_fetch_sub(&space->bytes_to_page_out, bytes) - bytes;
-  struct copy_space_lock lock = copy_space_lock(space);
+  struct gc_lock lock = copy_space_lock(space);
   while (pending + COPY_SPACE_BLOCK_SIZE <= 0) {
     struct copy_space_block *block = copy_space_page_in_block(space, &lock);
     if (!block) break;
@@ -303,7 +287,7 @@ copy_space_maybe_reacquire_memory(struct copy_space *space, size_t bytes) {
                                 COPY_SPACE_BLOCK_SIZE)
                + COPY_SPACE_BLOCK_SIZE);
   }
-  copy_space_lock_release(&lock);
+  gc_lock_release(&lock);
   return pending;
 }
 
@@ -338,9 +322,9 @@ copy_space_allocator_acquire_block(struct copy_space_allocator *alloc,
 static int
 copy_space_allocator_acquire_empty_block(struct copy_space_allocator *alloc,
                                          struct copy_space *space) {
-  struct copy_space_lock lock = copy_space_lock(space);
+  struct gc_lock lock = copy_space_lock(space);
   struct copy_space_block *block = copy_space_pop_empty_block(space, &lock);
-  copy_space_lock_release(&lock);
+  gc_lock_release(&lock);
   if (copy_space_allocator_acquire_block(alloc, block, space->active_region)) {
     block->in_core = 1;
     if (block->all_zeroes[space->active_region])
@@ -355,10 +339,10 @@ copy_space_allocator_acquire_empty_block(struct copy_space_allocator *alloc,
 static int
 copy_space_allocator_acquire_partly_full_block(struct copy_space_allocator *alloc,
                                                struct copy_space *space) {
-  struct copy_space_lock lock = copy_space_lock(space);
+  struct gc_lock lock = copy_space_lock(space);
   struct copy_space_block *block = copy_space_pop_partly_full_block(space,
                                                                     &lock);
-  copy_space_lock_release(&lock);
+  gc_lock_release(&lock);
   if (copy_space_allocator_acquire_block(alloc, block, space->active_region)) {
     alloc->hp += block->allocated;
     return 1;
@@ -390,9 +374,9 @@ copy_space_allocator_release_partly_full_block(struct copy_space_allocator *allo
                               allocated - alloc->block->allocated,
                               memory_order_relaxed);
     alloc->block->allocated = allocated;
-    struct copy_space_lock lock = copy_space_lock(space);
+    struct gc_lock lock = copy_space_lock(space);
     copy_space_push_partly_full_block(space, alloc->block, &lock);
-    copy_space_lock_release(&lock);
+    gc_lock_release(&lock);
   } else {
     // In this case, hp was bumped all the way to the limit, in which
     // case allocated wraps to 0; the block is full.
@@ -691,7 +675,7 @@ copy_space_expand(struct copy_space *space, size_t bytes) {
   struct copy_space_slab *slabs = copy_space_allocate_slabs(nslabs);
   copy_space_add_slabs(space, slabs, nslabs);
 
-  struct copy_space_lock lock = copy_space_lock(space);
+  struct gc_lock lock = copy_space_lock(space);
   for (size_t slab = 0; slab < nslabs; slab++) {
     for (size_t idx = 0; idx < COPY_SPACE_NONHEADER_BLOCKS_PER_SLAB; idx++) {
       struct copy_space_block *block = &slabs[slab].headers[idx];
@@ -701,14 +685,14 @@ copy_space_expand(struct copy_space *space, size_t bytes) {
       reserved -= COPY_SPACE_BLOCK_SIZE;
     }
   }
-  copy_space_lock_release(&lock);
+  gc_lock_release(&lock);
   copy_space_reacquire_memory(space, 0);
 }
 
 static void
 copy_space_advance_page_out_queue(void *data) {
   struct copy_space *space = data;
-  struct copy_space_lock lock = copy_space_lock(space);
+  struct gc_lock lock = copy_space_lock(space);
   for (int age = COPY_SPACE_PAGE_OUT_QUEUE_SIZE - 3; age >= 0; age--) {
     while (1) {
       struct copy_space_block *block =
@@ -717,14 +701,14 @@ copy_space_advance_page_out_queue(void *data) {
       copy_space_block_stack_push(&space->paged_out[age + 1], block, &lock);
     }
   }
-  copy_space_lock_release(&lock);
+  gc_lock_release(&lock);
 }
 
 static void
 copy_space_page_out_blocks(void *data) {
   struct copy_space *space = data;
   int age = COPY_SPACE_PAGE_OUT_QUEUE_SIZE - 2;
-  struct copy_space_lock lock = copy_space_lock(space);
+  struct gc_lock lock = copy_space_lock(space);
   while (1) {
     struct copy_space_block *block =
       copy_space_block_stack_pop(&space->paged_out[age], &lock);
@@ -735,7 +719,7 @@ copy_space_page_out_blocks(void *data) {
             MADV_DONTNEED);
     copy_space_block_stack_push(&space->paged_out[age + 1], block, &lock);
   }
-  copy_space_lock_release(&lock);
+  gc_lock_release(&lock);
 }
 
 static int
@@ -763,7 +747,7 @@ copy_space_init(struct copy_space *space, size_t size, int atomic,
   space->fragmentation_at_last_gc = 0;
   space->extents = extents_allocate(10);
   copy_space_add_slabs(space, slabs, nslabs);
-  struct copy_space_lock lock = copy_space_lock(space);
+  struct gc_lock lock = copy_space_lock(space);
   for (size_t slab = 0; slab < nslabs; slab++) {
     for (size_t idx = 0; idx < COPY_SPACE_NONHEADER_BLOCKS_PER_SLAB; idx++) {
       struct copy_space_block *block = &slabs[slab].headers[idx];
@@ -777,7 +761,7 @@ copy_space_init(struct copy_space *space, size_t size, int atomic,
       }
     }
   }
-  copy_space_lock_release(&lock);
+  gc_lock_release(&lock);
   gc_background_thread_add_task(thread, GC_BACKGROUND_TASK_START,
                                 copy_space_advance_page_out_queue,
                                 space);
