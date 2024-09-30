@@ -828,8 +828,7 @@ allocate_large(struct gc_mutator *mut, size_t size) {
   nofl_space_request_release_memory(nofl_space,
                                     npages << lospace->page_size_log2);
 
-  while (!nofl_space_sweep_until_memory_released(nofl_space,
-                                                 &mut->allocator))
+  while (!nofl_space_shrink(nofl_space, 0))
     trigger_collection(mut, GC_COLLECTION_COMPACTING);
   atomic_fetch_add(&heap->large_object_pages, npages);
 
