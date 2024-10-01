@@ -641,7 +641,7 @@ enqueue_remembered_object(struct gc_ref ref, struct gc_heap *heap) {
 static void
 enqueue_generational_roots(struct gc_heap *heap,
                            enum gc_collection_kind gc_kind) {
-  // TODO: Add lospace nursery.
+  if (!GC_GENERATIONAL) return;
   if (gc_kind == GC_COLLECTION_MINOR) {
     for (size_t i = 0; i < heap_nofl_space(heap)->nslabs; i++)
       gc_tracer_add_root(&heap->tracer, gc_root_remembered_slab(i));
@@ -883,8 +883,14 @@ void
 gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
                       size_t obj_size, struct gc_edge edge,
                       struct gc_ref new_val) {
+  if (!GC_GENERATIONAL) return;
   GC_ASSERT(obj_size > gc_allocator_large_threshold());
-  gc_object_set_remembered(obj);
+  struct gc_heap *heap = mutator_heap(mut);
+  struct large_object_space *space = heap_large_object_space(heap);
+  if (!large_object_space_is_old(space, obj))
+    return;
+  if (gc_object_set_remembered(obj))
+    large_object_space_remember_object(space, obj);
 }
   
 struct gc_ephemeron*

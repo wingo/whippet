@@ -35,6 +35,8 @@ struct large_object_space {
 
   struct address_set from_space;
   struct address_set to_space;
+  struct address_set survivor_space;
+  struct address_set remembered_set;
   struct address_set free_space;
   struct address_map object_pages; // for each object: size in pages.
   struct address_map predecessors; // subsequent addr -> object addr
@@ -47,6 +49,8 @@ static int large_object_space_init(struct large_object_space *space,
   space->page_size_log2 = __builtin_ctz(space->page_size);
   address_set_init(&space->from_space);
   address_set_init(&space->to_space);
+  address_set_init(&space->survivor_space);
+  address_set_init(&space->remembered_set);
   address_set_init(&space->free_space);
   address_map_init(&space->object_pages);
   address_map_init(&space->predecessors);
@@ -63,19 +67,14 @@ large_object_space_size_at_last_collection(struct large_object_space *space) {
   return space->live_pages_at_last_collection << space->page_size_log2;
 }
 
-static void large_object_space_clear_one_remembered(uintptr_t addr,
-                                                    void *unused) {
-  struct gc_ref ref = gc_ref(addr);
-  if (gc_object_is_remembered_nonatomic(ref))
-    gc_object_clear_remembered_nonatomic(ref);
-}
-
-static void
-large_object_space_clear_remembered_set(struct large_object_space *space) {
-  if (!GC_GENERATIONAL)
-    return;
-  address_set_for_each(&space->to_space,
-                       large_object_space_clear_one_remembered, NULL);
+static inline int large_object_space_contains(struct large_object_space *space,
+                                              struct gc_ref ref) {
+  pthread_mutex_lock(&space->lock);
+  // ptr might be in fromspace or tospace.  Just check the object_pages table, which
+  // contains both, as well as object_pages for free blocks.
+  int ret = address_map_contains(&space->object_pages, gc_ref_value(ref));
+  pthread_mutex_unlock(&space->lock);
+  return ret;
 }
 
 struct large_object_space_trace_remembered_data {
@@ -86,11 +85,14 @@ struct large_object_space_trace_remembered_data {
 static void large_object_space_trace_one_remembered(uintptr_t addr,
                                                     void *data) {
   struct gc_ref ref = gc_ref(addr);
-  if (gc_object_is_remembered_nonatomic(ref)) {
-    gc_object_clear_remembered_nonatomic(ref);
-    struct large_object_space_trace_remembered_data *vdata = data;
-    vdata->trace(ref, vdata->heap);
-  }
+  gc_object_clear_remembered_nonatomic(ref);
+  struct large_object_space_trace_remembered_data *vdata = data;
+  vdata->trace(ref, vdata->heap);
+}
+
+static void
+large_object_space_clear_remembered_set(struct large_object_space *space) {
+  address_set_clear(&space->remembered_set);
 }
 
 static void
@@ -102,22 +104,43 @@ large_object_space_trace_remembered_set(struct large_object_space *space,
 
   if (!GC_GENERATIONAL)
     return;
-  address_set_for_each(&space->to_space,
+  address_set_for_each(&space->remembered_set,
                        large_object_space_trace_one_remembered, &vdata);
+  large_object_space_clear_remembered_set(space);
+}
+
+static void
+large_object_space_remember_object(struct large_object_space *space,
+                                   struct gc_ref ref) {
+  GC_ASSERT(GC_GENERATIONAL);
+  uintptr_t addr = gc_ref_value(ref);
+  pthread_mutex_lock(&space->lock);
+  GC_ASSERT(!address_set_contains(&space->remembered_set, addr));
+  address_set_add(&space->remembered_set, addr);
+  pthread_mutex_unlock(&space->lock);
+}
+
+static void large_object_space_flip_survivor(uintptr_t addr,
+                                             void *data) {
+  struct large_object_space *space = data;
+  address_set_add(&space->from_space, addr);
 }
 
 static void large_object_space_start_gc(struct large_object_space *space,
                                         int is_minor_gc) {
-  if (is_minor_gc)
-    return;
-
   // Flip.  Note that when we flip, fromspace is empty, but it might have
   // allocated storage, so we do need to do a proper swap.
   struct address_set tmp;
   memcpy(&tmp, &space->from_space, sizeof(tmp));
   memcpy(&space->from_space, &space->to_space, sizeof(tmp));
   memcpy(&space->to_space, &tmp, sizeof(tmp));
-  space->live_pages_at_last_collection = 0;
+  
+  if (!is_minor_gc) {
+    address_set_for_each(&space->survivor_space,
+                         large_object_space_flip_survivor, space);
+    address_set_clear(&space->survivor_space);
+    space->live_pages_at_last_collection = 0;
+  }
 }
 
 static int large_object_space_copy(struct large_object_space *space,
@@ -126,14 +149,16 @@ static int large_object_space_copy(struct large_object_space *space,
   uintptr_t addr = gc_ref_value(ref);
   pthread_mutex_lock(&space->lock);
   if (!address_set_contains(&space->from_space, addr))
-    // Already copied; object is grey or white.
+    // Already copied; object is grey or black.
     goto done;
   space->live_pages_at_last_collection +=
     address_map_lookup(&space->object_pages, addr, 0);
   address_set_remove(&space->from_space, addr);
-  address_set_add(&space->to_space, addr);
-  // Object should be placed on mark stack for visiting its fields.  (While on
-  // mark stack it's actually grey, not black.)
+  address_set_add(GC_GENERATIONAL ? &space->survivor_space : &space->to_space,
+                  addr);
+  if (GC_GENERATIONAL && gc_object_is_remembered_nonatomic(ref))
+    gc_object_clear_remembered_nonatomic(ref);
+  // Object is grey; place it on mark stack to visit its fields.
   copied = 1;
 done:
   pthread_mutex_unlock(&space->lock);
@@ -142,12 +167,24 @@ done:
 
 static int large_object_space_is_copied(struct large_object_space *space,
                                         struct gc_ref ref) {
+  GC_ASSERT(large_object_space_contains(space, ref));
   int copied = 0;
   uintptr_t addr = gc_ref_value(ref);
   pthread_mutex_lock(&space->lock);
-  copied = address_set_contains(&space->to_space, addr);
+  copied = !address_set_contains(&space->from_space, addr);
   pthread_mutex_unlock(&space->lock);
   return copied;
+}
+
+static int large_object_space_is_old(struct large_object_space *space,
+                                     struct gc_ref ref) {
+  GC_ASSERT(large_object_space_contains(space, ref));
+  int old = 0;
+  uintptr_t addr = gc_ref_value(ref);
+  pthread_mutex_lock(&space->lock);
+  old = address_set_contains(&space->survivor_space, addr);
+  pthread_mutex_unlock(&space->lock);
+  return old;
 }
 
 static int large_object_space_mark_object(struct large_object_space *space,
@@ -202,19 +239,13 @@ static void large_object_space_reclaim_one(uintptr_t addr, void *data) {
 static void large_object_space_finish_gc(struct large_object_space *space,
                                          int is_minor_gc) {
   pthread_mutex_lock(&space->lock);
-  if (is_minor_gc) {
-    space->live_pages_at_last_collection =
-      space->total_pages - space->free_pages;
-    space->pages_freed_by_last_collection = 0;
-  } else {
-    address_set_for_each(&space->from_space, large_object_space_reclaim_one,
-                         space);
-    address_set_clear(&space->from_space);
-    size_t free_pages =
-      space->total_pages - space->live_pages_at_last_collection;
-    space->pages_freed_by_last_collection = free_pages - space->free_pages;
-    space->free_pages = free_pages;
-  }
+  address_set_for_each(&space->from_space, large_object_space_reclaim_one,
+                       space);
+  address_set_clear(&space->from_space);
+  size_t free_pages =
+    space->total_pages - space->live_pages_at_last_collection;
+  space->pages_freed_by_last_collection = free_pages - space->free_pages;
+  space->free_pages = free_pages;
   pthread_mutex_unlock(&space->lock);
 }
 
@@ -256,16 +287,6 @@ large_object_space_mark_conservative_ref(struct large_object_space *space,
     return gc_ref(addr);
 
   return gc_ref_null();
-}
-
-static inline int large_object_space_contains(struct large_object_space *space,
-                                              struct gc_ref ref) {
-  pthread_mutex_lock(&space->lock);
-  // ptr might be in fromspace or tospace.  Just check the object_pages table, which
-  // contains both, as well as object_pages for free blocks.
-  int ret = address_map_contains(&space->object_pages, gc_ref_value(ref));
-  pthread_mutex_unlock(&space->lock);
-  return ret;
 }
 
 struct large_object_space_candidate {
