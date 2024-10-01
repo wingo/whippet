@@ -145,7 +145,7 @@ static int large_object_space_is_copied(struct large_object_space *space,
   int copied = 0;
   uintptr_t addr = gc_ref_value(ref);
   pthread_mutex_lock(&space->lock);
-  copied = address_set_contains(&space->from_space, addr);
+  copied = address_set_contains(&space->to_space, addr);
   pthread_mutex_unlock(&space->lock);
   return copied;
 }
