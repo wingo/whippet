@@ -42,6 +42,13 @@ static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
   GC_CRASH();
 }
 
+static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(size_t) {
+  return GC_OLD_GENERATION_CHECK_NONE;
+}
+static inline uint8_t gc_old_generation_check_alloc_table_bit_pattern(void) {
+  GC_CRASH();
+}
+
 static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t) {
   return GC_WRITE_BARRIER_NONE;
 }

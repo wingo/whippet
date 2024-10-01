@@ -40,6 +40,19 @@ static inline int gc_allocator_needs_clear(void) {
   return 0;
 }
 
+static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(size_t obj_size) {
+  if (GC_GENERATIONAL) {
+    if (obj_size <= gc_allocator_large_threshold())
+      return GC_OLD_GENERATION_CHECK_ALLOC_TABLE;
+    return GC_OLD_GENERATION_CHECK_SLOW;
+  }
+  return GC_OLD_GENERATION_CHECK_NONE;
+}
+static inline uint8_t gc_old_generation_check_alloc_table_bit_pattern(void) {
+  // The three mark bits.
+  return 2 + 4 + 8;
+}
+
 static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) {
   if (GC_GENERATIONAL) {
     if (obj_size <= gc_allocator_large_threshold())

@@ -176,8 +176,8 @@ static int large_object_space_is_copied(struct large_object_space *space,
   return copied;
 }
 
-static int large_object_space_is_old(struct large_object_space *space,
-                                     struct gc_ref ref) {
+static int large_object_space_is_survivor(struct large_object_space *space,
+                                          struct gc_ref ref) {
   GC_ASSERT(large_object_space_contains(space, ref));
   int old = 0;
   uintptr_t addr = gc_ref_value(ref);

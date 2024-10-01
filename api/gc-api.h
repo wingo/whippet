@@ -179,6 +179,33 @@ static inline void* gc_allocate(struct gc_mutator *mut, size_t size) {
 // FIXME: remove :P
 GC_API_ void* gc_allocate_pointerless(struct gc_mutator *mut, size_t bytes);
 
+GC_API_ int gc_object_is_old_generation_slow(struct gc_mutator *mut,
+                                             struct gc_ref obj) GC_NEVER_INLINE;
+
+static inline int gc_object_is_old_generation(struct gc_mutator *mut,
+                                              struct gc_ref obj,
+                                              size_t obj_size) GC_ALWAYS_INLINE;
+static inline int gc_object_is_old_generation(struct gc_mutator *mut,
+                                              struct gc_ref obj,
+                                              size_t obj_size) {
+  switch (gc_old_generation_check_kind(obj_size)) {
+  case GC_OLD_GENERATION_CHECK_ALLOC_TABLE: {
+    size_t alignment = gc_allocator_alloc_table_alignment();
+    GC_ASSERT(alignment);
+    uintptr_t addr = gc_ref_value(obj);
+    uintptr_t base = addr & ~(alignment - 1);
+    size_t granule_size = gc_allocator_small_granule_size();
+    uintptr_t granule = (addr & (alignment - 1)) / granule_size;
+    uint8_t *byte = (uint8_t*)(base + granule);
+    return (*byte) & gc_old_generation_check_alloc_table_bit_pattern();
+  }
+  case GC_OLD_GENERATION_CHECK_SLOW:
+    return gc_object_is_old_generation_slow(mut, obj);
+  default:
+    GC_CRASH();
+  }
+}
+
 GC_API_ void gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
                                    size_t obj_size, struct gc_edge edge,
                                    struct gc_ref new_val) GC_NEVER_INLINE;
@@ -202,11 +229,14 @@ static inline void gc_write_barrier(struct gc_mutator *mut, struct gc_ref obj,
     return;
   }
   case GC_WRITE_BARRIER_FIELD: {
+    if (!gc_object_is_old_generation(mut, obj, obj_size))
+      return;
+
     size_t field_table_alignment = gc_write_barrier_field_table_alignment();
     size_t fields_per_byte = gc_write_barrier_field_fields_per_byte();
     uint8_t first_bit_pattern = gc_write_barrier_field_first_bit_pattern();
 
-    uintptr_t addr = (uintptr_t) gc_edge_loc(edge);
+    uintptr_t addr = gc_ref_value(obj);
     uintptr_t base = addr & ~(field_table_alignment - 1);
     uintptr_t field = (addr & (field_table_alignment - 1)) / sizeof(uintptr_t);
     uintptr_t log_byte = field / fields_per_byte;

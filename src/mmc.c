@@ -879,6 +879,23 @@ gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
   // Otherwise if it's a large or external object, it won't move.
 }
 
+int gc_object_is_old_generation_slow(struct gc_mutator *mut,
+                                     struct gc_ref obj) {
+  if (!GC_GENERATIONAL)
+    return 0;
+
+  struct gc_heap *heap = mutator_heap(mut);
+  struct nofl_space *nofl_space = heap_nofl_space(heap);
+  if (nofl_space_contains(nofl_space, obj))
+    return nofl_space_is_survivor(nofl_space, obj);
+
+  struct large_object_space *lospace = heap_large_object_space(heap);
+  if (large_object_space_contains(lospace, obj))
+    return large_object_space_is_survivor(lospace, obj);
+
+  return 0;
+}
+
 void
 gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
                       size_t obj_size, struct gc_edge edge,
@@ -887,7 +904,7 @@ gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
   GC_ASSERT(obj_size > gc_allocator_large_threshold());
   struct gc_heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);
-  if (!large_object_space_is_old(space, obj))
+  if (!large_object_space_is_survivor(space, obj))
     return;
   if (gc_object_set_remembered(obj))
     large_object_space_remember_object(space, obj);

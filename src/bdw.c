@@ -149,6 +149,11 @@ void gc_collect(struct gc_mutator *mut,
   }
 }
 
+int gc_object_is_old_generation_slow(struct gc_mutator *mut,
+                                     struct gc_ref obj) {
+  return 0;
+}
+
 void gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
                            size_t obj_size, struct gc_edge edge,
                            struct gc_ref new_val) {

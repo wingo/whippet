@@ -1432,6 +1432,15 @@ nofl_space_pin_object(struct nofl_space *space, struct gc_ref ref) {
 }
 
 static inline int
+nofl_space_is_survivor(struct nofl_space *space, struct gc_ref ref) {
+  uint8_t *metadata = nofl_metadata_byte_for_object(ref);
+  uint8_t mask = NOFL_METADATA_BYTE_MARK_0
+    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
+  uint8_t byte = atomic_load_explicit(metadata, memory_order_relaxed);
+  return byte & mask;
+}
+
+static inline int
 nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
                     struct gc_edge edge,
                     struct gc_ref old_ref,
