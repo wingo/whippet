@@ -712,9 +712,11 @@ sweep_ephemerons(struct gc_heap *heap) {
 }
 
 static void collect(struct gc_mutator *mut,
-                    enum gc_collection_kind requested_kind) GC_NEVER_INLINE;
+                    enum gc_collection_kind requested_kind,
+                    int requested_by_user) GC_NEVER_INLINE;
 static void
-collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
+collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind,
+        int requested_by_user) {
   struct gc_heap *heap = mutator_heap(mut);
   struct nofl_space *nofl_space = heap_nofl_space(heap);
   struct large_object_space *lospace = heap_large_object_space(heap);
@@ -732,7 +734,8 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   nofl_space_add_to_allocation_counter(nofl_space, &allocation_counter);
   large_object_space_add_to_allocation_counter(lospace, &allocation_counter);
   heap->total_allocated_bytes_at_last_gc += allocation_counter;
-  detect_out_of_memory(heap, allocation_counter);
+  if (!requested_by_user)
+    detect_out_of_memory(heap, allocation_counter);
   enum gc_collection_kind gc_kind =
     determine_collection_kind(heap, requested_kind);
   int is_minor = gc_kind == GC_COLLECTION_MINOR;
@@ -783,7 +786,8 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
 
 static void
 trigger_collection(struct gc_mutator *mut,
-                   enum gc_collection_kind requested_kind) {
+                   enum gc_collection_kind requested_kind,
+                   int requested_by_user) {
   struct gc_heap *heap = mutator_heap(mut);
   int prev_kind = -1;
   gc_stack_capture_hot(&mut->stack);
@@ -792,13 +796,13 @@ trigger_collection(struct gc_mutator *mut,
   while (mutators_are_stopping(heap))
     prev_kind = pause_mutator_for_collection(heap, mut);
   if (prev_kind < (int)requested_kind)
-    collect(mut, requested_kind);
+    collect(mut, requested_kind, requested_by_user);
   heap_unlock(heap);
 }
 
 void
 gc_collect(struct gc_mutator *mut, enum gc_collection_kind kind) {
-  trigger_collection(mut, kind);
+  trigger_collection(mut, kind, 1);
 }
 
 int*
@@ -829,7 +833,7 @@ allocate_large(struct gc_mutator *mut, size_t size) {
                                     npages << lospace->page_size_log2);
 
   while (!nofl_space_shrink(nofl_space, 0))
-    trigger_collection(mut, GC_COLLECTION_COMPACTING);
+    trigger_collection(mut, GC_COLLECTION_COMPACTING, 0);
   atomic_fetch_add(&heap->large_object_pages, npages);
 
   void *ret = large_object_space_alloc(lospace, npages);
@@ -846,7 +850,7 @@ allocate_large(struct gc_mutator *mut, size_t size) {
 
 static void
 collect_for_small_allocation(void *mut) {
-  trigger_collection(mut, GC_COLLECTION_ANY);
+  trigger_collection(mut, GC_COLLECTION_ANY, 0);
 }
 
 void*
