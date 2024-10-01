@@ -102,11 +102,18 @@ static inline void gc_object_forward_nonatomic(struct gc_ref ref,
   *tag_word(ref) = gc_ref_value(new_ref);
 }
 
-static inline void gc_object_set_remembered(struct gc_ref ref) {
+static inline int gc_object_set_remembered(struct gc_ref ref) {
   uintptr_t *loc = tag_word(ref);
-  uintptr_t tag = *loc;
-  while (!(tag & gcobj_remembered_bit))
-    atomic_compare_exchange_weak(loc, &tag, tag | gcobj_remembered_bit);
+  uintptr_t tag = atomic_load_explicit(loc, memory_order_relaxed);
+  while (1) {
+    if (tag & gcobj_remembered_bit)
+      return 0;
+    if (atomic_compare_exchange_weak_explicit(loc, &tag,
+                                              tag | gcobj_remembered_bit,
+                                              memory_order_acq_rel,
+                                              memory_order_acquire))
+      return 1;
+  }
 }
 
 static inline int gc_object_is_remembered_nonatomic(struct gc_ref ref) {

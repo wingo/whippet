@@ -54,7 +54,7 @@ GC_EMBEDDER_API inline void gc_trace_heap_roots(struct gc_heap_roots *roots,
 // are in the remembered set.  Large or potentially large objects
 // (e.g. a vector whose size is a run-time property) must have a
 // remembered set bit.  Small objects may or may not have such a bit.
-GC_EMBEDDER_API inline void gc_object_set_remembered(struct gc_ref ref);
+GC_EMBEDDER_API inline int gc_object_set_remembered(struct gc_ref ref);
 GC_EMBEDDER_API inline int gc_object_is_remembered_nonatomic(struct gc_ref ref);
 GC_EMBEDDER_API inline void gc_object_clear_remembered_nonatomic(struct gc_ref ref);
 
