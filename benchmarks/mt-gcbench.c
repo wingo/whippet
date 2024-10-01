@@ -144,8 +144,9 @@ static void allocate_garbage(struct thread *t) {
   }
 }
 
-static void set_field(Node *obj, Node **field, Node *val) {
-  gc_write_barrier(gc_ref_from_heap_object(obj), sizeof(Node),
+static void set_field(struct gc_mutator *mut, Node *obj,
+                      Node **field, Node *val) {
+  gc_write_barrier(mut, gc_ref_from_heap_object(obj), sizeof(Node),
                    gc_edge(field),
                    gc_ref_from_heap_object(val));
   *field = val;
@@ -166,8 +167,8 @@ static void populate(struct thread *t, int depth, Node *node) {
   NodeHandle r = { allocate_node(mut) };
   PUSH_HANDLE(t, r);
 
-  set_field(HANDLE_REF(self), &HANDLE_REF(self)->left, HANDLE_REF(l));
-  set_field(HANDLE_REF(self), &HANDLE_REF(self)->right, HANDLE_REF(r));
+  set_field(mut, HANDLE_REF(self), &HANDLE_REF(self)->left, HANDLE_REF(l));
+  set_field(mut, HANDLE_REF(self), &HANDLE_REF(self)->right, HANDLE_REF(r));
   // i is 0 because the memory is zeroed.
   HANDLE_REF(self)->j = depth;
 

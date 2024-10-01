@@ -876,8 +876,9 @@ gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
 }
 
 void
-gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
-                        struct gc_edge edge, struct gc_ref new_val) {
+gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
+                      size_t obj_size, struct gc_edge edge,
+                      struct gc_ref new_val) {
   GC_ASSERT(obj_size > gc_allocator_large_threshold());
   gc_object_set_remembered(obj);
 }

@@ -453,8 +453,9 @@ void gc_collect(struct gc_mutator *mut,
   collect(mut, 0);
 }
 
-void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
-                             struct gc_edge edge, struct gc_ref new_val) {
+void gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
+                           size_t obj_size, struct gc_edge edge,
+                           struct gc_ref new_val) {
 }
 
 int* gc_safepoint_flag_loc(struct gc_mutator *mut) { GC_CRASH(); }

@@ -30,12 +30,16 @@ static inline int gc_allocator_needs_clear(void) GC_ALWAYS_INLINE;
 enum gc_write_barrier_kind {
   GC_WRITE_BARRIER_NONE,
   GC_WRITE_BARRIER_CARD,
-  GC_WRITE_BARRIER_EXTERN
+  GC_WRITE_BARRIER_FIELD,
+  GC_WRITE_BARRIER_SLOW
 };
 
 static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) GC_ALWAYS_INLINE;
 static inline size_t gc_write_barrier_card_table_alignment(void) GC_ALWAYS_INLINE;
 static inline size_t gc_write_barrier_card_size(void) GC_ALWAYS_INLINE;
+static inline size_t gc_write_barrier_field_table_alignment(void) GC_ALWAYS_INLINE;
+static inline size_t gc_write_barrier_field_fields_per_byte(void) GC_ALWAYS_INLINE;
+static inline uint8_t gc_write_barrier_field_first_bit_pattern(void) GC_ALWAYS_INLINE;
 
 enum gc_safepoint_mechanism {
   GC_SAFEPOINT_MECHANISM_COOPERATIVE,

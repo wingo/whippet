@@ -483,8 +483,9 @@ void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
   GC_CRASH();
 }
 
-void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
-                             struct gc_edge edge, struct gc_ref new_val) {
+void gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
+                           size_t obj_size, struct gc_edge edge,
+                           struct gc_ref new_val) {
 }
 
 int* gc_safepoint_flag_loc(struct gc_mutator *mut) {

@@ -52,6 +52,15 @@ static inline size_t gc_write_barrier_card_table_alignment(void) {
 static inline size_t gc_write_barrier_card_size(void) {
   GC_CRASH();
 }
+static inline size_t gc_write_barrier_field_table_alignment(void) {
+  GC_CRASH();
+}
+static inline size_t gc_write_barrier_field_fields_per_byte(void) {
+  GC_CRASH();
+}
+static inline uint8_t gc_write_barrier_field_first_bit_pattern(void) {
+  GC_CRASH();
+}
 
 static inline enum gc_safepoint_mechanism gc_safepoint_mechanism(void) {
   return GC_SAFEPOINT_MECHANISM_COOPERATIVE;

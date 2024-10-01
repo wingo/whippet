@@ -44,7 +44,7 @@ static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) 
   if (GC_GENERATIONAL) {
     if (obj_size <= gc_allocator_large_threshold())
       return GC_WRITE_BARRIER_CARD;
-    return GC_WRITE_BARRIER_EXTERN;
+    return GC_WRITE_BARRIER_SLOW;
   }
   return GC_WRITE_BARRIER_NONE;
 }
@@ -55,6 +55,18 @@ static inline size_t gc_write_barrier_card_table_alignment(void) {
 static inline size_t gc_write_barrier_card_size(void) {
   GC_ASSERT(GC_GENERATIONAL);
   return 256;
+}
+static inline size_t gc_write_barrier_field_table_alignment(void) {
+  GC_ASSERT(GC_GENERATIONAL);
+  return 4 * 1024 * 1024;
+}
+static inline size_t gc_write_barrier_field_fields_per_byte(void) {
+  GC_ASSERT(GC_GENERATIONAL);
+  return 2;
+}
+static inline uint8_t gc_write_barrier_field_first_bit_pattern(void) {
+  GC_ASSERT(GC_GENERATIONAL);
+  return 64; // NOFL_METADATA_BYTE_LOGGED_0
 }
 
 static inline enum gc_safepoint_mechanism gc_safepoint_mechanism(void) {
