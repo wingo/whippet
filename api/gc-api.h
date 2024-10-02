@@ -210,15 +210,15 @@ GC_API_ void gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
                                    size_t obj_size, struct gc_edge edge,
                                    struct gc_ref new_val) GC_NEVER_INLINE;
 
-static inline void gc_write_barrier(struct gc_mutator *mut, struct gc_ref obj,
-                                    size_t obj_size, struct gc_edge edge,
-                                    struct gc_ref new_val) GC_ALWAYS_INLINE;
-static inline void gc_write_barrier(struct gc_mutator *mut, struct gc_ref obj,
-                                    size_t obj_size, struct gc_edge edge,
-                                    struct gc_ref new_val) {
+static inline int gc_write_barrier_fast(struct gc_mutator *mut, struct gc_ref obj,
+                                        size_t obj_size, struct gc_edge edge,
+                                        struct gc_ref new_val) GC_ALWAYS_INLINE;
+static inline int gc_write_barrier_fast(struct gc_mutator *mut, struct gc_ref obj,
+                                        size_t obj_size, struct gc_edge edge,
+                                        struct gc_ref new_val) {
   switch (gc_write_barrier_kind(obj_size)) {
   case GC_WRITE_BARRIER_NONE:
-    return;
+    return 0;
   case GC_WRITE_BARRIER_CARD: {
     size_t card_table_alignment = gc_write_barrier_card_table_alignment();
     size_t card_size = gc_write_barrier_card_size();
@@ -226,11 +226,11 @@ static inline void gc_write_barrier(struct gc_mutator *mut, struct gc_ref obj,
     uintptr_t base = addr & ~(card_table_alignment - 1);
     uintptr_t card = (addr & (card_table_alignment - 1)) / card_size;
     atomic_store_explicit((uint8_t*)(base + card), 1, memory_order_relaxed);
-    return;
+    return 0;
   }
   case GC_WRITE_BARRIER_FIELD: {
     if (!gc_object_is_old_generation(mut, obj, obj_size))
-      return;
+      return 0;
 
     size_t field_table_alignment = gc_write_barrier_field_table_alignment();
     size_t fields_per_byte = gc_write_barrier_field_fields_per_byte();
@@ -243,16 +243,23 @@ static inline void gc_write_barrier(struct gc_mutator *mut, struct gc_ref obj,
     uint8_t log_bit = first_bit_pattern << (field % fields_per_byte);
     uint8_t *byte_loc = (uint8_t*)(base + log_byte);
     uint8_t byte = atomic_load_explicit(byte_loc, memory_order_relaxed);
-    if (!(byte & log_bit))
-      gc_write_barrier_slow(mut, obj, obj_size, edge, new_val);
-    return;
+    return byte & log_bit;
   }
   case GC_WRITE_BARRIER_SLOW:
-    gc_write_barrier_slow(mut, obj, obj_size, edge, new_val);
-    return;
+    return 1;
   default:
     GC_CRASH();
   }
+}
+
+static inline void gc_write_barrier(struct gc_mutator *mut, struct gc_ref obj,
+                                    size_t obj_size, struct gc_edge edge,
+                                    struct gc_ref new_val) GC_ALWAYS_INLINE;
+static inline void gc_write_barrier(struct gc_mutator *mut, struct gc_ref obj,
+                                    size_t obj_size, struct gc_edge edge,
+                                    struct gc_ref new_val) {
+  if (GC_UNLIKELY(gc_write_barrier_fast(mut, obj, obj_size, edge, new_val)))
+    gc_write_barrier_slow(mut, obj, obj_size, edge, new_val);
 }
 
 GC_API_ void gc_pin_object(struct gc_mutator *mut, struct gc_ref obj);
