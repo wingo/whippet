@@ -56,7 +56,7 @@ static inline uint8_t gc_old_generation_check_alloc_table_bit_pattern(void) {
 static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) {
   if (GC_GENERATIONAL) {
     if (obj_size <= gc_allocator_large_threshold())
-      return GC_WRITE_BARRIER_CARD;
+      return GC_WRITE_BARRIER_FIELD;
     return GC_WRITE_BARRIER_SLOW;
   }
   return GC_WRITE_BARRIER_NONE;
@@ -71,7 +71,7 @@ static inline size_t gc_write_barrier_card_size(void) {
 }
 static inline size_t gc_write_barrier_field_table_alignment(void) {
   GC_ASSERT(GC_GENERATIONAL);
-  return 4 * 1024 * 1024;
+  return gc_allocator_alloc_table_alignment();
 }
 static inline size_t gc_write_barrier_field_fields_per_byte(void) {
   GC_ASSERT(GC_GENERATIONAL);

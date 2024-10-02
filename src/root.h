@@ -7,6 +7,7 @@
 struct gc_ephemeron;
 struct gc_heap;
 struct gc_mutator;
+struct gc_edge_buffer;
 
 enum gc_root_kind {
   GC_ROOT_KIND_NONE,
@@ -16,8 +17,7 @@ enum gc_root_kind {
   GC_ROOT_KIND_CONSERVATIVE_POSSIBLY_INTERIOR_EDGES,
   GC_ROOT_KIND_RESOLVED_EPHEMERONS,
   GC_ROOT_KIND_EDGE,
-  GC_ROOT_KIND_REMEMBERED_OBJECT,
-  GC_ROOT_KIND_REMEMBERED_SLAB,
+  GC_ROOT_KIND_EDGE_BUFFER,
 };
 
 struct gc_root {
@@ -28,8 +28,7 @@ struct gc_root {
     struct gc_ephemeron *resolved_ephemerons;
     struct extent_range range;
     struct gc_edge edge;
-    struct gc_ref ref;
-    size_t idx;
+    struct gc_edge_buffer *edge_buffer;
   };
 };
 
@@ -73,16 +72,9 @@ gc_root_edge(struct gc_edge edge) {
 }
 
 static inline struct gc_root
-gc_root_remembered_object(struct gc_ref ref) {
-  struct gc_root ret = { GC_ROOT_KIND_REMEMBERED_OBJECT };
-  ret.ref = ref;
-  return ret;
-}
-
-static inline struct gc_root
-gc_root_remembered_slab(size_t idx) {
-  struct gc_root ret = { GC_ROOT_KIND_REMEMBERED_SLAB };
-  ret.idx = idx;
+gc_root_edge_buffer(struct gc_edge_buffer *buf) {
+  struct gc_root ret = { GC_ROOT_KIND_EDGE_BUFFER };
+  ret.edge_buffer = buf;
   return ret;
 }
 

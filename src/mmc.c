@@ -11,6 +11,7 @@
 
 #include "background-thread.h"
 #include "debug.h"
+#include "field-set.h"
 #include "gc-align.h"
 #include "gc-inline.h"
 #include "gc-platform.h"
@@ -33,6 +34,7 @@ struct gc_heap {
   struct nofl_space nofl_space;
   struct large_object_space large_object_space;
   struct gc_extern_space *extern_space;
+  struct gc_field_set remembered_set;
   size_t large_object_pages;
   pthread_mutex_t lock;
   pthread_cond_t collector_cond;
@@ -72,6 +74,7 @@ struct gc_heap {
 
 struct gc_mutator {
   struct nofl_allocator allocator;
+  struct gc_field_set_writer logger;
   struct gc_heap *heap;
   struct gc_stack stack;
   struct gc_mutator_roots *roots;
@@ -188,6 +191,7 @@ add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->event_listener_data =
     heap->event_listener.mutator_added(heap->event_listener_data);
   nofl_allocator_reset(&mut->allocator);
+  gc_field_set_writer_init(&mut->logger, &heap->remembered_set);
   heap_lock(heap);
   // We have no roots.  If there is a GC currently in progress, we have
   // nothing to add.  Just wait until it's done.
@@ -207,6 +211,8 @@ add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
 static void
 remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
+  if (GC_GENERATIONAL)
+    gc_field_set_writer_release_buffer(&mut->logger);
   MUTATOR_EVENT(mut, mutator_removed);
   mut->heap = NULL;
   heap_lock(heap);
@@ -360,12 +366,9 @@ trace_root(struct gc_root root, struct gc_heap *heap,
   case GC_ROOT_KIND_EDGE:
     tracer_visit(root.edge, heap, worker);
     break;
-  case GC_ROOT_KIND_REMEMBERED_OBJECT:
-    trace_one(root.ref, heap, worker);
-    break;
-  case GC_ROOT_KIND_REMEMBERED_SLAB:
-    nofl_space_trace_remembered_slab(heap_nofl_space(heap), root.idx,
-                                     trace_one, heap, worker);
+  case GC_ROOT_KIND_EDGE_BUFFER:
+    gc_field_set_trace_edge_buffer(&heap->remembered_set, root.edge_buffer,
+                                   tracer_visit, heap, worker);
     break;
   default:
     GC_CRASH();
@@ -634,24 +637,26 @@ enqueue_root_edge(struct gc_edge edge, struct gc_heap *heap, void *unused) {
 }
 
 static void
-enqueue_remembered_object(struct gc_ref ref, struct gc_heap *heap) {
-  gc_tracer_add_root(&heap->tracer, gc_root_remembered_object(ref));
-}
-
-static void
 enqueue_generational_roots(struct gc_heap *heap,
                            enum gc_collection_kind gc_kind) {
   if (!GC_GENERATIONAL) return;
-  if (gc_kind == GC_COLLECTION_MINOR) {
-    for (size_t i = 0; i < heap_nofl_space(heap)->nslabs; i++)
-      gc_tracer_add_root(&heap->tracer, gc_root_remembered_slab(i));
-    large_object_space_trace_remembered_set(heap_large_object_space(heap),
-                                            enqueue_remembered_object,
-                                            heap);
-  } else {
-    nofl_space_clear_remembered_set(heap_nofl_space(heap));
-    large_object_space_clear_remembered_set(heap_large_object_space(heap));
-  }
+  if (gc_kind == GC_COLLECTION_MINOR)
+    gc_field_set_add_roots(&heap->remembered_set, &heap->tracer);
+}
+
+static inline void
+forget_remembered_edge(struct gc_edge edge, struct gc_heap *heap) {
+  struct nofl_space *space = heap_nofl_space(heap);
+  if (nofl_space_contains_edge(space, edge))
+    nofl_space_forget_edge(space, edge);
+  // Otherwise the edge is in the lospace, whose remembered edges are
+  // cleared in bulk.
+}
+
+static void
+clear_remembered_set(struct gc_heap *heap) {
+  gc_field_set_clear(&heap->remembered_set, forget_remembered_edge, heap);
+  large_object_space_clear_remembered_edges(heap_large_object_space(heap));
 }
 
 static void
@@ -768,6 +773,7 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind,
   HEAP_EVENT(heap, finalizers_traced);
   sweep_ephemerons(heap);
   gc_tracer_release(&heap->tracer);
+  clear_remembered_set(heap);
   nofl_space_finish_gc(nofl_space, gc_kind);
   large_object_space_finish_gc(lospace, is_minor);
   gc_extern_space_finish_gc(exspace, is_minor);
@@ -792,6 +798,8 @@ trigger_collection(struct gc_mutator *mut,
   int prev_kind = -1;
   gc_stack_capture_hot(&mut->stack);
   nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
+  if (GC_GENERATIONAL)
+    gc_field_set_writer_release_buffer(&mut->logger);
   heap_lock(heap);
   while (mutators_are_stopping(heap))
     prev_kind = pause_mutator_for_collection(heap, mut);
@@ -815,6 +823,8 @@ gc_safepoint_slow(struct gc_mutator *mut) {
   struct gc_heap *heap = mutator_heap(mut);
   gc_stack_capture_hot(&mut->stack);
   nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
+  if (GC_GENERATIONAL)
+    gc_field_set_writer_release_buffer(&mut->logger);
   heap_lock(heap);
   while (mutators_are_stopping(mutator_heap(mut)))
     pause_mutator_for_collection(heap, mut);
@@ -900,14 +910,16 @@ void
 gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
                       size_t obj_size, struct gc_edge edge,
                       struct gc_ref new_val) {
+  GC_ASSERT(gc_ref_is_heap_object(new_val));
   if (!GC_GENERATIONAL) return;
-  GC_ASSERT(obj_size > gc_allocator_large_threshold());
-  struct gc_heap *heap = mutator_heap(mut);
-  struct large_object_space *space = heap_large_object_space(heap);
-  if (!large_object_space_is_survivor(space, obj))
+  if (gc_object_is_old_generation_slow(mut, new_val))
     return;
-  if (gc_object_set_remembered(obj))
-    large_object_space_remember_object(space, obj);
+  struct gc_heap *heap = mutator_heap(mut);
+  if ((obj_size <= gc_allocator_large_threshold())
+      ? nofl_space_remember_edge(heap_nofl_space(heap), obj, edge)
+      : large_object_space_remember_edge(heap_large_object_space(heap),
+                                         obj, edge))
+    gc_field_set_writer_add_edge(&mut->logger, edge);
 }
   
 struct gc_ephemeron*
@@ -1032,6 +1044,7 @@ static int
 heap_init(struct gc_heap *heap, const struct gc_options *options) {
   // *heap is already initialized to 0.
 
+  gc_field_set_init(&heap->remembered_set);
   pthread_mutex_init(&heap->lock, NULL);
   pthread_cond_init(&heap->mutator_cond, NULL);
   pthread_cond_init(&heap->collector_cond, NULL);
@@ -1080,9 +1093,11 @@ gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(), NOFL_METADATA_BYTE_YOUNG);
   GC_ASSERT_EQ(gc_allocator_alloc_table_end_pattern(), NOFL_METADATA_BYTE_END);
   if (GC_GENERATIONAL) {
-    GC_ASSERT_EQ(gc_write_barrier_card_table_alignment(), NOFL_SLAB_SIZE);
-    GC_ASSERT_EQ(gc_write_barrier_card_size(),
-                 NOFL_BLOCK_SIZE / NOFL_REMSET_BYTES_PER_BLOCK);
+    GC_ASSERT_EQ(gc_write_barrier_field_table_alignment(), NOFL_SLAB_SIZE);
+    GC_ASSERT_EQ(gc_write_barrier_field_fields_per_byte(),
+                 NOFL_GRANULE_SIZE / sizeof(uintptr_t));
+    GC_ASSERT_EQ(gc_write_barrier_field_first_bit_pattern(),
+                 NOFL_METADATA_BYTE_LOGGED_0);
   }
 
   *heap = calloc(1, sizeof(struct gc_heap));
@@ -1139,6 +1154,8 @@ static void
 deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mut->next == NULL);
   nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
+  if (GC_GENERATIONAL)
+    gc_field_set_writer_release_buffer(&mut->logger);
   heap_lock(heap);
   heap->inactive_mutator_count++;
   gc_stack_capture_hot(&mut->stack);

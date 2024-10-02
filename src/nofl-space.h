@@ -45,10 +45,10 @@ STATIC_ASSERT_EQ(NOFL_MEDIUM_OBJECT_THRESHOLD,
 #define NOFL_NONMETA_BLOCKS_PER_SLAB (NOFL_BLOCKS_PER_SLAB - NOFL_META_BLOCKS_PER_SLAB)
 #define NOFL_METADATA_BYTES_PER_SLAB (NOFL_NONMETA_BLOCKS_PER_SLAB * NOFL_METADATA_BYTES_PER_BLOCK)
 #define NOFL_SLACK_METADATA_BYTES_PER_SLAB (NOFL_META_BLOCKS_PER_SLAB * NOFL_METADATA_BYTES_PER_BLOCK)
-#define NOFL_REMSET_BYTES_PER_BLOCK (NOFL_SLACK_METADATA_BYTES_PER_SLAB / NOFL_BLOCKS_PER_SLAB)
-#define NOFL_REMSET_BYTES_PER_SLAB (NOFL_REMSET_BYTES_PER_BLOCK * NOFL_NONMETA_BLOCKS_PER_SLAB)
-#define NOFL_SLACK_REMSET_BYTES_PER_SLAB (NOFL_REMSET_BYTES_PER_BLOCK * NOFL_META_BLOCKS_PER_SLAB)
-#define NOFL_SUMMARY_BYTES_PER_BLOCK (NOFL_SLACK_REMSET_BYTES_PER_SLAB / NOFL_BLOCKS_PER_SLAB)
+#define NOFL_VESTIGIAL_BYTES_PER_BLOCK (NOFL_SLACK_METADATA_BYTES_PER_SLAB / NOFL_BLOCKS_PER_SLAB)
+#define NOFL_VESTIGIAL_BYTES_PER_SLAB (NOFL_VESTIGIAL_BYTES_PER_BLOCK * NOFL_NONMETA_BLOCKS_PER_SLAB)
+#define NOFL_SLACK_VESTIGIAL_BYTES_PER_SLAB (NOFL_VESTIGIAL_BYTES_PER_BLOCK * NOFL_META_BLOCKS_PER_SLAB)
+#define NOFL_SUMMARY_BYTES_PER_BLOCK (NOFL_SLACK_VESTIGIAL_BYTES_PER_SLAB / NOFL_BLOCKS_PER_SLAB)
 #define NOFL_SUMMARY_BYTES_PER_SLAB (NOFL_SUMMARY_BYTES_PER_BLOCK * NONMETA_BLOCKS_PER_SLAB)
 #define NOFL_SLACK_SUMMARY_BYTES_PER_SLAB (NOFL_SUMMARY_BYTES_PER_BLOCK * NOFL_META_BLOCKS_PER_SLAB)
 #define NOFL_HEADER_BYTES_PER_SLAB NOFL_SLACK_SUMMARY_BYTES_PER_SLAB
@@ -127,7 +127,7 @@ struct nofl_block_ref {
 struct nofl_slab {
   struct nofl_slab_header header;
   struct nofl_block_summary summaries[NOFL_NONMETA_BLOCKS_PER_SLAB];
-  uint8_t remembered_set[NOFL_REMSET_BYTES_PER_SLAB];
+  uint8_t unused[NOFL_VESTIGIAL_BYTES_PER_SLAB];
   uint8_t metadata[NOFL_METADATA_BYTES_PER_SLAB];
   struct nofl_block blocks[NOFL_NONMETA_BLOCKS_PER_SLAB];
 };
@@ -297,8 +297,6 @@ nofl_block_set_mark(uintptr_t addr) {
 }
 
 #define NOFL_GRANULES_PER_BLOCK (NOFL_BLOCK_SIZE / NOFL_GRANULE_SIZE)
-#define NOFL_GRANULES_PER_REMSET_BYTE \
-  (NOFL_GRANULES_PER_BLOCK / NOFL_REMSET_BYTES_PER_BLOCK)
 
 static struct nofl_block_summary*
 nofl_block_summary_for_addr(uintptr_t addr) {
@@ -909,67 +907,75 @@ nofl_space_set_ephemeron_flag(struct gc_ref ref) {
 
 struct gc_trace_worker;
 
-// Note that it's quite possible (and even likely) that any given remset
-// byte doesn't hold any roots, if all stores were to nursery objects.
-STATIC_ASSERT_EQ(NOFL_GRANULES_PER_REMSET_BYTE % 8, 0);
-static void
-nofl_space_trace_card(struct nofl_space *space, struct nofl_slab *slab,
-                      size_t card,
-                      void (*trace_object)(struct gc_ref,
-                                           struct gc_heap*,
-                                           struct gc_trace_worker*),
-                      struct gc_heap *heap,
-                      struct gc_trace_worker *worker) {
-  uintptr_t first_addr_in_slab = (uintptr_t) &slab->blocks[0];
-  size_t granule_base = card * NOFL_GRANULES_PER_REMSET_BYTE;
-  for (size_t granule_in_remset = 0;
-       granule_in_remset < NOFL_GRANULES_PER_REMSET_BYTE;
-       granule_in_remset += 8, granule_base += 8) {
-    uint64_t mark_bytes = load_eight_aligned_bytes(slab->metadata + granule_base);
-    mark_bytes &= space->sweep_mask;
-    while (mark_bytes) {
-      size_t granule_offset = count_zero_bytes(mark_bytes);
-      mark_bytes &= ~(((uint64_t)0xff) << (granule_offset * 8));
-      size_t granule = granule_base + granule_offset;
-      uintptr_t addr = first_addr_in_slab + granule * NOFL_GRANULE_SIZE;
-      GC_ASSERT(nofl_metadata_byte_for_addr(addr) == &slab->metadata[granule]);
-      trace_object(gc_ref(addr), heap, worker);
-    }
-  }
+static inline int
+nofl_space_contains_address(struct nofl_space *space, uintptr_t addr) {
+  return extents_contain_addr(space->extents, addr);
+}
+
+static inline int
+nofl_space_contains_conservative_ref(struct nofl_space *space,
+                                     struct gc_conservative_ref ref) {
+  return nofl_space_contains_address(space, gc_conservative_ref_value(ref));
+}
+
+static inline int
+nofl_space_contains(struct nofl_space *space, struct gc_ref ref) {
+  return nofl_space_contains_address(space, gc_ref_value(ref));
+}
+
+static inline int
+nofl_space_contains_edge(struct nofl_space *space, struct gc_edge edge) {
+  return nofl_space_contains_address(space, (uintptr_t)gc_edge_loc(edge));
+}  
+
+static inline int
+nofl_space_is_survivor(struct nofl_space *space, struct gc_ref ref) {
+  uint8_t *metadata = nofl_metadata_byte_for_object(ref);
+  uint8_t mask = NOFL_METADATA_BYTE_MARK_0
+    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
+  uint8_t byte = atomic_load_explicit(metadata, memory_order_relaxed);
+  return byte & mask;
+}
+
+static uint8_t*
+nofl_field_logged_byte(struct gc_edge edge) {
+  return nofl_metadata_byte_for_addr((uintptr_t)gc_edge_loc(edge));
+}
+
+static uint8_t
+nofl_field_logged_bit(struct gc_edge edge) {
+  GC_ASSERT_EQ(sizeof(uintptr_t) * 2, NOFL_GRANULE_SIZE);
+  size_t field = ((uintptr_t)gc_edge_loc(edge)) / sizeof(uintptr_t);
+  return NOFL_METADATA_BYTE_LOGGED_0 << (field % 2);
+}
+
+static int
+nofl_space_remember_edge(struct nofl_space *space, struct gc_ref obj,
+                         struct gc_edge edge) {
+  GC_ASSERT(nofl_space_contains(space, obj));
+  if (!GC_GENERATIONAL) return 0;
+  if (!nofl_space_is_survivor(space, obj))
+    return 0;
+  uint8_t* loc = nofl_field_logged_byte(edge);
+  uint8_t bit = nofl_field_logged_bit(edge);
+  uint8_t byte = atomic_load_explicit(loc, memory_order_acquire);
+  do {
+    if (byte & bit) return 0;
+  } while (!atomic_compare_exchange_weak_explicit(loc, &byte, byte|bit,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire));
+  return 1;
 }
 
 static void
-nofl_space_trace_remembered_slab(struct nofl_space *space,
-                                 size_t slab_idx,
-                                 void (*trace_object)(struct gc_ref,
-                                                      struct gc_heap*,
-                                                      struct gc_trace_worker*),
-                                 struct gc_heap *heap,
-                                 struct gc_trace_worker *worker) {
-  GC_ASSERT(slab_idx < space->nslabs);
-  struct nofl_slab *slab = space->slabs[slab_idx];
-  uint8_t *remset = slab->remembered_set;
-  for (size_t card_base = 0;
-       card_base < NOFL_REMSET_BYTES_PER_SLAB;
-       card_base += 8) {
-    uint64_t remset_bytes = load_eight_aligned_bytes(remset + card_base);
-    if (!remset_bytes) continue;
-    memset(remset + card_base, 0, 8);
-    while (remset_bytes) {
-      size_t card_offset = count_zero_bytes(remset_bytes);
-      remset_bytes &= ~(((uint64_t)0xff) << (card_offset * 8));
-      nofl_space_trace_card(space, slab, card_base + card_offset,
-                            trace_object, heap, worker);
-    }
-  }
-}
-
-static void
-nofl_space_clear_remembered_set(struct nofl_space *space) {
-  if (!GC_GENERATIONAL) return;
-  for (size_t slab = 0; slab < space->nslabs; slab++) {
-    memset(space->slabs[slab]->remembered_set, 0, NOFL_REMSET_BYTES_PER_SLAB);
-  }
+nofl_space_forget_edge(struct nofl_space *space, struct gc_edge edge) {
+  GC_ASSERT(nofl_space_contains_edge(space, edge));
+  GC_ASSERT(GC_GENERATIONAL);
+  uint8_t* loc = nofl_field_logged_byte(edge);
+  // Clear both logged bits.
+  uint8_t bits = NOFL_METADATA_BYTE_LOGGED_0 | NOFL_METADATA_BYTE_LOGGED_1;
+  uint8_t byte = atomic_load_explicit(loc, memory_order_acquire);
+  atomic_store_explicit(loc, byte & ~bits, memory_order_release);
 }
 
 static void
@@ -1431,13 +1437,29 @@ nofl_space_pin_object(struct nofl_space *space, struct gc_ref ref) {
                                                   memory_order_acquire));
 }
 
-static inline int
-nofl_space_is_survivor(struct nofl_space *space, struct gc_ref ref) {
-  uint8_t *metadata = nofl_metadata_byte_for_object(ref);
-  uint8_t mask = NOFL_METADATA_BYTE_MARK_0
-    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
-  uint8_t byte = atomic_load_explicit(metadata, memory_order_relaxed);
-  return byte & mask;
+static inline void
+clear_logged_bits_in_evacuated_object(uint8_t *metadata, size_t count) {
+  // On a major collection, it could be that we evacuate an object that
+  // has one or more fields in the old-to-new remembered set.  Because
+  // the young generation is empty after a major collection, we know the
+  // old-to-new remembered set will be empty also.  To clear the
+  // remembered set, we call gc_field_set_clear, which will end up
+  // visiting all remembered edges and clearing their logged bits.  But
+  // that doesn't work for evacuated objects, because their edges move:
+  // gc_field_set_clear will frob the pre-evacuation metadata bytes of
+  // the object.  So here we explicitly clear logged bits for evacuated
+  // objects.  That the bits for the pre-evacuation location are also
+  // frobbed by gc_field_set_clear doesn't cause a problem, as that
+  // memory will be swept and cleared later.
+  //
+  // This concern doesn't apply to minor collections: there we will
+  // never evacuate an object in the remembered set, because old objects
+  // aren't traced during a minor collection.
+  uint8_t mask = NOFL_METADATA_BYTE_LOGGED_0 | NOFL_METADATA_BYTE_LOGGED_1;
+  for (size_t i = 0; i < count; i++) {
+    if (metadata[i] & mask)
+      metadata[i] &= ~mask;
+  }    
 }
 
 static inline int
@@ -1472,6 +1494,8 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
       // the object's fields need to be traced.
       uint8_t *new_metadata = nofl_metadata_byte_for_object(new_ref);
       memcpy(new_metadata + 1, metadata + 1, object_granules - 1);
+      if (GC_GENERATIONAL)
+        clear_logged_bits_in_evacuated_object(new_metadata, object_granules);
       gc_edge_update(edge, new_ref);
       return nofl_space_set_nonempty_mark(space, new_metadata, byte,
                                           new_ref);
@@ -1521,22 +1545,6 @@ nofl_space_evacuate_or_mark_object(struct nofl_space *space,
                                evacuate);
 
   return nofl_space_set_nonempty_mark(space, metadata, byte, old_ref);
-}
-
-static inline int
-nofl_space_contains_address(struct nofl_space *space, uintptr_t addr) {
-  return extents_contain_addr(space->extents, addr);
-}
-
-static inline int
-nofl_space_contains_conservative_ref(struct nofl_space *space,
-                                     struct gc_conservative_ref ref) {
-  return nofl_space_contains_address(space, gc_conservative_ref_value(ref));
-}
-
-static inline int
-nofl_space_contains(struct nofl_space *space, struct gc_ref ref) {
-  return nofl_space_contains_address(space, gc_ref_value(ref));
 }
 
 static inline int

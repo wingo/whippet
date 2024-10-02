@@ -36,7 +36,7 @@ struct large_object_space {
   struct address_set from_space;
   struct address_set to_space;
   struct address_set survivor_space;
-  struct address_set remembered_set;
+  struct address_set remembered_edges;
   struct address_set free_space;
   struct address_map object_pages; // for each object: size in pages.
   struct address_map predecessors; // subsequent addr -> object addr
@@ -50,7 +50,7 @@ static int large_object_space_init(struct large_object_space *space,
   address_set_init(&space->from_space);
   address_set_init(&space->to_space);
   address_set_init(&space->survivor_space);
-  address_set_init(&space->remembered_set);
+  address_set_init(&space->remembered_edges);
   address_set_init(&space->free_space);
   address_map_init(&space->object_pages);
   address_map_init(&space->predecessors);
@@ -75,49 +75,6 @@ static inline int large_object_space_contains(struct large_object_space *space,
   int ret = address_map_contains(&space->object_pages, gc_ref_value(ref));
   pthread_mutex_unlock(&space->lock);
   return ret;
-}
-
-struct large_object_space_trace_remembered_data {
-  void (*trace)(struct gc_ref, struct gc_heap*);
-  struct gc_heap *heap;
-};
-
-static void large_object_space_trace_one_remembered(uintptr_t addr,
-                                                    void *data) {
-  struct gc_ref ref = gc_ref(addr);
-  gc_object_clear_remembered_nonatomic(ref);
-  struct large_object_space_trace_remembered_data *vdata = data;
-  vdata->trace(ref, vdata->heap);
-}
-
-static void
-large_object_space_clear_remembered_set(struct large_object_space *space) {
-  address_set_clear(&space->remembered_set);
-}
-
-static void
-large_object_space_trace_remembered_set(struct large_object_space *space,
-                                        void (*trace)(struct gc_ref,
-                                                      struct gc_heap*),
-                                        struct gc_heap *heap) {
-  struct large_object_space_trace_remembered_data vdata = { trace, heap };
-
-  if (!GC_GENERATIONAL)
-    return;
-  address_set_for_each(&space->remembered_set,
-                       large_object_space_trace_one_remembered, &vdata);
-  large_object_space_clear_remembered_set(space);
-}
-
-static void
-large_object_space_remember_object(struct large_object_space *space,
-                                   struct gc_ref ref) {
-  GC_ASSERT(GC_GENERATIONAL);
-  uintptr_t addr = gc_ref_value(ref);
-  pthread_mutex_lock(&space->lock);
-  GC_ASSERT(!address_set_contains(&space->remembered_set, addr));
-  address_set_add(&space->remembered_set, addr);
-  pthread_mutex_unlock(&space->lock);
 }
 
 static void large_object_space_flip_survivor(uintptr_t addr,
@@ -176,15 +133,39 @@ static int large_object_space_is_copied(struct large_object_space *space,
   return copied;
 }
 
+static int
+large_object_space_is_survivor_with_lock(struct large_object_space *space,
+                                         struct gc_ref ref) {
+  return address_set_contains(&space->survivor_space, gc_ref_value(ref));
+}
+
 static int large_object_space_is_survivor(struct large_object_space *space,
                                           struct gc_ref ref) {
   GC_ASSERT(large_object_space_contains(space, ref));
-  int old = 0;
-  uintptr_t addr = gc_ref_value(ref);
   pthread_mutex_lock(&space->lock);
-  old = address_set_contains(&space->survivor_space, addr);
+  int old = large_object_space_is_survivor_with_lock(space, ref);
   pthread_mutex_unlock(&space->lock);
   return old;
+}
+
+static int large_object_space_remember_edge(struct large_object_space *space,
+                                            struct gc_ref obj,
+                                            struct gc_edge edge) {
+  int remembered = 0;
+  uintptr_t edge_addr = (uintptr_t)gc_edge_loc(edge);
+  pthread_mutex_lock(&space->lock);
+  if (large_object_space_is_survivor_with_lock(space, obj)
+      && !address_set_contains(&space->remembered_edges, edge_addr)) {
+    address_set_add(&space->remembered_edges, edge_addr);
+    remembered = 1;
+  }
+  pthread_mutex_unlock(&space->lock);
+  return remembered;
+}
+
+static void
+large_object_space_clear_remembered_edges(struct large_object_space *space) {
+  address_set_clear(&space->remembered_edges);
 }
 
 static int large_object_space_mark_object(struct large_object_space *space,
