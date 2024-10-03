@@ -144,8 +144,8 @@ static void allocate_garbage(struct thread *t) {
   }
 }
 
-static void set_field(struct gc_mutator *mut, Node *obj,
-                      Node **field, Node *val) {
+static inline void set_field(struct gc_mutator *mut, Node *obj,
+                             Node **field, Node *val) {
   gc_write_barrier(mut, gc_ref_from_heap_object(obj), sizeof(Node),
                    gc_edge(field),
                    gc_ref_from_heap_object(val));
