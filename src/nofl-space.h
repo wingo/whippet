@@ -972,10 +972,18 @@ nofl_space_forget_edge(struct nofl_space *space, struct gc_edge edge) {
   GC_ASSERT(nofl_space_contains_edge(space, edge));
   GC_ASSERT(GC_GENERATIONAL);
   uint8_t* loc = nofl_field_logged_byte(edge);
-  // Clear both logged bits.
-  uint8_t bits = NOFL_METADATA_BYTE_LOGGED_0 | NOFL_METADATA_BYTE_LOGGED_1;
-  uint8_t byte = atomic_load_explicit(loc, memory_order_acquire);
-  atomic_store_explicit(loc, byte & ~bits, memory_order_release);
+  if (GC_DEBUG) {
+    pthread_mutex_lock(&space->lock);
+    uint8_t bit = nofl_field_logged_bit(edge);
+    GC_ASSERT(*loc & bit);
+    *loc &= ~bit;
+    pthread_mutex_unlock(&space->lock);
+  } else {
+    // In release mode, race to clear both bits at once.
+    uint8_t byte = atomic_load_explicit(loc, memory_order_relaxed);
+    byte &= ~(NOFL_METADATA_BYTE_LOGGED_0 | NOFL_METADATA_BYTE_LOGGED_1);
+    atomic_store_explicit(loc, byte, memory_order_relaxed);
+  }
 }
 
 static void
