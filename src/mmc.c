@@ -605,7 +605,7 @@ enqueue_conservative_roots(uintptr_t low, uintptr_t high,
                      gc_root_conservative_edges(low, high, *possibly_interior));
 }
 
-static void
+static int
 enqueue_mutator_conservative_roots(struct gc_heap *heap) {
   if (gc_has_mutator_conservative_roots()) {
     int possibly_interior = gc_mutator_conservative_roots_may_be_interior();
@@ -614,23 +614,28 @@ enqueue_mutator_conservative_roots(struct gc_heap *heap) {
          mut = mut->next)
       gc_stack_visit(&mut->stack, enqueue_conservative_roots, heap,
                      &possibly_interior);
+    return 1;
   }
+  return 0;
 }
 
-static void
+static int
 enqueue_global_conservative_roots(struct gc_heap *heap) {
   if (gc_has_global_conservative_roots()) {
     int possibly_interior = 0;
     gc_platform_visit_global_conservative_roots
       (enqueue_conservative_roots, heap, &possibly_interior);
+    return 1;
   }
+  return 0;
 }
 
-static void
+static int
 enqueue_pinned_roots(struct gc_heap *heap) {
   GC_ASSERT(!heap_nofl_space(heap)->evacuating);
-  enqueue_mutator_conservative_roots(heap);
-  enqueue_global_conservative_roots(heap);
+  int has_pinned_roots = enqueue_mutator_conservative_roots(heap);
+  has_pinned_roots |= enqueue_global_conservative_roots(heap);
+  return has_pinned_roots;
 }
 
 static void
@@ -757,9 +762,8 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind,
   size_t live_bytes = heap->size * (1.0 - yield);
   HEAP_EVENT(heap, live_data_size, live_bytes);
   DEBUG("last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
-  enqueue_pinned_roots(heap);
   // Eagerly trace pinned roots if we are going to relocate objects.
-  if (gc_kind == GC_COLLECTION_COMPACTING)
+  if (enqueue_pinned_roots(heap) && gc_kind == GC_COLLECTION_COMPACTING)
     gc_tracer_trace_roots(&heap->tracer);
   // Process the rest of the roots in parallel.  This heap event should probably
   // be removed, as there is no clear cutoff time.
@@ -891,8 +895,8 @@ gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
   // Otherwise if it's a large or external object, it won't move.
 }
 
-int gc_object_is_old_generation_slow(struct gc_mutator *mut,
-                                     struct gc_ref obj) {
+int
+gc_object_is_old_generation_slow(struct gc_mutator *mut, struct gc_ref obj) {
   if (!GC_GENERATIONAL)
     return 0;
 
