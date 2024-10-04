@@ -44,6 +44,7 @@ struct gc_field_set_writer {
 static void
 gc_edge_buffer_list_push(struct gc_edge_buffer_list *list,
                          struct gc_edge_buffer *buf) {
+  GC_ASSERT(!buf->next);
   struct gc_edge_buffer *next =
     atomic_load_explicit(&list->head, memory_order_relaxed);
   do {
@@ -72,6 +73,7 @@ static void
 gc_edge_buffer_stack_push(struct gc_edge_buffer_stack *stack,
                           struct gc_edge_buffer *buf,
                           const struct gc_lock *lock) {
+  GC_ASSERT(!buf->next);
   buf->next = stack->list.head;
   stack->list.head = buf;
 }
