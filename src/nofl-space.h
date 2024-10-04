@@ -1408,11 +1408,8 @@ nofl_space_should_evacuate(struct nofl_space *space, uint8_t metadata_byte,
 
 static inline int
 nofl_space_set_mark(struct nofl_space *space, uint8_t *metadata, uint8_t byte) {
-  // Clear logged bits when we mark: after marking, there will be no
-  // young objects.
   uint8_t mask = NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_MARK_0
-    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2
-    | NOFL_METADATA_BYTE_LOGGED_0 | NOFL_METADATA_BYTE_LOGGED_1;
+    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
   atomic_store_explicit(metadata,
                         (byte & ~mask) | space->marked_mask,
                         memory_order_relaxed);
