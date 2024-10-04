@@ -925,7 +925,7 @@ nofl_space_contains(struct nofl_space *space, struct gc_ref ref) {
 
 static inline int
 nofl_space_contains_edge(struct nofl_space *space, struct gc_edge edge) {
-  return nofl_space_contains_address(space, (uintptr_t)gc_edge_loc(edge));
+  return nofl_space_contains_address(space, gc_edge_address(edge));
 }  
 
 static inline int
@@ -939,13 +939,13 @@ nofl_space_is_survivor(struct nofl_space *space, struct gc_ref ref) {
 
 static uint8_t*
 nofl_field_logged_byte(struct gc_edge edge) {
-  return nofl_metadata_byte_for_addr((uintptr_t)gc_edge_loc(edge));
+  return nofl_metadata_byte_for_addr(gc_edge_address(edge));
 }
 
 static uint8_t
 nofl_field_logged_bit(struct gc_edge edge) {
   GC_ASSERT_EQ(sizeof(uintptr_t) * 2, NOFL_GRANULE_SIZE);
-  size_t field = ((uintptr_t)gc_edge_loc(edge)) / sizeof(uintptr_t);
+  size_t field = gc_edge_address(edge) / sizeof(uintptr_t);
   return NOFL_METADATA_BYTE_LOGGED_0 << (field % 2);
 }
 

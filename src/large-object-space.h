@@ -152,7 +152,7 @@ static int large_object_space_remember_edge(struct large_object_space *space,
                                             struct gc_ref obj,
                                             struct gc_edge edge) {
   int remembered = 0;
-  uintptr_t edge_addr = (uintptr_t)gc_edge_loc(edge);
+  uintptr_t edge_addr = gc_edge_address(edge);
   pthread_mutex_lock(&space->lock);
   if (large_object_space_is_survivor_with_lock(space, obj)
       && !address_set_contains(&space->remembered_edges, edge_addr)) {

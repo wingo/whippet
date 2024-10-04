@@ -16,6 +16,9 @@ static inline struct gc_ref gc_edge_ref(struct gc_edge edge) {
 static inline struct gc_ref* gc_edge_loc(struct gc_edge edge) {
   return edge.dst;
 }
+static inline uintptr_t gc_edge_address(struct gc_edge edge) {
+  return (uintptr_t)gc_edge_loc(edge);
+}
 static inline void gc_edge_update(struct gc_edge edge, struct gc_ref ref) {
   *edge.dst = ref;
 }
