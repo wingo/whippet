@@ -662,6 +662,7 @@ forget_remembered_edge(struct gc_edge edge, struct gc_heap *heap) {
 
 static void
 clear_remembered_set(struct gc_heap *heap) {
+  if (!GC_GENERATIONAL) return;
   gc_field_set_clear(&heap->remembered_set, forget_remembered_edge, heap);
   large_object_space_clear_remembered_edges(heap_large_object_space(heap));
 }
