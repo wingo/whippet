@@ -1442,8 +1442,9 @@ nofl_space_pin_object(struct nofl_space *space, struct gc_ref ref) {
                                                   memory_order_acquire));
 }
 
-static inline void
-clear_logged_bits_in_evacuated_object(uint8_t *metadata, size_t count) {
+static inline uint8_t
+clear_logged_bits_in_evacuated_object(uint8_t head, uint8_t *metadata,
+                                      size_t count) {
   // On a major collection, it could be that we evacuate an object that
   // has one or more fields in the old-to-new remembered set.  Because
   // the young generation is empty after a major collection, we know the
@@ -1461,10 +1462,11 @@ clear_logged_bits_in_evacuated_object(uint8_t *metadata, size_t count) {
   // never evacuate an object in the remembered set, because old objects
   // aren't traced during a minor collection.
   uint8_t mask = NOFL_METADATA_BYTE_LOGGED_0 | NOFL_METADATA_BYTE_LOGGED_1;
-  for (size_t i = 0; i < count; i++) {
+  for (size_t i = 1; i < count; i++) {
     if (metadata[i] & mask)
       metadata[i] &= ~mask;
   }    
+  return head & ~mask;
 }
 
 static inline int
@@ -1500,7 +1502,8 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
       uint8_t *new_metadata = nofl_metadata_byte_for_object(new_ref);
       memcpy(new_metadata + 1, metadata + 1, object_granules - 1);
       if (GC_GENERATIONAL)
-        clear_logged_bits_in_evacuated_object(new_metadata, object_granules);
+        byte = clear_logged_bits_in_evacuated_object(byte, new_metadata,
+                                                     object_granules);
       gc_edge_update(edge, new_ref);
       return nofl_space_set_nonempty_mark(space, new_metadata, byte,
                                           new_ref);
