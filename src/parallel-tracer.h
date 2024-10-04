@@ -207,7 +207,7 @@ trace_worker_steal_from_any(struct gc_trace_worker *worker,
   for (size_t i = 0; i < tracer->worker_count; i++) {
     LOG("tracer #%zu: stealing from #%zu\n", worker->id, worker->steal_id);
     struct gc_ref obj = tracer_steal_from_worker(tracer, worker->steal_id);
-    if (gc_ref_is_heap_object(obj)) {
+    if (!gc_ref_is_null(obj)) {
       LOG("tracer #%zu: stealing got %p\n", worker->id,
             gc_ref_heap_object(obj));
       return obj;
@@ -281,13 +281,13 @@ trace_worker_steal(struct gc_trace_worker *worker) {
   {
     LOG("tracer #%zu: trying to pop worker's own deque\n", worker->id);
     struct gc_ref obj = shared_worklist_try_pop(&worker->shared);
-    if (gc_ref_is_heap_object(obj))
+    if (!gc_ref_is_null(obj))
       return obj;
   }
 
   LOG("tracer #%zu: trying to steal\n", worker->id);
   struct gc_ref obj = trace_worker_steal_from_any(worker, tracer);
-  if (gc_ref_is_heap_object(obj))
+  if (!gc_ref_is_null(obj))
     return obj;
 
   return gc_ref_null();
@@ -337,7 +337,7 @@ trace_with_data(struct gc_tracer *tracer,
           ref = local_worklist_pop(&worker->local);
         } else {
           ref = trace_worker_steal(worker);
-          if (!gc_ref_is_heap_object(ref))
+          if (gc_ref_is_null(ref))
             break;
         }
         trace_one(ref, heap, worker);

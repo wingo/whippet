@@ -233,7 +233,7 @@ static void visit_external_object(struct gc_heap *heap,
 
 static void visit(struct gc_edge edge, struct gc_heap *heap) {
   struct gc_ref ref = gc_edge_ref(edge);
-  if (!gc_ref_is_heap_object(ref))
+  if (gc_ref_is_null(ref) || gc_ref_is_immediate(ref))
     return;
   if (semi_space_contains(heap_semi_space(heap), ref))
     visit_semi_space(heap, heap_semi_space(heap), edge, ref);
@@ -250,6 +250,9 @@ gc_heap_pending_ephemerons(struct gc_heap *heap) {
 
 int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
   struct gc_ref ref = gc_edge_ref(edge);
+  GC_ASSERT(!gc_ref_is_null(ref));
+  if (gc_ref_is_immediate(ref))
+    return 1;
   GC_ASSERT(gc_ref_is_heap_object(ref));
   if (semi_space_contains(heap_semi_space(heap), ref)) {
     uintptr_t forwarded = gc_object_forwarded_nonatomic(ref);

@@ -164,8 +164,7 @@ void gc_finalizer_init_internal(struct gc_finalizer *f,
   // value.
   if (f->state != FINALIZER_STATE_INIT)
     GC_CRASH();
-  if (gc_ref_is_heap_object(f->object))
-    GC_CRASH();
+  GC_ASSERT(gc_ref_is_null(f->object));
   f->object = object;
   f->closure = closure;
 }
@@ -179,7 +178,7 @@ void gc_finalizer_attach_internal(struct gc_finalizer_state *state,
   // value.
   if (f->state != FINALIZER_STATE_INIT)
     GC_CRASH();
-  if (!gc_ref_is_heap_object(f->object))
+  if (gc_ref_is_null(f->object))
     GC_CRASH();
 
   f->state = FINALIZER_STATE_ACTIVE;

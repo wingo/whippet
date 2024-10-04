@@ -121,8 +121,6 @@ gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
 static inline int
 do_trace(struct gc_heap *heap, struct gc_edge edge, struct gc_ref ref,
          struct gc_trace_worker_data *data) {
-  if (!gc_ref_is_heap_object(ref))
-    return 0;
   if (GC_LIKELY(nofl_space_contains(heap_nofl_space(heap), ref)))
     return nofl_space_evacuate_or_mark_object(heap_nofl_space(heap), edge, ref,
                                               &data->allocator);
@@ -137,6 +135,9 @@ static inline int
 trace_edge(struct gc_heap *heap, struct gc_edge edge,
            struct gc_trace_worker_data *data) {
   struct gc_ref ref = gc_edge_ref(edge);
+  if (gc_ref_is_null(ref) || gc_ref_is_immediate(ref))
+    return 0;
+
   int is_new = do_trace(heap, edge, ref, data);
 
   if (is_new &&
@@ -150,9 +151,10 @@ trace_edge(struct gc_heap *heap, struct gc_edge edge,
 int
 gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
   struct gc_ref ref = gc_edge_ref(edge);
-  if (!gc_ref_is_heap_object(ref))
-    return 0;
-
+  GC_ASSERT(!gc_ref_is_null(ref));
+  if (gc_ref_is_immediate(ref))
+    return 1;
+  GC_ASSERT(gc_ref_is_heap_object(ref));
   struct nofl_space *nofl_space = heap_nofl_space(heap);
   if (GC_LIKELY(nofl_space_contains(nofl_space, ref)))
     return nofl_space_forward_or_mark_if_traced(nofl_space, edge, ref);
@@ -271,11 +273,11 @@ static inline struct gc_ref
 trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
                        int possibly_interior) {
   struct gc_ref ret = do_trace_conservative_ref(heap, ref, possibly_interior);
-
-  if (gc_ref_is_heap_object(ret) &&
-      GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
-                                       memory_order_relaxed)))
-    gc_resolve_pending_ephemerons(ret, heap);
+  if (!gc_ref_is_null(ret)) {
+    if (GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
+                                         memory_order_relaxed)))
+      gc_resolve_pending_ephemerons(ret, heap);
+  }
 
   return ret;
 }
@@ -286,7 +288,7 @@ tracer_trace_conservative_ref(struct gc_conservative_ref ref,
                               struct gc_trace_worker *worker,
                               int possibly_interior) {
   struct gc_ref resolved = trace_conservative_ref(heap, ref, possibly_interior);
-  if (gc_ref_is_heap_object(resolved))
+  if (!gc_ref_is_null(resolved))
     gc_trace_worker_enqueue(worker, resolved);
 }
 
@@ -367,7 +369,7 @@ trace_root(struct gc_root root, struct gc_heap *heap,
     tracer_visit(root.edge, heap, worker);
     break;
   case GC_ROOT_KIND_EDGE_BUFFER:
-    gc_field_set_trace_edge_buffer(&heap->remembered_set, root.edge_buffer,
+    gc_field_set_visit_edge_buffer(&heap->remembered_set, root.edge_buffer,
                                    tracer_visit, heap, worker);
     break;
   default:
@@ -910,7 +912,7 @@ void
 gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
                       size_t obj_size, struct gc_edge edge,
                       struct gc_ref new_val) {
-  GC_ASSERT(gc_ref_is_heap_object(new_val));
+  GC_ASSERT(!gc_ref_is_null(new_val));
   if (!GC_GENERATIONAL) return;
   if (gc_object_is_old_generation_slow(mut, new_val))
     return;

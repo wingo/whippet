@@ -65,7 +65,7 @@ tracer_trace_with_data(struct gc_tracer *tracer, struct gc_heap *heap,
   if (!tracer->trace_roots_only) {
     do {
       struct gc_ref obj = simple_worklist_pop(&tracer->worklist);
-      if (!gc_ref_is_heap_object(obj))
+      if (gc_ref_is_null(obj))
         break;
       trace_one(obj, heap, worker);
     } while (1);

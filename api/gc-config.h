@@ -5,6 +5,10 @@
 #define GC_DEBUG 0
 #endif
 
+#ifndef GC_HAS_IMMEDIATES
+#define GC_HAS_IMMEDIATES 1
+#endif
+
 #ifndef GC_PARALLEL
 #define GC_PARALLEL 0
 #endif

@@ -103,8 +103,6 @@ gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
 static inline int do_trace(struct gc_heap *heap, struct gc_edge edge,
                            struct gc_ref ref,
                            struct gc_trace_worker_data *data) {
-  if (!gc_ref_is_heap_object(ref))
-    return 0;
   if (GC_LIKELY(copy_space_contains(heap_copy_space(heap), ref)))
     return copy_space_forward(heap_copy_space(heap), edge, ref,
                               &data->allocator);
@@ -117,6 +115,8 @@ static inline int do_trace(struct gc_heap *heap, struct gc_edge edge,
 static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge,
                              struct gc_trace_worker *worker) {
   struct gc_ref ref = gc_edge_ref(edge);
+  if (gc_ref_is_null(ref) || gc_ref_is_immediate(ref))
+    return 0;
   struct gc_trace_worker_data *data = gc_trace_worker_data(worker);
   int is_new = do_trace(heap, edge, ref, data);
 
@@ -130,8 +130,10 @@ static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge,
 
 int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
   struct gc_ref ref = gc_edge_ref(edge);
-  if (!gc_ref_is_heap_object(ref))
-    return 0;
+  GC_ASSERT(!gc_ref_is_null(ref));
+  if (gc_ref_is_immediate(ref))
+    return 1;
+  GC_ASSERT(gc_ref_is_heap_object(ref));
   if (GC_LIKELY(copy_space_contains(heap_copy_space(heap), ref)))
     return copy_space_forward_if_traced(heap_copy_space(heap), edge, ref);
   if (large_object_space_contains(heap_large_object_space(heap), ref))

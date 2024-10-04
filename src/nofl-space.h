@@ -1483,7 +1483,7 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
     size_t object_granules = nofl_space_live_object_granules(metadata);
     struct gc_ref new_ref = nofl_evacuation_allocate(evacuate, space,
                                                      object_granules);
-    if (gc_ref_is_heap_object(new_ref)) {
+    if (!gc_ref_is_null(new_ref)) {
       // Copy object contents before committing, as we don't know what
       // part of the object (if any) will be overwritten by the
       // commit.
