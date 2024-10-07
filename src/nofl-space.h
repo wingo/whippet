@@ -1201,6 +1201,10 @@ static void
 nofl_space_promote_blocks(struct nofl_space *space) {
   struct nofl_block_ref block;
   while (!nofl_block_is_null(block = nofl_block_list_pop(&space->promoted))) {
+    block.summary->hole_count = 0;
+    block.summary->hole_granules = 0;
+    block.summary->holes_with_fragmentation = 0;
+    block.summary->fragmentation_granules = 0;
     struct nofl_allocator alloc = { block.addr, block.addr, block };
     nofl_allocator_finish_sweeping_in_block(&alloc, space->sweep_mask);
     atomic_fetch_add(&space->old_generation_granules,
