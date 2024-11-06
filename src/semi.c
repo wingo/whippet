@@ -2,8 +2,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <unistd.h>
 
 #include "gc-api.h"
 
@@ -100,13 +98,13 @@ static void region_trim_by(struct region *region, size_t newly_unavailable) {
   GC_ASSERT(newly_unavailable <= region->active_size);
 
   region->active_size -= newly_unavailable;
-  madvise((void*)(region->base + region->active_size), newly_unavailable,
-          MADV_DONTNEED);
+  gc_platform_discard_memory((void*)(region->base + region->active_size),
+                             newly_unavailable);
 }
 
 static void region_set_active_size(struct region *region, size_t size) {
   GC_ASSERT(size <= region->mapped_size);
-  GC_ASSERT(size == align_up(size, getpagesize()));
+  GC_ASSERT(size == align_up(size, gc_platform_page_size()));
   if (size < region->active_size)
     region_trim_by(region, region->active_size - size);
   else
@@ -274,15 +272,12 @@ static int grow_region_if_needed(struct region *region, size_t new_size) {
   if (new_size <= region->mapped_size)
     return 1;
 
-  void *mem = mmap(NULL, new_size, PROT_READ|PROT_WRITE,
-                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+  void *mem = gc_platform_acquire_memory(new_size, 0);
   DEBUG("new size %zx\n", new_size);
-  if (mem == MAP_FAILED) {
-    perror("mmap failed");
+  if (!mem)
     return 0;
-  }
   if (region->mapped_size)
-    munmap((void*)region->base, region->mapped_size);
+    gc_platform_release_memory((void*)region->base, region->mapped_size);
   region->base = (uintptr_t)mem;
   region->active_size = 0;
   region->mapped_size = new_size;
@@ -294,7 +289,7 @@ static void truncate_region(struct region *region, size_t new_size) {
 
   size_t bytes = region->mapped_size - new_size;
   if (bytes) {
-    munmap((void*)(region->base + new_size), bytes);
+    gc_platform_release_memory((void*)(region->base + new_size), bytes);
     region->mapped_size = new_size;
     if (region->active_size > new_size)
       region->active_size = new_size;
@@ -569,7 +564,7 @@ static int region_init(struct region *region, size_t size) {
 
 static int semi_space_init(struct semi_space *space, struct gc_heap *heap) {
   // Allocate even numbers of pages.
-  size_t page_size = getpagesize();
+  size_t page_size = gc_platform_page_size();
   size_t size = align_up(heap->size, page_size * 2);
 
   space->page_size = page_size;

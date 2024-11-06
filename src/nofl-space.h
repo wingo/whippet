@@ -5,7 +5,6 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
-#include <sys/mman.h>
 
 #include "gc-api.h"
 
@@ -19,6 +18,7 @@
 #include "gc-attrs.h"
 #include "gc-inline.h"
 #include "gc-lock.h"
+#include "gc-platform.h"
 #include "spin.h"
 #include "swar.h"
 
@@ -1675,27 +1675,7 @@ nofl_space_object_size(struct nofl_space *space, struct gc_ref ref) {
 
 static struct nofl_slab*
 nofl_allocate_slabs(size_t nslabs) {
-  size_t size = nslabs * NOFL_SLAB_SIZE;
-  size_t extent = size + NOFL_SLAB_SIZE;
-
-  char *mem = mmap(NULL, extent, PROT_READ|PROT_WRITE,
-                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-  if (mem == MAP_FAILED) {
-    perror("mmap failed");
-    return NULL;
-  }
-
-  uintptr_t base = (uintptr_t) mem;
-  uintptr_t end = base + extent;
-  uintptr_t aligned_base = align_up(base, NOFL_SLAB_SIZE);
-  uintptr_t aligned_end = aligned_base + size;
-
-  if (aligned_base - base)
-    munmap((void*)base, aligned_base - base);
-  if (end - aligned_end)
-    munmap((void*)aligned_end, end - aligned_end);
-
-  return (struct nofl_slab*) aligned_base;
+  return gc_platform_acquire_memory(nslabs * NOFL_SLAB_SIZE, NOFL_SLAB_SIZE);
 }
 
 static void
@@ -1813,7 +1793,7 @@ nofl_space_page_out_blocks(void *data) {
     if (nofl_block_is_null(block))
       break;
     nofl_block_set_flag(block, NOFL_BLOCK_ZERO | NOFL_BLOCK_PAGED_OUT);
-    madvise((void*)block.addr, NOFL_BLOCK_SIZE, MADV_DONTNEED);
+    gc_platform_discard_memory((void*)block.addr, NOFL_BLOCK_SIZE);
     nofl_block_stack_push(&space->paged_out[age + 1], block, &lock);
   }
   gc_lock_release(&lock);

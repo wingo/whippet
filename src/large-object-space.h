@@ -321,8 +321,7 @@ static void*
 large_object_space_obtain_and_alloc(struct large_object_space *space,
                                     size_t npages) {
   size_t bytes = npages * space->page_size;
-  void *ret = mmap(NULL, bytes, PROT_READ|PROT_WRITE,
-                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+  void *ret = gc_platform_acquire_memory(bytes, 0);
   if (ret == MAP_FAILED)
     return NULL;
 

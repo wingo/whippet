@@ -1,13 +1,11 @@
 #ifndef SIMPLE_WORKLIST_H
 #define SIMPLE_WORKLIST_H
 
-#include <sys/mman.h>
-#include <unistd.h>
-
 #include "assert.h"
 #include "debug.h"
 #include "gc-inline.h"
 #include "gc-ref.h"
+#include "gc-platform.h"
 
 struct simple_worklist {
   size_t size;
@@ -22,9 +20,8 @@ static const size_t simple_worklist_release_byte_threshold = 1 * 1024 * 1024;
 
 static struct gc_ref *
 simple_worklist_alloc(size_t size) {
-  void *mem = mmap(NULL, size * sizeof(struct gc_ref), PROT_READ|PROT_WRITE,
-                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-  if (mem == MAP_FAILED) {
+  void *mem = gc_platform_acquire_memory(size * sizeof(struct gc_ref), 0);
+  if (!mem) {
     perror("Failed to grow trace queue");
     DEBUG("Failed to allocate %zu bytes", size);
     return NULL;
@@ -34,7 +31,7 @@ simple_worklist_alloc(size_t size) {
 
 static int
 simple_worklist_init(struct simple_worklist *q) {
-  q->size = getpagesize() / sizeof(struct gc_ref);
+  q->size = gc_platform_page_size() / sizeof(struct gc_ref);
   q->read = 0;
   q->write = 0;
   q->buf = simple_worklist_alloc(q->size);

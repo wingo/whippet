@@ -2,13 +2,12 @@
 #define SHARED_WORKLIST_H
 
 #include <stdatomic.h>
-#include <sys/mman.h>
-#include <unistd.h>
 
 #include "assert.h"
 #include "debug.h"
 #include "gc-align.h"
 #include "gc-inline.h"
+#include "gc-platform.h"
 #include "spin.h"
 
 // The Chase-Lev work-stealing deque, as initially described in "Dynamic
@@ -36,9 +35,8 @@ shared_worklist_buf_init(struct shared_worklist_buf *buf, unsigned log_size) {
   ASSERT(log_size >= shared_worklist_buf_min_log_size);
   ASSERT(log_size <= shared_worklist_buf_max_log_size);
   size_t size = (1 << log_size) * sizeof(uintptr_t);
-  void *mem = mmap(NULL, size, PROT_READ|PROT_WRITE,
-                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-  if (mem == MAP_FAILED) {
+  void *mem = gc_platform_acquire_memory(size, 0);
+  if (!mem) {
     perror("Failed to grow work-stealing dequeue");
     DEBUG("Failed to allocate %zu bytes", size);
     return 0;
@@ -63,13 +61,13 @@ static void
 shared_worklist_buf_release(struct shared_worklist_buf *buf) {
   size_t byte_size = shared_worklist_buf_byte_size(buf);
   if (buf->data && byte_size >= shared_worklist_release_byte_threshold)
-    madvise(buf->data, byte_size, MADV_DONTNEED);
+    gc_platform_discard_memory(buf->data, byte_size);
 }
 
 static void
 shared_worklist_buf_destroy(struct shared_worklist_buf *buf) {
   if (buf->data) {
-    munmap(buf->data, shared_worklist_buf_byte_size(buf));
+    gc_platform_release_memory(buf->data, shared_worklist_buf_byte_size(buf));
     buf->data = NULL;
     buf->log_size = 0;
     buf->size = 0;

@@ -3,7 +3,6 @@
 
 #include <pthread.h>
 #include <stdlib.h>
-#include <sys/mman.h>
 
 #include "gc-api.h"
 
@@ -18,6 +17,7 @@
 #include "gc-attrs.h"
 #include "gc-inline.h"
 #include "gc-lock.h"
+#include "gc-platform.h"
 #include "spin.h"
 
 // A copy space: a block-structured space that traces via evacuation.
@@ -620,27 +620,8 @@ copy_space_allocator_finish(struct copy_space_allocator *alloc,
 
 static struct copy_space_slab*
 copy_space_allocate_slabs(size_t nslabs) {
-  size_t size = nslabs * COPY_SPACE_SLAB_SIZE;
-  size_t extent = size + COPY_SPACE_SLAB_SIZE;
-
-  char *mem = mmap(NULL, extent, PROT_READ|PROT_WRITE,
-                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-  if (mem == MAP_FAILED) {
-    perror("mmap failed");
-    return NULL;
-  }
-
-  uintptr_t base = (uintptr_t) mem;
-  uintptr_t end = base + extent;
-  uintptr_t aligned_base = align_up(base, COPY_SPACE_SLAB_SIZE);
-  uintptr_t aligned_end = aligned_base + size;
-
-  if (aligned_base - base)
-    munmap((void*)base, aligned_base - base);
-  if (end - aligned_end)
-    munmap((void*)aligned_end, end - aligned_end);
-
-  return (struct copy_space_slab*) aligned_base;
+  return gc_platform_acquire_memory(nslabs * COPY_SPACE_SLAB_SIZE,
+                                    COPY_SPACE_SLAB_SIZE);
 }
 
 static void
@@ -715,8 +696,8 @@ copy_space_page_out_blocks(void *data) {
     if (!block) break;
     block->in_core = 0;
     block->all_zeroes[0] = block->all_zeroes[1] = 1;
-    madvise(copy_space_block_payload(block), COPY_SPACE_BLOCK_SIZE,
-            MADV_DONTNEED);
+    gc_platform_discard_memory(copy_space_block_payload(block),
+                               COPY_SPACE_BLOCK_SIZE);
     copy_space_block_stack_push(&space->paged_out[age + 1], block, &lock);
   }
   gc_lock_release(&lock);
