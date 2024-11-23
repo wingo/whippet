@@ -128,17 +128,18 @@ size_t gc_platform_page_size(void) {
   return getpagesize();
 }
 
-void* gc_platform_acquire_memory(size_t size, size_t alignment) {
+struct gc_reservation gc_platform_reserve_memory(size_t size,
+                                                 size_t alignment) {
   GC_ASSERT_EQ(size, align_down(size, getpagesize()));
   GC_ASSERT_EQ(alignment & (alignment - 1), 0);
   GC_ASSERT_EQ(alignment, align_down(alignment, getpagesize()));
 
   size_t extent = size + alignment;
-  char *mem = mmap(NULL, extent, PROT_READ|PROT_WRITE,
-                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+  void *mem = mmap(NULL, extent, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+
   if (mem == MAP_FAILED) {
-    perror("mmap failed");
-    return NULL;
+    perror("failed to reserve address space");
+    GC_CRASH();
   }
 
   uintptr_t base = (uintptr_t) mem;
@@ -151,7 +152,37 @@ void* gc_platform_acquire_memory(size_t size, size_t alignment) {
   if (end - aligned_end)
     munmap((void*)aligned_end, end - aligned_end);
 
-  return (void*) aligned_base;
+  return (struct gc_reservation){aligned_base, size};
+}
+
+void*
+gc_platform_acquire_memory_from_reservation(struct gc_reservation reservation,
+                                            size_t offset, size_t size) {
+  GC_ASSERT_EQ(size, align_down(size, getpagesize()));
+  GC_ASSERT(size <= reservation.size);
+  GC_ASSERT(offset <= reservation.size - size);
+
+  void *mem = mmap((void*)(reservation.base + offset), size,
+                   PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+  if (mem == MAP_FAILED) {
+    perror("mmap failed");
+    return NULL;
+  }
+
+  return mem;
+}
+
+void
+gc_platform_release_reservation(struct gc_reservation reservation) {
+  if (munmap((void*)reservation.base, reservation.size) != 0)
+    perror("failed to unmap memory");
+}
+
+void*
+gc_platform_acquire_memory(size_t size, size_t alignment) {
+  struct gc_reservation reservation =
+    gc_platform_reserve_memory(size, alignment);
+  return gc_platform_acquire_memory_from_reservation(reservation, 0, size);
 }
 
 void gc_platform_release_memory(void *ptr, size_t size) {
