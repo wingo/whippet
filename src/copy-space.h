@@ -118,6 +118,7 @@ struct copy_space_block_stack {
 enum copy_space_flags {
   COPY_SPACE_ATOMIC_FORWARDING = 1,
   COPY_SPACE_ALIGNED = 2,
+  COPY_SPACE_HAS_FIELD_LOGGING_BITS = 4,
 };
 
 struct copy_space {
@@ -645,6 +646,51 @@ copy_space_contains_address_aligned(struct copy_space *space, uintptr_t addr) {
   return (addr - low_addr) < size;
 }
 
+static uint8_t*
+copy_space_field_logged_byte(struct gc_edge edge) {
+  uintptr_t addr = gc_edge_address(edge);
+  uintptr_t base = align_down(addr, COPY_SPACE_SLAB_SIZE);
+  base += offsetof(struct copy_space_slab, blocks);
+  uintptr_t field = (addr & (COPY_SPACE_SLAB_SIZE - 1)) / sizeof(uintptr_t);
+  uintptr_t byte = field / 8;
+  return (uint8_t*) (base + field);
+}
+
+static uint8_t
+copy_space_field_logged_bit(struct gc_edge edge) {
+  // Each byte has 8 bytes, covering 8 fields.
+  size_t field = gc_edge_address(edge) / sizeof(uintptr_t);
+  return 1 << (field % 8);
+}
+
+static int
+copy_space_remember_edge(struct copy_space *space, struct gc_edge edge) {
+  GC_ASSERT(copy_space_contains_edge(space, edge));
+  uint8_t* loc = copy_space_field_logged_byte(edge);
+  uint8_t bit = copy_space_field_logged_bit(edge);
+  uint8_t byte = atomic_load_explicit(loc, memory_order_acquire);
+  do {
+    if (byte & bit) return 0;
+  } while (!atomic_compare_exchange_weak_explicit(loc, &byte, byte|bit,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire));
+  return 1;
+}
+
+static int
+copy_space_forget_edge(struct copy_space *space, struct gc_edge edge) {
+  GC_ASSERT(copy_space_contains_edge(space, edge));
+  uint8_t* loc = copy_space_field_logged_byte(edge);
+  uint8_t bit = copy_space_field_logged_bit(edge);
+  uint8_t byte = atomic_load_explicit(loc, memory_order_acquire);
+  do {
+    if (!(byte & bit)) return 0;
+  } while (!atomic_compare_exchange_weak_explicit(loc, &byte, byte&~bit,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire));
+  return 1;
+}
+
 static inline void
 copy_space_allocator_init(struct copy_space_allocator *alloc) {
   memset(alloc, 0, sizeof(*alloc));
@@ -703,6 +749,26 @@ copy_space_shrink(struct copy_space *space, size_t bytes) {
   // can help us then!
 }
       
+static int
+copy_space_has_field_logging_bits(struct copy_space *space) {
+  return space->flags & COPY_SPACE_HAS_FIELD_LOGGING_BITS;
+}
+
+static size_t
+copy_space_field_logging_blocks(struct copy_space *space) {
+  if (!copy_space_has_field_logging_bits(space))
+    return 0;
+  size_t bytes = COPY_SPACE_SLAB_SIZE / sizeof (uintptr_t) / 8;
+  size_t blocks =
+    align_up(bytes, COPY_SPACE_BLOCK_SIZE) / COPY_SPACE_BLOCK_SIZE;
+  return blocks;
+}
+
+static size_t
+copy_space_first_payload_block(struct copy_space *space) {
+  return copy_space_field_logging_blocks(space);
+}
+
 static void
 copy_space_expand(struct copy_space *space, size_t bytes) {
   GC_ASSERT(!copy_space_fixed_size(space));
@@ -716,7 +782,9 @@ copy_space_expand(struct copy_space *space, size_t bytes) {
 
   struct gc_lock lock = copy_space_lock(space);
   for (size_t slab = 0; slab < nslabs; slab++) {
-    for (size_t idx = 0; idx < COPY_SPACE_NONHEADER_BLOCKS_PER_SLAB; idx++) {
+    for (size_t idx = copy_space_first_payload_block(space);
+         idx < COPY_SPACE_NONHEADER_BLOCKS_PER_SLAB;
+         idx++) {
       struct copy_space_block *block = &slabs[slab].headers[idx];
       block->all_zeroes[0] = block->all_zeroes[1] = 1;
       block->in_core = 0;
@@ -791,7 +859,9 @@ copy_space_init(struct copy_space *space, size_t size, uint32_t flags,
   copy_space_add_slabs(space, slabs, nslabs);
   struct gc_lock lock = copy_space_lock(space);
   for (size_t slab = 0; slab < nslabs; slab++) {
-    for (size_t idx = 0; idx < COPY_SPACE_NONHEADER_BLOCKS_PER_SLAB; idx++) {
+    for (size_t idx = copy_space_first_payload_block(space);
+         idx < COPY_SPACE_NONHEADER_BLOCKS_PER_SLAB;
+         idx++) {
       struct copy_space_block *block = &slabs[slab].headers[idx];
       block->all_zeroes[0] = block->all_zeroes[1] = 1;
       block->in_core = 0;
