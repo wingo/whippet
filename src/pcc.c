@@ -652,13 +652,17 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   (*heap)->event_listener_data = event_listener_data;
   HEAP_EVENT(*heap, init, (*heap)->size);
 
-  struct copy_space *space = heap_copy_space(*heap);
-  int atomic_forward = options->common.parallelism > 1;
-  if (!copy_space_init(space, (*heap)->size, atomic_forward,
-                       (*heap)->background_thread)) {
-    free(*heap);
-    *heap = NULL;
-    return 0;
+  struct copy_space *copy_space = heap_copy_space(*heap);
+  {
+    uint32_t flags = 0;
+    if (options->common.parallelism > 1)
+      flags |= COPY_SPACE_ATOMIC_FORWARDING;
+    if (!copy_space_init(copy_space, (*heap)->size, flags,
+                         (*heap)->background_thread)) {
+      free(*heap);
+      *heap = NULL;
+      return 0;
+    }
   }
   
   if (!large_object_space_init(heap_large_object_space(*heap), *heap,

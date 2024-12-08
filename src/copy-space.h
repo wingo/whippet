@@ -115,6 +115,11 @@ struct copy_space_block_stack {
   struct copy_space_block_list list;
 };
 
+enum copy_space_flags {
+  COPY_SPACE_ATOMIC_FORWARDING = 1,
+  COPY_SPACE_ALIGNED = 2,
+};
+
 struct copy_space {
   pthread_mutex_t lock;
   struct copy_space_block_stack empty;
@@ -129,6 +134,7 @@ struct copy_space {
   // lock.
   uint8_t active_region ALIGNED_TO_AVOID_FALSE_SHARING;
   uint8_t atomic_forward;
+  uint32_t flags;
   size_t allocated_bytes_at_last_gc;
   size_t fragmentation_at_last_gc;
   struct extents *extents;
@@ -606,6 +612,39 @@ copy_space_contains(struct copy_space *space, struct gc_ref ref) {
   return extents_contain_addr(space->extents, gc_ref_value(ref));
 }
 
+static int
+copy_space_is_aligned(struct copy_space *space) {
+  return space->flags & COPY_SPACE_ALIGNED;
+}
+
+static int
+copy_space_fixed_size(struct copy_space *space) {
+  // If the extent is aligned, it is fixed.
+  return copy_space_is_aligned(space);
+}
+
+static inline uintptr_t
+copy_space_low_aligned_address(struct copy_space *space) {
+  GC_ASSERT(copy_space_is_aligned(space));
+  GC_ASSERT_EQ(space->extents->size, 1);
+  return space->extents->ranges[0].lo_addr;
+}
+
+static inline uintptr_t
+copy_space_high_aligned_address(struct copy_space *space) {
+  GC_ASSERT(copy_space_is_aligned(space));
+  GC_ASSERT_EQ(space->extents->size, 1);
+  return space->extents->ranges[0].hi_addr;
+}
+
+static inline int
+copy_space_contains_address_aligned(struct copy_space *space, uintptr_t addr) {
+  uintptr_t low_addr = copy_space_low_aligned_address(space);
+  uintptr_t high_addr = copy_space_high_aligned_address(space);
+  uintptr_t size = high_addr - low_addr;
+  return (addr - low_addr) < size;
+}
+
 static inline void
 copy_space_allocator_init(struct copy_space_allocator *alloc) {
   memset(alloc, 0, sizeof(*alloc));
@@ -618,10 +657,27 @@ copy_space_allocator_finish(struct copy_space_allocator *alloc,
     copy_space_allocator_release_partly_full_block(alloc, space);
 }
 
+static size_t copy_space_is_power_of_two(size_t n) {
+  GC_ASSERT(n != 0);
+  return (n & (n - 1)) == 0;
+}
+
+static size_t copy_space_round_up_power_of_two(size_t n) {
+  if (copy_space_is_power_of_two(n))
+    return n;
+
+  return 1ULL << (sizeof(size_t) * 8 - __builtin_clzll(n));
+}
+
 static struct copy_space_slab*
-copy_space_allocate_slabs(size_t nslabs) {
-  return gc_platform_acquire_memory(nslabs * COPY_SPACE_SLAB_SIZE,
-                                    COPY_SPACE_SLAB_SIZE);
+copy_space_allocate_slabs(size_t nslabs, uint32_t flags) {
+  size_t size = nslabs * COPY_SPACE_SLAB_SIZE;
+  size_t alignment = COPY_SPACE_SLAB_SIZE;
+  if (flags & COPY_SPACE_ALIGNED) {
+    GC_ASSERT(copy_space_is_power_of_two(size));
+    alignment = size;
+  }
+  return gc_platform_acquire_memory(size, alignment);
 }
 
 static void
@@ -649,11 +705,13 @@ copy_space_shrink(struct copy_space *space, size_t bytes) {
       
 static void
 copy_space_expand(struct copy_space *space, size_t bytes) {
+  GC_ASSERT(!copy_space_fixed_size(space));
   ssize_t to_acquire = -copy_space_maybe_reacquire_memory(space, bytes);
   if (to_acquire <= 0) return;
   size_t reserved = align_up(to_acquire, COPY_SPACE_SLAB_SIZE);
   size_t nslabs = reserved / COPY_SPACE_SLAB_SIZE;
-  struct copy_space_slab *slabs = copy_space_allocate_slabs(nslabs);
+  struct copy_space_slab *slabs =
+    copy_space_allocate_slabs(nslabs, space->flags);
   copy_space_add_slabs(space, slabs, nslabs);
 
   struct gc_lock lock = copy_space_lock(space);
@@ -704,12 +762,14 @@ copy_space_page_out_blocks(void *data) {
 }
 
 static int
-copy_space_init(struct copy_space *space, size_t size, int atomic,
+copy_space_init(struct copy_space *space, size_t size, uint32_t flags,
                 struct gc_background_thread *thread) {
   size = align_up(size, COPY_SPACE_BLOCK_SIZE);
   size_t reserved = align_up(size, COPY_SPACE_SLAB_SIZE);
+  if (flags & COPY_SPACE_ALIGNED)
+    reserved = copy_space_round_up_power_of_two(reserved);
   size_t nslabs = reserved / COPY_SPACE_SLAB_SIZE;
-  struct copy_space_slab *slabs = copy_space_allocate_slabs(nslabs);
+  struct copy_space_slab *slabs = copy_space_allocate_slabs(nslabs, flags);
   if (!slabs)
     return 0;
 
@@ -723,10 +783,11 @@ copy_space_init(struct copy_space *space, size_t size, int atomic,
   space->fragmentation = 0;
   space->bytes_to_page_out = 0;
   space->active_region = 0;
-  space->atomic_forward = atomic;
+  space->atomic_forward = flags & COPY_SPACE_ATOMIC_FORWARDING;
+  space->flags = flags;
   space->allocated_bytes_at_last_gc = 0;
   space->fragmentation_at_last_gc = 0;
-  space->extents = extents_allocate(10);
+  space->extents = extents_allocate((flags & COPY_SPACE_ALIGNED) ? 1 : 10);
   copy_space_add_slabs(space, slabs, nslabs);
   struct gc_lock lock = copy_space_lock(space);
   for (size_t slab = 0; slab < nslabs; slab++) {
