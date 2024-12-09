@@ -151,15 +151,17 @@ gc_field_set_clear(struct gc_field_set *set,
   struct gc_edge_buffer *buf, *next;
   for (buf = partly_full; buf; buf = next) {
     next = buf->next;
-    for (size_t i = 0; i < buf->size; i++)
-      forget_edge(buf->edges[i], heap);
+    if (forget_edge)
+      for (size_t i = 0; i < buf->size; i++)
+        forget_edge(buf->edges[i], heap);
     buf->size = 0;
     gc_edge_buffer_list_push(&set->empty, buf);
   }
   for (buf = full; buf; buf = next) {
     next = buf->next;
-    for (size_t i = 0; i < buf->size; i++)
-      forget_edge(buf->edges[i], heap);
+    if (forget_edge)
+      for (size_t i = 0; i < buf->size; i++)
+        forget_edge(buf->edges[i], heap);
     buf->size = 0;
     gc_edge_buffer_list_push(&set->empty, buf);
   }
