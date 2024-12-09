@@ -82,6 +82,16 @@ static inline size_t gc_inline_freelist_object_size(size_t idx) {
   return (idx + 1U) * GC_INLINE_GRANULE_BYTES;
 }
 
+struct gc_heap* gc_mutator_heap(struct gc_mutator *mutator) {
+  return __the_bdw_gc_heap;
+}
+uintptr_t gc_small_object_nursery_low_address(struct gc_heap *heap) {
+  GC_CRASH();
+}
+uintptr_t gc_small_object_nursery_high_address(struct gc_heap *heap) {
+  GC_CRASH();
+}
+
 // The values of these must match the internal POINTERLESS and NORMAL
 // definitions in libgc, for which unfortunately there are no external
 // definitions.  Alack.

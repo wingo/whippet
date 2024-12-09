@@ -30,6 +30,7 @@ static inline int gc_allocator_needs_clear(void) GC_ALWAYS_INLINE;
 enum gc_old_generation_check_kind {
   GC_OLD_GENERATION_CHECK_NONE,
   GC_OLD_GENERATION_CHECK_ALLOC_TABLE,
+  GC_OLD_GENERATION_CHECK_SMALL_OBJECT_NURSERY,
   GC_OLD_GENERATION_CHECK_SLOW
 };
 

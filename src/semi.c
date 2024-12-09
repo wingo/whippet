@@ -81,6 +81,16 @@ static inline struct semi_space* mutator_semi_space(struct gc_mutator *mut) {
   return heap_semi_space(mutator_heap(mut));
 }
 
+struct gc_heap* gc_mutator_heap(struct gc_mutator *mutator) {
+  return mutator_heap(mutator);
+}
+uintptr_t gc_small_object_nursery_low_address(struct gc_heap *heap) {
+  GC_CRASH();
+}
+uintptr_t gc_small_object_nursery_high_address(struct gc_heap *heap) {
+  GC_CRASH();
+}
+
 static uintptr_t align_up(uintptr_t addr, size_t align) {
   return (addr + align - 1) & ~(align-1);
 }
