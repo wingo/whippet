@@ -35,7 +35,7 @@ enum gc_old_generation_check_kind {
 
 static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(size_t obj_size) GC_ALWAYS_INLINE;
 
-static uint8_t gc_old_generation_check_alloc_table_bit_pattern(void) GC_ALWAYS_INLINE;
+static inline uint8_t gc_old_generation_check_alloc_table_bit_pattern(void) GC_ALWAYS_INLINE;
 
 enum gc_write_barrier_kind {
   GC_WRITE_BARRIER_NONE,
