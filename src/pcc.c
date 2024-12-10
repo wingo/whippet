@@ -115,8 +115,8 @@ static inline int do_trace(struct gc_heap *heap, struct gc_edge edge,
                            struct gc_ref ref,
                            struct gc_trace_worker_data *data) {
   if (GC_LIKELY(copy_space_contains(heap_copy_space(heap), ref)))
-    return copy_space_forward(heap_copy_space(heap), edge, ref,
-                              &data->allocator);
+    return copy_space_forward(heap_copy_space(heap), heap_copy_space(heap),
+                              edge, ref, &data->allocator);
   else if (large_object_space_contains(heap_large_object_space(heap), ref))
     return large_object_space_mark_object(heap_large_object_space(heap), ref);
   else

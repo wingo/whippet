@@ -483,7 +483,6 @@ static inline int
 copy_space_forward_atomic(struct copy_space *space, struct gc_edge edge,
                           struct gc_ref old_ref,
                           struct copy_space_allocator *alloc) {
-  GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
   struct gc_atomic_forward fwd = gc_atomic_forward_begin(old_ref);
 
   if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
@@ -532,7 +531,6 @@ static int
 copy_space_forward_if_traced_atomic(struct copy_space *space,
                                     struct gc_edge edge,
                                     struct gc_ref old_ref) {
-  GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
   struct gc_atomic_forward fwd = gc_atomic_forward_begin(old_ref);
   switch (fwd.state) {
   case GC_FORWARDING_STATE_NOT_FORWARDED:
@@ -559,8 +557,6 @@ static inline int
 copy_space_forward_nonatomic(struct copy_space *space, struct gc_edge edge,
                              struct gc_ref old_ref,
                              struct copy_space_allocator *alloc) {
-  GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
-
   uintptr_t forwarded = gc_object_forwarded_nonatomic(old_ref);
   if (forwarded) {
     gc_edge_update(edge, gc_ref(forwarded));
@@ -582,7 +578,6 @@ static int
 copy_space_forward_if_traced_nonatomic(struct copy_space *space,
                                        struct gc_edge edge,
                                        struct gc_ref old_ref) {
-  GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
   uintptr_t forwarded = gc_object_forwarded_nonatomic(old_ref);
   if (forwarded) {
     gc_edge_update(edge, gc_ref(forwarded));
@@ -592,17 +587,23 @@ copy_space_forward_if_traced_nonatomic(struct copy_space *space,
 }
 
 static inline int
-copy_space_forward(struct copy_space *space, struct gc_edge edge,
+copy_space_forward(struct copy_space *src_space, struct copy_space *dst_space,
+                   struct gc_edge edge,
                    struct gc_ref old_ref,
-                   struct copy_space_allocator *alloc) {
-  if (GC_PARALLEL && space->atomic_forward)
-    return copy_space_forward_atomic(space, edge, old_ref, alloc);
-  return copy_space_forward_nonatomic(space, edge, old_ref, alloc);
+                   struct copy_space_allocator *dst_alloc) {
+  GC_ASSERT(copy_space_contains(src_space, old_ref));
+  GC_ASSERT(src_space != dst_space
+            || copy_space_object_region(old_ref) != src_space->active_region);
+  if (GC_PARALLEL && src_space->atomic_forward)
+    return copy_space_forward_atomic(dst_space, edge, old_ref, dst_alloc);
+  return copy_space_forward_nonatomic(dst_space, edge, old_ref, dst_alloc);
 }
 
 static inline int
 copy_space_forward_if_traced(struct copy_space *space, struct gc_edge edge,
                              struct gc_ref old_ref) {
+  GC_ASSERT(copy_space_contains(space, old_ref));
+  GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
   if (GC_PARALLEL && space->atomic_forward)
     return copy_space_forward_if_traced_atomic(space, edge, old_ref);
   return copy_space_forward_if_traced_nonatomic(space, edge, old_ref);
