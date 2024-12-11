@@ -289,16 +289,24 @@ static void wait_for_mutators_to_stop(struct gc_heap *heap) {
     pthread_cond_wait(&heap->collector_cond, &heap->lock);
 }
 
-static void
+static int is_minor_collection(struct gc_heap *heap) {
+  if (GC_GENERATIONAL)
+    GC_CRASH();
+  return 0;
+}
+
+static enum gc_collection_kind
 pause_mutator_for_collection(struct gc_heap *heap,
                              struct gc_mutator *mut) GC_NEVER_INLINE;
-static void
+static enum gc_collection_kind
 pause_mutator_for_collection(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mutators_are_stopping(heap));
   GC_ASSERT(!all_mutators_stopped(heap));
   MUTATOR_EVENT(mut, mutator_stopping);
   MUTATOR_EVENT(mut, mutator_stopped);
   heap->paused_mutator_count++;
+  enum gc_collection_kind collection_kind =
+    is_minor_collection(heap) ? GC_COLLECTION_MINOR : GC_COLLECTION_COMPACTING;
   if (all_mutators_stopped(heap))
     pthread_cond_signal(&heap->collector_cond);
 
@@ -308,6 +316,7 @@ pause_mutator_for_collection(struct gc_heap *heap, struct gc_mutator *mut) {
   heap->paused_mutator_count--;
 
   MUTATOR_EVENT(mut, mutator_restarted);
+  return collection_kind;
 }
 
 static void resize_heap(struct gc_heap *heap, size_t new_size) {
@@ -374,8 +383,25 @@ static void sweep_ephemerons(struct gc_heap *heap) {
   return gc_sweep_pending_ephemerons(heap->pending_ephemerons, 0, 1);
 }
 
-static void collect(struct gc_mutator *mut) GC_NEVER_INLINE;
-static void collect(struct gc_mutator *mut) {
+static int
+heap_can_minor_gc(struct gc_heap *heap) {
+  if (!GC_GENERATIONAL) return 0;
+  GC_CRASH();
+}
+
+static enum gc_collection_kind
+determine_collection_kind(struct gc_heap *heap,
+                          enum gc_collection_kind requested) {
+  if (requested == GC_COLLECTION_MINOR && heap_can_minor_gc(heap))
+    return GC_COLLECTION_MINOR;
+  return GC_COLLECTION_COMPACTING;
+}
+
+static enum gc_collection_kind
+collect(struct gc_mutator *mut,
+        enum gc_collection_kind requested_kind) GC_NEVER_INLINE;
+static enum gc_collection_kind
+collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
   struct copy_space *copy_space = heap_copy_space(heap);
   struct large_object_space *lospace = heap_large_object_space(heap);
@@ -389,6 +415,8 @@ static void collect(struct gc_mutator *mut) {
   wait_for_mutators_to_stop(heap);
   HEAP_EVENT(heap, mutators_stopped);
   HEAP_EVENT(heap, prepare_gc, GC_COLLECTION_COMPACTING);
+  enum gc_collection_kind gc_kind =
+    determine_collection_kind(heap, requested_kind);
   uint64_t *counter_loc = &heap->total_allocated_bytes_at_last_gc;
   copy_space_add_to_allocation_counter(copy_space, counter_loc);
   large_object_space_add_to_allocation_counter(lospace, counter_loc);
@@ -427,22 +455,24 @@ static void collect(struct gc_mutator *mut) {
   }
   HEAP_EVENT(heap, restarting_mutators);
   allow_mutators_to_continue(heap);
+  return gc_kind;
 }
 
-static void trigger_collection(struct gc_mutator *mut) {
+static void trigger_collection(struct gc_mutator *mut,
+                               enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
   copy_space_allocator_finish(&mut->allocator, heap_copy_space(heap));
   heap_lock(heap);
-  long epoch = heap->count;
+  int prev_kind = -1;
   while (mutators_are_stopping(heap))
-    pause_mutator_for_collection(heap, mut);
-  if (epoch == heap->count)
-    collect(mut);
+    prev_kind = pause_mutator_for_collection(heap, mut);
+  if (prev_kind < (int)requested_kind)
+    collect(mut, requested_kind);
   heap_unlock(heap);
 }
 
 void gc_collect(struct gc_mutator *mut, enum gc_collection_kind kind) {
-  trigger_collection(mut);
+  trigger_collection(mut, kind);
 }
 
 static void* allocate_large(struct gc_mutator *mut, size_t size) {
@@ -454,7 +484,7 @@ static void* allocate_large(struct gc_mutator *mut, size_t size) {
   copy_space_request_release_memory(heap_copy_space(heap),
                                      npages << space->page_size_log2);
   while (!copy_space_page_out_blocks_until_memory_released(heap_copy_space(heap)))
-    trigger_collection(mut);
+    trigger_collection(mut, GC_COLLECTION_COMPACTING);
   atomic_fetch_add(&heap->large_object_pages, npages);
 
   void *ret = large_object_space_alloc(space, npages);
@@ -470,7 +500,7 @@ static void* allocate_large(struct gc_mutator *mut, size_t size) {
 }
 
 static void get_more_empty_blocks_for_mutator(void *mut) {
-  trigger_collection(mut);
+  trigger_collection(mut, GC_COLLECTION_MINOR);
 }
 
 void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
