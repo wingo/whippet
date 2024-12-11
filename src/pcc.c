@@ -27,9 +27,17 @@
 #include "pcc-attrs.h"
 
 struct gc_heap {
-  struct copy_space copy_space;
+#if GC_GENERATIONAL
+  struct copy_space new_space;
+  struct copy_space old_space;
+#else
+  struct copy_space mono_space;
+#endif
   struct large_object_space large_object_space;
   struct gc_extern_space *extern_space;
+#if GC_GENERATIONAL
+  struct gc_field_set remembered_set;
+#endif
   size_t large_object_pages;
   pthread_mutex_t lock;
   pthread_cond_t collector_cond;
@@ -37,6 +45,9 @@ struct gc_heap {
   size_t size;
   size_t total_allocated_bytes_at_last_gc;
   int collecting;
+#if GC_GENERATIONAL
+  int is_minor_collection;
+#endif
   int check_pending_ephemerons;
   struct gc_pending_ephemerons *pending_ephemerons;
   struct gc_finalizer_state *finalizer_state;
@@ -62,6 +73,9 @@ struct gc_heap {
 
 struct gc_mutator {
   struct copy_space_allocator allocator;
+#if GC_GENERATIONAL
+  struct gc_field_set_writer logger;
+#endif
   struct gc_heap *heap;
   struct gc_mutator_roots *roots;
   void *event_listener_data;
@@ -70,26 +84,108 @@ struct gc_mutator {
 };
 
 struct gc_trace_worker_data {
+#if GC_GENERATIONAL
+  struct copy_space_allocator new_allocator;
+  struct copy_space_allocator old_allocator;
+  struct gc_field_set_writer logger;
+#else
   struct copy_space_allocator allocator;
+#endif
 };
 
-static inline struct copy_space* heap_copy_space(struct gc_heap *heap) {
-  return &heap->copy_space;
+static inline struct copy_space* heap_mono_space(struct gc_heap *heap) {
+#if GC_GENERATIONAL
+  GC_CRASH();
+#else
+  return &heap->mono_space;
+#endif
 }
+
+static inline struct copy_space* heap_new_space(struct gc_heap *heap) {
+#if GC_GENERATIONAL
+  return &heap->new_space;
+#else
+  GC_CRASH();
+#endif
+}
+
+static inline struct copy_space* heap_old_space(struct gc_heap *heap) {
+#if GC_GENERATIONAL
+  return &heap->old_space;
+#else
+  GC_CRASH();
+#endif
+}
+
+static inline struct copy_space_allocator*
+trace_worker_mono_space_allocator(struct gc_trace_worker_data *data) {
+#if GC_GENERATIONAL
+  GC_CRASH();
+#else
+  return &data->allocator;
+#endif
+}
+
+static inline struct copy_space_allocator*
+trace_worker_new_space_allocator(struct gc_trace_worker_data *data) {
+#if GC_GENERATIONAL
+  return &data->new_allocator;
+#else
+  GC_CRASH();
+#endif
+}
+
+static inline struct copy_space_allocator*
+trace_worker_old_space_allocator(struct gc_trace_worker_data *data) {
+#if GC_GENERATIONAL
+  return &data->old_allocator;
+#else
+  GC_CRASH();
+#endif
+}
+
+static inline struct gc_field_set_writer*
+trace_worker_field_logger(struct gc_trace_worker_data *data) {
+#if GC_GENERATIONAL
+  return &data->logger;
+#else
+  GC_CRASH();
+#endif
+}
+
+static inline struct gc_field_set_writer*
+mutator_field_logger(struct gc_mutator *mut) {
+#if GC_GENERATIONAL
+  return &mut->logger;
+#else
+  GC_CRASH();
+#endif
+}
+
+static int is_minor_collection(struct gc_heap *heap) {
+#if GC_GENERATIONAL
+  return heap->is_minor_collection;
+#else
+  GC_CRASH();
+#endif
+}
+
 static inline struct copy_space* heap_allocation_space(struct gc_heap *heap) {
-  // The space into which small objects are allocated.
-  return heap_copy_space(heap);
+  return GC_GENERATIONAL ? heap_new_space(heap) : heap_mono_space(heap);
 }
+
 static inline struct copy_space* heap_resizable_space(struct gc_heap *heap) {
-  // The space that gets resized.
-  return heap_copy_space(heap);
+  return GC_GENERATIONAL ? heap_old_space(heap) : heap_copy_space(heap);
 }
+
 static inline struct large_object_space* heap_large_object_space(struct gc_heap *heap) {
   return &heap->large_object_space;
 }
+
 static inline struct gc_extern_space* heap_extern_space(struct gc_heap *heap) {
   return heap->extern_space;
 }
+
 static inline struct gc_heap* mutator_heap(struct gc_mutator *mutator) {
   return mutator->heap;
 }
@@ -99,9 +195,13 @@ struct gc_heap* gc_mutator_heap(struct gc_mutator *mutator) {
 }
 
 uintptr_t gc_small_object_nursery_low_address(struct gc_heap *heap) {
+  if (GC_GENERATIONAL)
+    return copy_space_low_aligned_address(heap_new_space(heap));
   GC_CRASH();
 }
 uintptr_t gc_small_object_nursery_high_address(struct gc_heap *heap) {
+  if (GC_GENERATIONAL)
+    return copy_space_high_aligned_address(heap_new_space(heap));
   GC_CRASH();
 }
 
@@ -114,18 +214,118 @@ gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
                                struct gc_heap *heap,
                                struct gc_trace_worker *worker) {
   struct gc_trace_worker_data data;
-  copy_space_allocator_init(&data.allocator);
+
+  if (GC_GENERATIONAL) {
+    copy_space_allocator_init(trace_worker_new_space_allocator(data));
+    copy_space_allocator_init(trace_worker_old_space_allocator(data));
+    gc_field_set_writer_init(trace_worker_field_logger(data),
+                             heap_remembered_set(heap));
+  } else {
+    copy_space_allocator_init(trace_worker_mono_space_allocator(data));
+  }
+
   f(tracer, heap, worker, &data);
-  copy_space_allocator_finish(&data.allocator, heap_copy_space(heap));
+
+  if (GC_GENERATIONAL) {
+    copy_space_allocator_finish(trace_worker_new_space_allocator(data),
+                                heap_new_space(heap));
+    copy_space_allocator_finish(trace_worker_old_space_allocator(data),
+                                heap_old_space(heap));
+  } else {
+    copy_space_allocator_finish(trace_worker_mono_space_allocator(data),
+                                heap_mono_space(heap));
+    gc_field_set_writer_release_buffer(trace_worker_field_logger(data));
+  }
+}
+
+static int new_space_contains_addr(struct gc_heap *heap, uintptr_t addr) {
+  return copy_space_contains_address_aligned(heap_new_space(heap), addr);
+}
+
+static int new_space_contains(struct gc_heap *heap, struct gc_ref ref) {
+  return new_space_contains_addr(heap, gc_ref_value(ref));
+}
+
+static int old_space_contains(struct gc_heap *heap, struct gc_ref ref) {
+  return copy_space_contains(heap_old_space(heap), ref);
+}
+
+static void remember_edge_to_survivor_object(struct gc_heap *heap,
+                                             struct gc_edge edge) {
+  GC_ASSERT(!new_space_contains_addr(heap, gc_edge_address(edge)));
+  GC_ASSERT(new_space_contains(heap, gc_edge_ref(edge)));
+  if (copy_space_contains_addr(heap_old_space(heap), gc_edge_address(edge)))
+    return copy_space_remember_edge(heap_old_space(heap), edge);
+  if (large_object_space_contains_edge(heap_large_object_space(heap), edge))
+    return large_object_space_remember_edge(heap_old_space(heap), edge);
+  return 0;
 }
 
 static inline int do_trace(struct gc_heap *heap, struct gc_edge edge,
                            struct gc_ref ref,
                            struct gc_trace_worker_data *data) {
-  if (GC_LIKELY(copy_space_contains(heap_copy_space(heap), ref)))
-    return copy_space_forward(heap_copy_space(heap), heap_copy_space(heap),
-                              edge, ref, &data->allocator);
-  else if (large_object_space_contains(heap_large_object_space(heap), ref))
+  if (GC_GENERATIONAL) {
+    struct copy_space *new_space = heap_new_space(heap);
+    struct copy_space *old_space = heap_old_space(heap);
+    if (GC_LIKELY(is_minor_collection(heap))) {
+      if (GC_LIKELY(new_space_contains(heap, ref))) {
+        // It's a minor collection and we are visiting an edge into
+        // newspace.  Either the edge's target will be promoted to
+        // oldspace, or it will stay in newspace as a survivor.
+        //
+        // After the scavenge, we need to preserve the invariant that
+        // all old-to-new edges are part of the remembered set.  So
+        // depending on where the edge comes from and where the object
+        // moves to, we may need to add or remove the edge from the
+        // remembered set.  Concretely:
+        //
+        //                   |  survivor dst    |  promoted dst
+        //   ----------------+------------------+-----------------
+        //   survivor src    |    nothing       |    nothing
+        //                   |                  |
+        //   promoted src    |    log edge      |    nothing
+        //                   |                  |
+        //   oldspace src    |    nothing       |   clear log
+        //                   |                  |
+        //   root src        |    nothing       |    nothing
+        //
+        // However, clearing a logged field usually isn't possible, as
+        // it's not easy to go from field address to position in a field
+        // set, so instead we lazily remove old->old edges from the
+        // field set during the next minor GC.  (Or, we will anyway; for
+        // now we ignore them.)  So really we only need to log
+        // promoted-to-survivor edges.
+        //
+        // However however, it is hard to distinguish between edges from
+        // promoted objects and edges from old objects, so we mostly
+        // just rely on an idempotent "log if unlogged" operation
+        // instead.
+        int promote = copy_space_should_promote(new_space, ref);
+        struct copy_space *dst_space = promote ? old_space : new_space;
+        struct copy_space_allocator *alloc = promote
+          ? trace_worker_old_space_allocator(data)
+          : trace_worker_new_space_allocator(data);
+        // Update the remembered set for promoted-to-survivor edges.
+        if (!promote && !new_space_contains_addr(gc_edge_address(edge))
+            && remember_edge_to_survivor_object(heap, edge))
+          gc_field_set_writer_add_edge(trace_worker_field_logger(data), edge);
+        return copy_space_forward(new_space, dst_space, edge, ref, alloc);
+    } else {
+      if (new_space_contains(heap, ref))
+        return copy_space_forward(new_space, old_space, edge, ref,
+                                  trace_worker_old_space_allocator(data));
+      if (old_space_contains(heap, ref))
+        return copy_space_forward(old_space, old_space, edge, ref,
+                                  trace_worker_old_space_allocator(data));
+    }
+  } else {
+    if (GC_LIKELY(copy_space_contains(heap_mono_space(heap), ref)))
+      return copy_space_forward(heap_mono_space(heap), heap_mono_space(heap),
+                                edge, ref,
+                                trace_worker_mono_space_allocator(data));
+  }
+
+  if (large_object_space_contains(heap_large_object_space(heap), ref))
     return large_object_space_mark_object(heap_large_object_space(heap), ref);
   else
     return gc_extern_space_visit(heap_extern_space(heap), edge, ref);
@@ -153,8 +353,18 @@ int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
   if (gc_ref_is_immediate(ref))
     return 1;
   GC_ASSERT(gc_ref_is_heap_object(ref));
-  if (GC_LIKELY(copy_space_contains(heap_copy_space(heap), ref)))
-    return copy_space_forward_if_traced(heap_copy_space(heap), edge, ref);
+
+  if (GC_GENERATIONAL) {
+    if (new_space_contains(heap, ref))
+      return copy_space_forward_if_traced(heap_new_space(ref), edge, ref);
+    if (old_space_contains(heap, ref))
+      return is_minor_collection(heap) ||
+        copy_space_forward_if_traced(heap_old_space(ref), edge, ref);
+  } else {
+    if (copy_space_contains(heap_mono_space(heap), ref))
+      return copy_space_forward_if_traced(heap_mono_space(heap), edge, ref);
+  }
+
   if (large_object_space_contains(heap_large_object_space(heap), ref))
     return large_object_space_is_copied(heap_large_object_space(heap), ref);
   GC_CRASH();
@@ -182,6 +392,9 @@ static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->event_listener_data =
     heap->event_listener.mutator_added(heap->event_listener_data);
   copy_space_allocator_init(&mut->allocator);
+  if (GC_GENERATIONAL)
+    gc_field_set_writer_init(mutator_field_logger(mut),
+                             heap_remembered_set(heap));
   heap_lock(heap);
   // We have no roots.  If there is a GC currently in progress, we have
   // nothing to add.  Just wait until it's done.
@@ -200,6 +413,8 @@ static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
 
 static void remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   copy_space_allocator_finish(&mut->allocator, heap_allocation_space(heap));
+  if (GC_GENERATIONAL)
+    gc_field_set_writer_release_buffer(mutator_field_logger(mut));
   MUTATOR_EVENT(mut, mutator_removed);
   mut->heap = NULL;
   heap_lock(heap);
@@ -241,9 +456,20 @@ tracer_visit(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
 static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
                              struct gc_trace_worker *worker) {
 #ifdef DEBUG
-  if (copy_space_contains(heap_copy_space(heap), ref))
-    GC_ASSERT(copy_space_object_region(ref) == heap_copy_space(heap)->active_region);
+  if (GC_GENERATIONAL) {
+    if (new_space_contains(heap, ref))
+      GC_ASSERT_EQ(copy_space_object_region(ref),
+                   heap_new_space(heap)->active_region);
+    else if (old_space_contains(heap, ref))
+      GC_ASSERT_EQ(copy_space_object_region(ref),
+                   heap_old_space(heap)->active_region);
+  } else {
+    if (copy_space_contains(heap_mono_space(heap), ref))
+      GC_ASSERT_EQ(copy_space_object_region(ref),
+                   heap_mono_space(heap)->active_region);
+  }
 #endif
+
   gc_trace_object(ref, tracer_visit, heap, worker, NULL);
 }
 
@@ -262,6 +488,10 @@ static inline void trace_root(struct gc_root root, struct gc_heap *heap,
     break;
   case GC_ROOT_KIND_EDGE:
     tracer_visit(root.edge, heap, worker);
+    break;
+  case GC_ROOT_KIND_EDGE_BUFFER:
+    gc_field_set_visit_edge_buffer(&heap->remembered_set, root.edge_buffer,
+                                   tracer_visit, heap, worker);
     break;
   default:
     GC_CRASH();
@@ -347,11 +577,19 @@ static void visit_root_edge(struct gc_edge edge, struct gc_heap *heap,
   gc_tracer_add_root(&heap->tracer, gc_root_edge(edge));
 }
 
-static void add_roots(struct gc_heap *heap) {
+static void add_roots(struct gc_heap *heap, enum gc_collection_kind gc_kind) {
   for (struct gc_mutator *mut = heap->mutators; mut; mut = mut->next)
     gc_tracer_add_root(&heap->tracer, gc_root_mutator(mut));
   gc_tracer_add_root(&heap->tracer, gc_root_heap(heap));
   gc_visit_finalizer_roots(heap->finalizer_state, visit_root_edge, heap, NULL);
+  if (GC_GENERATIONAL && gc_kind == GC_COLLECTION_MINOR)
+    gc_field_set_add_roots(&heap->remembered_set, &heap->tracer);
+}
+
+static void
+clear_remembered_set(struct gc_heap *heap) {
+  gc_field_set_clear(&heap->remembered_set, NULL, NULL);
+  large_object_space_clear_remembered_edges(heap_large_object_space(heap));
 }
 
 static void resolve_ephemerons_lazily(struct gc_heap *heap) {
@@ -394,7 +632,20 @@ static void sweep_ephemerons(struct gc_heap *heap) {
 static int
 heap_can_minor_gc(struct gc_heap *heap) {
   if (!GC_GENERATIONAL) return 0;
-  GC_CRASH();
+  // Invariant: the oldgen always has enough free space to accomodate
+  // promoted objects from the nursery.  This is a precondition for
+  // minor GC of course, but it is also a post-condition: after
+  // potentially promoting all nursery objects, we still need an
+  // additional nursery's worth of space in oldgen to satisfy the
+  // invariant.  We ensure the invariant by only doing minor GC if the
+  // copy space can allocate as many bytes as the nursery address space
+  // (which may be larger than the nursery), as the address space is
+  // already twice the allocatable size because of the copy reserve.
+  struct copy_space *new_space = heap_new_space(heap);
+  struct copy_space *old_space = heap_old_space(heap);
+  size_t nursery_size = copy_space_high_aligned_address(new_space)
+    - copy_space_low_aligned_address(new_space);
+  return copy_space_can_allocate(old_space, nursery_size);
 }
 
 static enum gc_collection_kind
@@ -411,7 +662,7 @@ collect(struct gc_mutator *mut,
 static enum gc_collection_kind
 collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
-  struct copy_space *copy_space = heap_copy_space(heap);
+  struct copy_space *new_space = heap_new_space(heap);
   struct large_object_space *lospace = heap_large_object_space(heap);
   struct gc_extern_space *exspace = heap_extern_space(heap);
   uint64_t start_ns = gc_platform_monotonic_nanoseconds();
@@ -444,6 +695,8 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   HEAP_EVENT(heap, finalizers_traced);
   sweep_ephemerons(heap);
   gc_tracer_release(&heap->tracer);
+  if (GC_GENERATIONAL && gc_kind != GC_KIND_MINOR)
+    clear_remembered_set(heap);
   copy_space_finish_gc(copy_space);
   large_object_space_finish_gc(lospace, 0);
   gc_extern_space_finish_gc(exspace, 0);
@@ -470,6 +723,8 @@ static void trigger_collection(struct gc_mutator *mut,
                                enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
   copy_space_allocator_finish(&mut->allocator, heap_allocation_space(heap));
+  if (GC_GENERATIONAL)
+    gc_field_set_writer_release_buffer(mutator_field_logger(mut));
   heap_lock(heap);
   int prev_kind = -1;
   while (mutators_are_stopping(heap))
@@ -518,7 +773,7 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
     return allocate_large(mut, size);
 
   struct gc_ref ret = copy_space_allocate(&mut->allocator,
-                                          heap_copy_space(mutator_heap(mut)),
+                                          heap_new_space(mutator_heap(mut)),
                                           size,
                                           get_more_empty_blocks_for_mutator,
                                           mut);
@@ -536,12 +791,36 @@ void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
 
 int gc_object_is_old_generation_slow(struct gc_mutator *mut,
                                      struct gc_ref obj) {
+  if (!GC_GENERATIONAL)
+    return 0;
+
+  struct gc_heap *heap = mutator_heap(mut);
+
+  if (copy_space_contains(heap_new_space(heap), obj))
+    return 0;
+  if (copy_space_contains(heap_old_space(heap), obj))
+    return 1;
+
+  struct large_object_space *lospace = heap_large_object_space(heap);
+  if (large_object_space_contains(lospace, obj))
+    return large_object_space_is_survivor(lospace, obj);
+
   return 0;
 }
 
 void gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
                            size_t obj_size, struct gc_edge edge,
                            struct gc_ref new_val) {
+  GC_ASSERT(!gc_ref_is_null(new_val));
+  if (!GC_GENERATIONAL) return;
+  if (gc_object_is_old_generation_slow(mut, new_val))
+    return;
+  struct gc_heap *heap = mutator_heap(mut);
+  if ((obj_size <= gc_allocator_large_threshold())
+      ? copy_space_remember_edge(heap_old_space(heap), obj, edge)
+      : large_object_space_remember_edge(heap_large_object_space(heap),
+                                         obj, edge))
+    gc_field_set_writer_add_edge(mutator_field_logger(mut), edge);
 }
 
 int* gc_safepoint_flag_loc(struct gc_mutator *mut) {
@@ -551,6 +830,8 @@ int* gc_safepoint_flag_loc(struct gc_mutator *mut) {
 void gc_safepoint_slow(struct gc_mutator *mut) {
   struct gc_heap *heap = mutator_heap(mut);
   copy_space_allocator_finish(&mut->allocator, heap_allocation_space(heap));
+  if (GC_GENERATIONAL)
+    gc_field_set_writer_release_buffer(mutator_field_logger(mut));
   heap_lock(heap);
   while (mutators_are_stopping(mutator_heap(mut)))
     pause_mutator_for_collection(heap, mut);
@@ -636,7 +917,7 @@ int gc_options_parse_and_set(struct gc_options *options, int option,
 static uint64_t allocation_counter_from_thread(struct gc_heap *heap) {
   uint64_t ret = heap->total_allocated_bytes_at_last_gc;
   if (pthread_mutex_trylock(&heap->lock)) return ret;
-  copy_space_add_to_allocation_counter(heap_copy_space(heap), &ret);
+  copy_space_add_to_allocation_counter(heap_new_space(heap), &ret);
   large_object_space_add_to_allocation_counter(heap_large_object_space(heap),
                                                &ret);
   pthread_mutex_unlock(&heap->lock);
@@ -652,6 +933,7 @@ static void set_heap_size_from_thread(struct gc_heap *heap, size_t size) {
 static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   // *heap is already initialized to 0.
 
+  gc_field_set_init(&heap->remembered_set);
   pthread_mutex_init(&heap->lock, NULL);
   pthread_cond_init(&heap->mutator_cond, NULL);
   pthread_cond_init(&heap->collector_cond, NULL);
@@ -744,6 +1026,8 @@ void gc_finish_for_thread(struct gc_mutator *mut) {
 static void deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mut->next == NULL);
   copy_space_allocator_finish(&mut->allocator, heap_allocation_space(heap));
+  if (GC_GENERATIONAL)
+    gc_field_set_writer_release_buffer(mutator_field_logger(mut));
   heap_lock(heap);
   heap->inactive_mutator_count++;
   if (all_mutators_stopped(heap))

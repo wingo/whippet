@@ -469,6 +469,18 @@ copy_space_finish_gc(struct copy_space *space) {
   space->in_gc = 0;
 }
 
+static int
+copy_space_can_allocate(struct copy_space *space, size_t bytes) {
+  // With lock!
+  for (struct copy_space_block *empties = space->empty.list.head;
+       empties;
+       empties = empties->next) {
+    if (bytes <= COPY_SPACE_REGION_SIZE) return 1;
+    bytes -= COPY_SPACE_REGION_SIZE;
+  }
+  return 0;
+}
+
 static void
 copy_space_add_to_allocation_counter(struct copy_space *space,
                                      uintptr_t *counter) {

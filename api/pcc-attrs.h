@@ -43,8 +43,12 @@ static inline int gc_allocator_needs_clear(void) {
   return 0;
 }
 
-static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(size_t) {
-  return GC_OLD_GENERATION_CHECK_NONE;
+static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(size_t size) {
+  if (!GC_GENERATIONAL)
+    return GC_OLD_GENERATION_CHECK_NONE;
+  if (size <= gc_allocator_large_threshold())
+    return GC_OLD_GENERATION_CHECK_SMALL_OBJECT_NURSERY;
+  return GC_OLD_GENERATION_CHECK_SLOW;
 }
 static inline uint8_t gc_old_generation_check_alloc_table_bit_pattern(void) {
   GC_CRASH();
