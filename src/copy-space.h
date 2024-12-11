@@ -57,6 +57,7 @@ struct copy_space_block {
       struct copy_space_block *next;
       uint8_t in_core;
       uint8_t all_zeroes[2];
+      uint8_t is_survivor[2];
       size_t allocated; // For partly-empty blocks.
     };
     uint8_t padding[COPY_SPACE_HEADER_BYTES_PER_BLOCK];
@@ -135,6 +136,7 @@ struct copy_space {
   // lock.
   uint8_t active_region ALIGNED_TO_AVOID_FALSE_SHARING;
   uint8_t atomic_forward;
+  uint8_t in_gc;
   uint32_t flags;
   size_t allocated_bytes_at_last_gc;
   size_t fragmentation_at_last_gc;
@@ -202,8 +204,10 @@ copy_space_pop_empty_block(struct copy_space *space,
                            const struct gc_lock *lock) {
   struct copy_space_block *ret = copy_space_block_stack_pop(&space->empty,
                                                             lock);
-  if (ret)
+  if (ret) {
     ret->allocated = 0;
+    ret->is_survivor[space->active_region] = 0;
+  }
   return ret;
 }
 
@@ -222,6 +226,8 @@ copy_space_pop_full_block(struct copy_space *space) {
 static void
 copy_space_push_full_block(struct copy_space *space,
                            struct copy_space_block *block) {
+  if (space->in_gc)
+    block->is_survivor[space->active_region] = 1;
   copy_space_block_list_push(&space->full, block);
 }
 
@@ -452,6 +458,7 @@ copy_space_flip(struct copy_space *space) {
   space->allocated_bytes = 0;
   space->fragmentation = 0;
   space->active_region ^= 1;
+  space->in_gc = 1;
 }
 
 static void
@@ -459,6 +466,7 @@ copy_space_finish_gc(struct copy_space *space) {
   // Mutators stopped, can access nonatomically.
   space->allocated_bytes_at_last_gc = space->allocated_bytes;
   space->fragmentation_at_last_gc = space->fragmentation;
+  space->in_gc = 0;
 }
 
 static void
@@ -866,6 +874,7 @@ copy_space_init(struct copy_space *space, size_t size, uint32_t flags,
       struct copy_space_block *block = &slabs[slab].headers[idx];
       block->all_zeroes[0] = block->all_zeroes[1] = 1;
       block->in_core = 0;
+      block->is_survivor[0] = block->is_survivor[1] = 0;
       if (reserved > size) {
         copy_space_page_out_block(space, block, &lock);
         reserved -= COPY_SPACE_BLOCK_SIZE;
