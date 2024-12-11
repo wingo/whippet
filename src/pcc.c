@@ -76,6 +76,10 @@ struct gc_trace_worker_data {
 static inline struct copy_space* heap_copy_space(struct gc_heap *heap) {
   return &heap->copy_space;
 }
+static inline struct copy_space* heap_allocation_space(struct gc_heap *heap) {
+  // The space into which small objects are allocated.
+  return heap_copy_space(heap);
+}
 static inline struct large_object_space* heap_large_object_space(struct gc_heap *heap) {
   return &heap->large_object_space;
 }
@@ -191,7 +195,7 @@ static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
 }
 
 static void remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
-  copy_space_allocator_finish(&mut->allocator, heap_copy_space(heap));
+  copy_space_allocator_finish(&mut->allocator, heap_allocation_space(heap));
   MUTATOR_EVENT(mut, mutator_removed);
   mut->heap = NULL;
   heap_lock(heap);
@@ -461,7 +465,7 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
 static void trigger_collection(struct gc_mutator *mut,
                                enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
-  copy_space_allocator_finish(&mut->allocator, heap_copy_space(heap));
+  copy_space_allocator_finish(&mut->allocator, heap_allocation_space(heap));
   heap_lock(heap);
   int prev_kind = -1;
   while (mutators_are_stopping(heap))
@@ -542,7 +546,7 @@ int* gc_safepoint_flag_loc(struct gc_mutator *mut) {
 
 void gc_safepoint_slow(struct gc_mutator *mut) {
   struct gc_heap *heap = mutator_heap(mut);
-  copy_space_allocator_finish(&mut->allocator, heap_copy_space(heap));
+  copy_space_allocator_finish(&mut->allocator, heap_allocation_space(heap));
   heap_lock(heap);
   while (mutators_are_stopping(mutator_heap(mut)))
     pause_mutator_for_collection(heap, mut);
@@ -735,7 +739,7 @@ void gc_finish_for_thread(struct gc_mutator *mut) {
 
 static void deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mut->next == NULL);
-  copy_space_allocator_finish(&mut->allocator, heap_copy_space(heap));
+  copy_space_allocator_finish(&mut->allocator, heap_allocation_space(heap));
   heap_lock(heap);
   heap->inactive_mutator_count++;
   if (all_mutators_stopped(heap))
