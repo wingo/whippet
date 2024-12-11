@@ -80,6 +80,10 @@ static inline struct copy_space* heap_allocation_space(struct gc_heap *heap) {
   // The space into which small objects are allocated.
   return heap_copy_space(heap);
 }
+static inline struct copy_space* heap_resizable_space(struct gc_heap *heap) {
+  // The space that gets resized.
+  return heap_copy_space(heap);
+}
 static inline struct large_object_space* heap_large_object_space(struct gc_heap *heap) {
   return &heap->large_object_space;
 }
@@ -284,7 +288,7 @@ static void heap_reset_large_object_pages(struct gc_heap *heap, size_t npages) {
   GC_ASSERT(npages <= previous);
   size_t bytes = (previous - npages) <<
     heap_large_object_space(heap)->page_size_log2;
-  copy_space_reacquire_memory(heap_copy_space(heap), bytes);
+  copy_space_reacquire_memory(heap_resizable_space(heap), bytes);
 }
 
 static void wait_for_mutators_to_stop(struct gc_heap *heap) {
@@ -330,9 +334,9 @@ static void resize_heap(struct gc_heap *heap, size_t new_size) {
   DEBUG("------ old heap size: %zu bytes\n", heap->size);
   DEBUG("------ new heap size: %zu bytes\n", new_size);
   if (new_size < heap->size)
-    copy_space_shrink(heap_copy_space(heap), heap->size - new_size);
+    copy_space_shrink(heap_resizable_space(heap), heap->size - new_size);
   else
-    copy_space_expand(heap_copy_space(heap), new_size - heap->size);
+    copy_space_expand(heap_resizable_space(heap), new_size - heap->size);
 
   heap->size = new_size;
   HEAP_EVENT(heap, heap_resized, new_size);
@@ -485,9 +489,9 @@ static void* allocate_large(struct gc_mutator *mut, size_t size) {
 
   size_t npages = large_object_space_npages(space, size);
 
-  copy_space_request_release_memory(heap_copy_space(heap),
-                                     npages << space->page_size_log2);
-  while (!copy_space_page_out_blocks_until_memory_released(heap_copy_space(heap)))
+  copy_space_request_release_memory(heap_resizable_space(heap),
+                                    npages << space->page_size_log2);
+  while (!copy_space_page_out_blocks_until_memory_released(heap_resizable_space(heap)))
     trigger_collection(mut, GC_COLLECTION_COMPACTING);
   atomic_fetch_add(&heap->large_object_pages, npages);
 
