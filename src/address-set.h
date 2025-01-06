@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "address-hash.h"
+#include "gc-assert.h"
 
 struct hash_set {
   uintptr_t *data;
@@ -23,7 +24,9 @@ static void hash_set_clear(struct hash_set *set) {
 static void hash_set_init(struct hash_set *set, size_t size) {
   set->size = size;
   set->data = malloc(sizeof(uintptr_t) * size);
+  if (!set->data) GC_CRASH();
   set->bits = malloc(size / 8);
+  if (!set->bits) GC_CRASH();
   hash_set_clear(set);
 }
 static void hash_set_destroy(struct hash_set *set) {

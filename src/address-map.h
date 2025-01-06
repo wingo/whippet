@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "address-hash.h"
+#include "gc-assert.h"
 
 struct hash_map_entry {
   uintptr_t k;
@@ -28,7 +29,9 @@ static void hash_map_clear(struct hash_map *map) {
 static void hash_map_init(struct hash_map *map, size_t size) {
   map->size = size;
   map->data = malloc(sizeof(struct hash_map_entry) * size);
+  if (!map->data) GC_CRASH();
   map->bits = malloc(size / 8);
+  if (!map->bits) GC_CRASH();
   hash_map_clear(map);
 }
 static void hash_map_destroy(struct hash_map *map) {
