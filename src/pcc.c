@@ -661,7 +661,8 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
     return 0;
   }
   
-  if (!large_object_space_init(heap_large_object_space(*heap), *heap))
+  if (!large_object_space_init(heap_large_object_space(*heap), *heap,
+                               (*heap)->background_thread))
     GC_CRASH();
 
   *mut = calloc(1, sizeof(struct gc_mutator));

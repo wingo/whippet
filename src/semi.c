@@ -674,7 +674,8 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
 
   if (!semi_space_init(heap_semi_space(*heap), *heap))
     return 0;
-  if (!large_object_space_init(heap_large_object_space(*heap), *heap))
+  struct gc_background_thread *thread = NULL;
+  if (!large_object_space_init(heap_large_object_space(*heap), *heap, thread))
     return 0;
   
   // Ignore stack base, as we are precise.
