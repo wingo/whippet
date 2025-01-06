@@ -113,8 +113,6 @@ static int large_object_space_copy(struct large_object_space *space,
   address_set_remove(&space->from_space, addr);
   address_set_add(GC_GENERATIONAL ? &space->survivor_space : &space->to_space,
                   addr);
-  if (GC_GENERATIONAL && gc_object_is_remembered_nonatomic(ref))
-    gc_object_clear_remembered_nonatomic(ref);
   // Object is grey; place it on mark stack to visit its fields.
   copied = 1;
 done:

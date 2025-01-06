@@ -87,22 +87,6 @@ in the `gc_trace_object` function by calling `gc_trace_ephemeron` from
 allocates finalizers, it should trace them by calling
 `gc_trace_finalizer` from [`gc-finalizer.h`](../api/gc-finalizer.h).
 
-### Remembered-set bits
-
-When built to support generational garbage collection, Whippet requires
-that all "large" or potentially large objects have a flag bit reserved
-for use of the garbage collector.  A large object is one whose size
-exceeds the `gc_allocator_large_threshold()` (see
-[`gc-attrs.h`](../api/gc-attrs.h)), which is a collector-specific value.
-Currently the only generational collector is the in-place `mmc`
-collector, whose large object threshold is 4096 bytes.  The
-`gc_object_set_remembered`, `gc_object_is_remembered_nonatomic`, and
-`gc_object_clear_remembered_nonatomic` embedder functions manage the
-remembered bit.  Setting the remembered bit should be idempotent;
-multiple threads can race to call `gc_object_set_remembered` and do not
-synchronize.  The query and clear functions are called without
-concurrent accessors and so don't have to be atomic.
-
 ### Forwarding objects
 
 When built with a collector that moves objects, the embedder must also
