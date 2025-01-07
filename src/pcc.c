@@ -12,6 +12,7 @@
 #include "background-thread.h"
 #include "copy-space.h"
 #include "debug.h"
+#include "field-set.h"
 #include "gc-align.h"
 #include "gc-inline.h"
 #include "gc-platform.h"
@@ -117,6 +118,14 @@ static inline struct copy_space* heap_old_space(struct gc_heap *heap) {
 #endif
 }
 
+static inline struct gc_field_set* heap_remembered_set(struct gc_heap *heap) {
+#if GC_GENERATIONAL
+  return &heap->remembered_set;
+#else
+  GC_CRASH();
+#endif
+}
+
 static inline struct copy_space_allocator*
 trace_worker_mono_space_allocator(struct gc_trace_worker_data *data) {
 #if GC_GENERATIONAL
@@ -175,7 +184,7 @@ static inline struct copy_space* heap_allocation_space(struct gc_heap *heap) {
 }
 
 static inline struct copy_space* heap_resizable_space(struct gc_heap *heap) {
-  return GC_GENERATIONAL ? heap_old_space(heap) : heap_copy_space(heap);
+  return GC_GENERATIONAL ? heap_old_space(heap) : heap_mono_space(heap);
 }
 
 static inline struct large_object_space* heap_large_object_space(struct gc_heap *heap) {
@@ -216,25 +225,25 @@ gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
   struct gc_trace_worker_data data;
 
   if (GC_GENERATIONAL) {
-    copy_space_allocator_init(trace_worker_new_space_allocator(data));
-    copy_space_allocator_init(trace_worker_old_space_allocator(data));
-    gc_field_set_writer_init(trace_worker_field_logger(data),
+    copy_space_allocator_init(trace_worker_new_space_allocator(&data));
+    copy_space_allocator_init(trace_worker_old_space_allocator(&data));
+    gc_field_set_writer_init(trace_worker_field_logger(&data),
                              heap_remembered_set(heap));
   } else {
-    copy_space_allocator_init(trace_worker_mono_space_allocator(data));
+    copy_space_allocator_init(trace_worker_mono_space_allocator(&data));
   }
 
   f(tracer, heap, worker, &data);
 
   if (GC_GENERATIONAL) {
-    copy_space_allocator_finish(trace_worker_new_space_allocator(data),
+    copy_space_allocator_finish(trace_worker_new_space_allocator(&data),
                                 heap_new_space(heap));
-    copy_space_allocator_finish(trace_worker_old_space_allocator(data),
+    copy_space_allocator_finish(trace_worker_old_space_allocator(&data),
                                 heap_old_space(heap));
   } else {
-    copy_space_allocator_finish(trace_worker_mono_space_allocator(data),
+    copy_space_allocator_finish(trace_worker_mono_space_allocator(&data),
                                 heap_mono_space(heap));
-    gc_field_set_writer_release_buffer(trace_worker_field_logger(data));
+    gc_field_set_writer_release_buffer(trace_worker_field_logger(&data));
   }
 }
 
@@ -256,8 +265,12 @@ static void remember_edge_to_survivor_object(struct gc_heap *heap,
   GC_ASSERT(new_space_contains(heap, gc_edge_ref(edge)));
   if (copy_space_contains_addr(heap_old_space(heap), gc_edge_address(edge)))
     return copy_space_remember_edge(heap_old_space(heap), edge);
-  if (large_object_space_contains_edge(heap_large_object_space(heap), edge))
-    return large_object_space_remember_edge(heap_old_space(heap), edge);
+  struct gc_ref large_object =
+    large_object_space_object_containing_edge(heap_large_object_space(heap),
+                                              edge);
+  if (!gc_ref_is_null(large_object))
+    return large_object_space_remember_edge(heap_large_object_space(heap),
+                                            large_object, edge);
   return 0;
 }
 

@@ -123,12 +123,12 @@ large_object_space_contains(struct large_object_space *space,
 }
 
 static inline struct gc_ref
-large_object_space_contains_edge(struct large_object_space *space,
-                                 struct gc_edge edge) {
+large_object_space_object_containing_edge(struct large_object_space *space,
+                                          struct gc_edge edge) {
   pthread_mutex_lock(&space->lock);
   struct large_object_node *node =
     large_object_tree_lookup(&space->object_tree, gc_edge_address(edge));
-  uintptr_t addr = node ? node->key.addr : 0;
+  uintptr_t addr = (node && node->value.is_live) ? node->key.addr : 0;
   pthread_mutex_unlock(&space->lock);
   return gc_ref(addr);
 }
