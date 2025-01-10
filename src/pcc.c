@@ -324,7 +324,7 @@ static inline int do_minor_trace(struct gc_heap *heap, struct gc_edge edge,
     // However however, it is hard to distinguish between edges from promoted
     // objects and edges from old objects, so we mostly just rely on an
     // idempotent "log if unlogged" operation instead.
-    int promote = copy_space_should_promote(new_space, ref);
+    int promote = copy_space_should_promote(new_space, ref) || 1;
     struct copy_space *dst_space = promote ? old_space : new_space;
     struct copy_space_allocator *alloc = promote
       ? trace_worker_old_space_allocator(data)
