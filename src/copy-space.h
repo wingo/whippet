@@ -314,6 +314,68 @@ copy_space_reacquire_memory(struct copy_space *space, size_t bytes) {
   GC_ASSERT(pending + COPY_SPACE_BLOCK_SIZE > 0);
 }
 
+static inline int
+copy_space_contains_address(struct copy_space *space, uintptr_t addr) {
+  return extents_contain_addr(space->extents, addr);
+}
+
+static inline int
+copy_space_contains(struct copy_space *space, struct gc_ref ref) {
+  return copy_space_contains_address(space, gc_ref_value(ref));
+}
+
+static int
+copy_space_has_field_logging_bits(struct copy_space *space) {
+  return space->flags & COPY_SPACE_HAS_FIELD_LOGGING_BITS;
+}
+
+static size_t
+copy_space_field_logging_blocks(struct copy_space *space) {
+  if (!copy_space_has_field_logging_bits(space))
+    return 0;
+  size_t bytes = COPY_SPACE_SLAB_SIZE / sizeof (uintptr_t) / 8;
+  size_t blocks =
+    align_up(bytes, COPY_SPACE_BLOCK_SIZE) / COPY_SPACE_BLOCK_SIZE;
+  return blocks;
+}
+
+static uint8_t*
+copy_space_field_logged_byte(struct gc_edge edge) {
+  uintptr_t addr = gc_edge_address(edge);
+  uintptr_t base = align_down(addr, COPY_SPACE_SLAB_SIZE);
+  base += offsetof(struct copy_space_slab, blocks);
+  uintptr_t field = (addr & (COPY_SPACE_SLAB_SIZE - 1)) / sizeof(uintptr_t);
+  uintptr_t byte = field / 8;
+  return (uint8_t*) (base + field);
+}
+
+static uint8_t
+copy_space_field_logged_bit(struct gc_edge edge) {
+  // Each byte has 8 bytes, covering 8 fields.
+  size_t field = gc_edge_address(edge) / sizeof(uintptr_t);
+  return 1 << (field % 8);
+}
+
+static void
+copy_space_clear_field_logged_bits_for_region(struct copy_space *space,
+                                              void *region_base) {
+  uintptr_t addr = (uintptr_t)region_base;
+  GC_ASSERT_EQ(addr, align_down(addr, COPY_SPACE_REGION_SIZE));
+  GC_ASSERT(copy_space_contains_address(space, addr));
+  if (copy_space_has_field_logging_bits(space))
+    memset(copy_space_field_logged_byte(gc_edge(region_base)),
+           0,
+           COPY_SPACE_REGION_SIZE / sizeof(uintptr_t) / 8);
+}
+
+static void
+copy_space_clear_field_logged_bits_for_block(struct copy_space *space,
+                                             struct copy_space_block *block) {
+  struct copy_space_block_payload *payload = copy_space_block_payload(block);
+  copy_space_clear_field_logged_bits_for_region(space, &payload->regions[0]);
+  copy_space_clear_field_logged_bits_for_region(space, &payload->regions[1]);
+}
+
 static inline void
 copy_space_allocator_set_block(struct copy_space_allocator *alloc,
                                struct copy_space_block *block,
@@ -344,10 +406,12 @@ copy_space_allocator_acquire_empty_block(struct copy_space_allocator *alloc,
   gc_lock_release(&lock);
   if (copy_space_allocator_acquire_block(alloc, block, space->active_region)) {
     block->in_core = 1;
-    if (block->all_zeroes[space->active_region])
+    if (block->all_zeroes[space->active_region]) {
       block->all_zeroes[space->active_region] = 0;
-    else
+    } else {
       memset((char*)alloc->hp, 0, COPY_SPACE_REGION_SIZE);
+      copy_space_clear_field_logged_bits_for_region(space, (void*)alloc->hp);
+    }
     return 1;
   }
   return 0;
@@ -489,16 +553,6 @@ static void
 copy_space_add_to_allocation_counter(struct copy_space *space,
                                      uintptr_t *counter) {
   *counter += space->allocated_bytes - space->allocated_bytes_at_last_gc;
-}
-
-static inline int
-copy_space_contains_address(struct copy_space *space, uintptr_t addr) {
-  return extents_contain_addr(space->extents, addr);
-}
-
-static inline int
-copy_space_contains(struct copy_space *space, struct gc_ref ref) {
-  return copy_space_contains_address(space, gc_ref_value(ref));
 }
 
 static void
@@ -682,23 +736,6 @@ copy_space_contains_edge_aligned(struct copy_space *space,
   return copy_space_contains_address_aligned(space, gc_edge_address(edge));
 }
 
-static uint8_t*
-copy_space_field_logged_byte(struct gc_edge edge) {
-  uintptr_t addr = gc_edge_address(edge);
-  uintptr_t base = align_down(addr, COPY_SPACE_SLAB_SIZE);
-  base += offsetof(struct copy_space_slab, blocks);
-  uintptr_t field = (addr & (COPY_SPACE_SLAB_SIZE - 1)) / sizeof(uintptr_t);
-  uintptr_t byte = field / 8;
-  return (uint8_t*) (base + field);
-}
-
-static uint8_t
-copy_space_field_logged_bit(struct gc_edge edge) {
-  // Each byte has 8 bytes, covering 8 fields.
-  size_t field = gc_edge_address(edge) / sizeof(uintptr_t);
-  return 1 << (field % 8);
-}
-
 static inline int
 copy_space_should_promote(struct copy_space *space, struct gc_ref ref) {
   GC_ASSERT(copy_space_contains(space, ref));
@@ -799,21 +836,6 @@ copy_space_shrink(struct copy_space *space, size_t bytes) {
   // can help us then!
 }
       
-static int
-copy_space_has_field_logging_bits(struct copy_space *space) {
-  return space->flags & COPY_SPACE_HAS_FIELD_LOGGING_BITS;
-}
-
-static size_t
-copy_space_field_logging_blocks(struct copy_space *space) {
-  if (!copy_space_has_field_logging_bits(space))
-    return 0;
-  size_t bytes = COPY_SPACE_SLAB_SIZE / sizeof (uintptr_t) / 8;
-  size_t blocks =
-    align_up(bytes, COPY_SPACE_BLOCK_SIZE) / COPY_SPACE_BLOCK_SIZE;
-  return blocks;
-}
-
 static size_t
 copy_space_first_payload_block(struct copy_space *space) {
   return copy_space_field_logging_blocks(space);
@@ -874,6 +896,7 @@ copy_space_page_out_blocks(void *data) {
     block->all_zeroes[0] = block->all_zeroes[1] = 1;
     gc_platform_discard_memory(copy_space_block_payload(block),
                                COPY_SPACE_BLOCK_SIZE);
+    copy_space_clear_field_logged_bits_for_block(space, block);
     copy_space_block_stack_push(&space->paged_out[age + 1], block, &lock);
   }
   gc_lock_release(&lock);
