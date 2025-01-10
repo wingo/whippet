@@ -223,7 +223,7 @@ size_t gc_visit_finalizer_roots(struct gc_finalizer_state *state,
                                               void *),
                                 struct gc_heap *heap,
                                 void *visit_data) {
-  size_t count;
+  size_t count = 0;
   for (size_t tidx = 0; tidx < state->table_count; tidx++) {
     struct gc_finalizer_table *table = &state->tables[tidx];
     if (table->finalizer_count) {
