@@ -73,6 +73,10 @@ static inline size_t gc_write_barrier_field_table_alignment(void) {
   GC_ASSERT(GC_GENERATIONAL);
   return gc_allocator_alloc_table_alignment();
 }
+static inline ptrdiff_t gc_write_barrier_field_table_offset(void) {
+  GC_ASSERT(GC_GENERATIONAL);
+  return 0;
+}
 static inline size_t gc_write_barrier_field_fields_per_byte(void) {
   GC_ASSERT(GC_GENERATIONAL);
   return 2;

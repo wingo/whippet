@@ -59,6 +59,9 @@ static inline size_t gc_write_barrier_card_size(void) {
 static inline size_t gc_write_barrier_field_table_alignment(void) {
   GC_CRASH();
 }
+static inline ptrdiff_t gc_write_barrier_field_table_offset(void) {
+  GC_CRASH();
+}
 static inline size_t gc_write_barrier_field_fields_per_byte(void) {
   GC_CRASH();
 }

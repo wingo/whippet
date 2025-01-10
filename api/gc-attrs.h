@@ -49,6 +49,7 @@ static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) 
 static inline size_t gc_write_barrier_card_table_alignment(void) GC_ALWAYS_INLINE;
 static inline size_t gc_write_barrier_card_size(void) GC_ALWAYS_INLINE;
 static inline size_t gc_write_barrier_field_table_alignment(void) GC_ALWAYS_INLINE;
+static inline ptrdiff_t gc_write_barrier_field_table_offset(void) GC_ALWAYS_INLINE;
 static inline size_t gc_write_barrier_field_fields_per_byte(void) GC_ALWAYS_INLINE;
 static inline uint8_t gc_write_barrier_field_first_bit_pattern(void) GC_ALWAYS_INLINE;
 

@@ -214,7 +214,7 @@ static inline int gc_object_is_old_generation(struct gc_mutator *mut,
     uintptr_t high_addr = gc_small_object_nursery_high_address(heap);
     uintptr_t size = high_addr - low_addr;
     uintptr_t addr = gc_ref_value(obj);
-    return addr - low_addr < size;
+    return addr - low_addr >= size;
   }
   case GC_OLD_GENERATION_CHECK_SLOW:
     return gc_object_is_old_generation_slow(mut, obj);
@@ -252,13 +252,14 @@ static inline int gc_write_barrier_fast(struct gc_mutator *mut, struct gc_ref ob
     size_t field_table_alignment = gc_write_barrier_field_table_alignment();
     size_t fields_per_byte = gc_write_barrier_field_fields_per_byte();
     uint8_t first_bit_pattern = gc_write_barrier_field_first_bit_pattern();
+    ssize_t table_offset = gc_write_barrier_field_table_offset();
 
     uintptr_t addr = gc_edge_address(edge);
     uintptr_t base = addr & ~(field_table_alignment - 1);
     uintptr_t field = (addr & (field_table_alignment - 1)) / sizeof(uintptr_t);
     uintptr_t log_byte = field / fields_per_byte;
     uint8_t log_bit = first_bit_pattern << (field % fields_per_byte);
-    uint8_t *byte_loc = (uint8_t*)(base + log_byte);
+    uint8_t *byte_loc = (uint8_t*)(base + table_offset + log_byte);
     uint8_t byte = atomic_load_explicit(byte_loc, memory_order_relaxed);
     return !(byte & log_bit);
   }
