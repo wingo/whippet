@@ -132,10 +132,12 @@ gc_field_set_release_buffer(struct gc_field_set *set,
 static void
 gc_field_set_add_roots(struct gc_field_set *set, struct gc_tracer *tracer) {
   struct gc_edge_buffer *buf;
-  for (buf = set->partly_full.list.head; buf; buf = buf->next)
+  struct gc_lock lock = gc_lock_acquire(&set->lock);
+  while ((buf = gc_edge_buffer_stack_pop(&set->partly_full, &lock)))
     gc_tracer_add_root(tracer, gc_root_edge_buffer(buf));
-  for (buf = set->full.head; buf; buf = buf->next)
+  while ((buf = gc_edge_buffer_list_pop(&set->full)))
     gc_tracer_add_root(tracer, gc_root_edge_buffer(buf));
+  gc_lock_release(&lock);
 }
 
 static void
@@ -151,6 +153,7 @@ gc_field_set_clear(struct gc_field_set *set,
   struct gc_edge_buffer *buf, *next;
   for (buf = partly_full; buf; buf = next) {
     next = buf->next;
+    buf->next = NULL;
     if (forget_edge)
       for (size_t i = 0; i < buf->size; i++)
         forget_edge(buf->edges[i], heap);
@@ -159,6 +162,7 @@ gc_field_set_clear(struct gc_field_set *set,
   }
   for (buf = full; buf; buf = next) {
     next = buf->next;
+    buf->next = NULL;
     if (forget_edge)
       for (size_t i = 0; i < buf->size; i++)
         forget_edge(buf->edges[i], heap);
@@ -185,6 +189,7 @@ gc_field_set_visit_edge_buffer(struct gc_field_set *set,
                                void *data) {
   for (size_t i = 0; i < buf->size; i++)
     visit(buf->edges[i], heap, data);
+  gc_field_set_release_buffer(set, buf);
 }
 
 static void
