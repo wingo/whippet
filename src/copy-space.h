@@ -82,13 +82,17 @@ struct copy_space_slab {
 STATIC_ASSERT_EQ(sizeof(struct copy_space_slab), COPY_SPACE_SLAB_SIZE);
 
 static inline struct copy_space_block*
-copy_space_block_header(struct copy_space_block_payload *payload) {
-  uintptr_t addr = (uintptr_t) payload;
+copy_space_block_for_addr(uintptr_t addr) {
   uintptr_t base = align_down(addr, COPY_SPACE_SLAB_SIZE);
   struct copy_space_slab *slab = (struct copy_space_slab*) base;
   uintptr_t block_idx =
     (addr / COPY_SPACE_BLOCK_SIZE) % COPY_SPACE_BLOCKS_PER_SLAB;
   return &slab->headers[block_idx - COPY_SPACE_HEADER_BLOCKS_PER_SLAB];
+}
+
+static inline struct copy_space_block*
+copy_space_block_header(struct copy_space_block_payload *payload) {
+  return copy_space_block_for_addr((uintptr_t) payload);
 }
 
 static inline struct copy_space_block_payload*
@@ -469,10 +473,32 @@ copy_space_finish_gc(struct copy_space *space) {
   space->in_gc = 0;
 }
 
+static int
+copy_space_can_allocate(struct copy_space *space, size_t bytes) {
+  // With lock!
+  for (struct copy_space_block *empties = space->empty.list.head;
+       empties;
+       empties = empties->next) {
+    if (bytes <= COPY_SPACE_REGION_SIZE) return 1;
+    bytes -= COPY_SPACE_REGION_SIZE;
+  }
+  return 0;
+}
+
 static void
 copy_space_add_to_allocation_counter(struct copy_space *space,
                                      uintptr_t *counter) {
   *counter += space->allocated_bytes - space->allocated_bytes_at_last_gc;
+}
+
+static inline int
+copy_space_contains_address(struct copy_space *space, uintptr_t addr) {
+  return extents_contain_addr(space->extents, addr);
+}
+
+static inline int
+copy_space_contains(struct copy_space *space, struct gc_ref ref) {
+  return copy_space_contains_address(space, gc_ref_value(ref));
 }
 
 static void
@@ -617,11 +643,6 @@ copy_space_forward_if_traced(struct copy_space *space, struct gc_edge edge,
   return copy_space_forward_if_traced_nonatomic(space, edge, old_ref);
 }
 
-static inline int
-copy_space_contains(struct copy_space *space, struct gc_ref ref) {
-  return extents_contain_addr(space->extents, gc_ref_value(ref));
-}
-
 static int
 copy_space_is_aligned(struct copy_space *space) {
   return space->flags & COPY_SPACE_ALIGNED;
@@ -655,6 +676,12 @@ copy_space_contains_address_aligned(struct copy_space *space, uintptr_t addr) {
   return (addr - low_addr) < size;
 }
 
+static inline int
+copy_space_contains_edge_aligned(struct copy_space *space,
+                                 struct gc_edge edge) {
+  return copy_space_contains_address_aligned(space, gc_edge_address(edge));
+}
+
 static uint8_t*
 copy_space_field_logged_byte(struct gc_edge edge) {
   uintptr_t addr = gc_edge_address(edge);
@@ -670,6 +697,20 @@ copy_space_field_logged_bit(struct gc_edge edge) {
   // Each byte has 8 bytes, covering 8 fields.
   size_t field = gc_edge_address(edge) / sizeof(uintptr_t);
   return 1 << (field % 8);
+}
+
+static inline int
+copy_space_should_promote(struct copy_space *space, struct gc_ref ref) {
+  GC_ASSERT(copy_space_contains(space, ref));
+  uintptr_t addr = gc_ref_value(ref);
+  struct copy_space_block *block = copy_space_block_for_addr(gc_ref_value(ref));
+  GC_ASSERT_EQ(copy_space_object_region(ref), space->active_region ^ 1);
+  return block->is_survivor[space->active_region ^ 1];
+}
+
+static int
+copy_space_contains_edge(struct copy_space *space, struct gc_edge edge) {
+  return copy_space_contains_address(space, gc_edge_address(edge));
 }
 
 static int
