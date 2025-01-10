@@ -529,9 +529,30 @@ copy_space_flip(struct copy_space *space) {
   space->in_gc = 1;
 }
 
+static inline void
+copy_space_allocator_init(struct copy_space_allocator *alloc) {
+  memset(alloc, 0, sizeof(*alloc));
+}
+
+static inline void
+copy_space_allocator_finish(struct copy_space_allocator *alloc,
+                            struct copy_space *space) {
+  if (alloc->block)
+    copy_space_allocator_release_partly_full_block(alloc, space);
+}
+
 static void
-copy_space_finish_gc(struct copy_space *space) {
+copy_space_finish_gc(struct copy_space *space, int is_minor_gc) {
   // Mutators stopped, can access nonatomically.
+  if (is_minor_gc) {
+    // Avoid mixing survivors and new objects on the same blocks.
+    struct copy_space_allocator alloc;
+    copy_space_allocator_init(&alloc);
+    while (copy_space_allocator_acquire_partly_full_block(&alloc, space))
+      copy_space_allocator_release_full_block(&alloc, space);
+    copy_space_allocator_finish(&alloc, space);
+  }
+
   space->allocated_bytes_at_last_gc = space->allocated_bytes;
   space->fragmentation_at_last_gc = space->fragmentation;
   space->in_gc = 0;
@@ -776,18 +797,6 @@ copy_space_forget_edge(struct copy_space *space, struct gc_edge edge) {
                                                   memory_order_acq_rel,
                                                   memory_order_acquire));
   return 1;
-}
-
-static inline void
-copy_space_allocator_init(struct copy_space_allocator *alloc) {
-  memset(alloc, 0, sizeof(*alloc));
-}
-
-static inline void
-copy_space_allocator_finish(struct copy_space_allocator *alloc,
-                            struct copy_space *space) {
-  if (alloc->block)
-    copy_space_allocator_release_partly_full_block(alloc, space);
 }
 
 static size_t copy_space_is_power_of_two(size_t n) {

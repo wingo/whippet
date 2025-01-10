@@ -774,11 +774,12 @@ copy_spaces_start_gc(struct gc_heap *heap, int is_minor_gc) {
 static void
 copy_spaces_finish_gc(struct gc_heap *heap, int is_minor_gc) {
   if (GC_GENERATIONAL) {
-    copy_space_finish_gc(heap_new_space(heap));
+    copy_space_finish_gc(heap_new_space(heap), is_minor_gc);
     if (!is_minor_gc)
-      copy_space_finish_gc(heap_old_space(heap));
+      copy_space_finish_gc(heap_old_space(heap), 0);
   } else {
-    copy_space_finish_gc(heap_mono_space(heap));
+    GC_ASSERT(!is_minor_gc);
+    copy_space_finish_gc(heap_mono_space(heap), 0);
   }
 }
 
