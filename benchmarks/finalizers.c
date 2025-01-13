@@ -93,6 +93,24 @@ static void cause_gc(struct gc_mutator *mut) {
   gc_collect(mut, GC_COLLECTION_MAJOR);
 }
 
+static inline void set_car(struct gc_mutator *mut, Pair *obj, void *val) {
+  void **field = &obj->car;
+  if (val)
+    gc_write_barrier(mut, gc_ref_from_heap_object(obj), sizeof(Pair),
+                     gc_edge(field),
+                     gc_ref_from_heap_object(val));
+  *field = val;
+}
+
+static inline void set_cdr(struct gc_mutator *mut, Pair *obj, void *val) {
+  void **field = &obj->cdr;
+  if (val)
+    gc_write_barrier(mut, gc_ref_from_heap_object(obj), sizeof(Pair),
+                     gc_edge(field),
+                     gc_ref_from_heap_object(val));
+  field = val;
+}
+
 static Pair* make_finalizer_chain(struct thread *t, size_t length) {
   PairHandle head = { NULL };
   PairHandle tail = { NULL };
@@ -102,8 +120,8 @@ static Pair* make_finalizer_chain(struct thread *t, size_t length) {
   for (size_t i = 0; i < length; i++) {
     HANDLE_SET(tail, HANDLE_REF(head));
     HANDLE_SET(head, allocate_pair(t->mut));
-    HANDLE_REF(head)->car = allocate_small_object(t->mut);
-    HANDLE_REF(head)->cdr = HANDLE_REF(tail);
+    set_car(t->mut, HANDLE_REF(head), allocate_small_object(t->mut));
+    set_cdr(t->mut, HANDLE_REF(head), HANDLE_REF(tail));
     struct gc_finalizer *finalizer = allocate_finalizer(t->mut);
     gc_finalizer_attach(t->mut, finalizer, 0,
                         gc_ref_from_heap_object(HANDLE_REF(head)),
