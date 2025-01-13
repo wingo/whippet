@@ -44,9 +44,9 @@ See the [documentation](./doc/README.md).
 
 ## Status and roadmap
 
-As of September 2024, Whippet is feature-complete!  Of course there will
-surely be new features to build as Whippet gets integrated it into
-language run-times, but the basics are there.
+As of January 2025, Whippet is good to go!  Of course there will surely
+be new features to build as Whippet gets integrated it into language
+run-times, but the basics are there.
 
 The next phase on the roadmap is support for tracing, and
 some performance noodling.

@@ -112,8 +112,8 @@ If the `gc_atomic_forward`'s state is `BUSY`, the collector will call
 `gc_atomic_forward_retry_busy`; a return value of 0 means the object is
 still busy, because another thread is attempting to forward it.
 Otherwise the forwarding state becomes either `FORWARDED`, if the other
-thread succeeded in forwarding it, or `ABORTED`, indicating that the
-other thread failed to forward it.
+thread succeeded in forwarding it, or go back to `NOT_FORWARDED`,
+indicating that the other thread failed to forward it.
 
 If the forwarding state is `FORWARDED`, the collector will call
 `gc_atomic_forward_address` to get the new address.
@@ -350,6 +350,12 @@ multiple threads are available.
 $(COMPILE) -DGC_PARALLEL=1 -DGC_PRECISE_ROOTS=1 \
   -include foo-embedder.h -o gc.o -c pcc.c
 ```
+
+You can also build `pcc` in a generational configuration by passing
+`-DGC_GENERATIONAL=1`.  The nursery is 2 MB per active mutator, capped
+to the number of processors, so if the last cycle had a maximum of 4
+mutator threads active at the same time and your machine has 24 cores,
+your nursery would be 8 MB.
 
 #### Building `mmc`
 

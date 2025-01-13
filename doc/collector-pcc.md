@@ -20,8 +20,11 @@ the same performance characteristics with a single mutator and with
 parallelism disabled, additionally allowing multiple mutators, and
 scaling better with multiple tracing threads.
 
-Also like `semi`, `pcc` is not generational yet.  If and when `pcc`
-grows a young generation, it would be a great collector.
+`pcc` has a generational configuration, conventionally referred to as
+`generational-pcc`, in which both the nursery and the old generation are
+copy spaces.  Objects stay in the nursery for one cycle before moving on
+to the old generation.  This configuration is a bit new (January 2025)
+and still needs some tuning.
 
 ## Implementation notes
 

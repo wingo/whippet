@@ -19,5 +19,5 @@ size, and performs best with ample heap sizes; between 3× and 5× is
 best.
 
 The semi-space collector doesn't support multiple mutator threads.  If
-you want a whole-heap copying collector for a multi-threaded mutator,
-look at [pcc](./collector-pcc.md).
+you want a copying collector for a multi-threaded mutator, look at
+[pcc](./collector-pcc.md).

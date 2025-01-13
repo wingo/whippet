@@ -3,8 +3,9 @@
 Whippet has four collectors currently:
  - [Semi-space collector (`semi`)](./collector-semi.md): For
    single-threaded embedders who are not too tight on memory.
- - [Parallel copying collector (`pcc`)](./collector-pcc.md): Like `semi`,
-   but with support for multiple mutator and tracing threads.
+ - [Parallel copying collector (`pcc`)](./collector-pcc.md): Like
+   `semi`, but with support for multiple mutator and tracing threads and
+   generational collection.
  - [Mostly marking collector (`mmc`)](./collector-mmc.md):
    Immix-inspired collector.  Optionally parallel, conservative (stack
    and/or heap), and/or generational.
@@ -30,8 +31,9 @@ precise roots, then go for `stack-conservative-parallel-mmc` directly.
 
 ## More collectors
 
-It would be nice to have a classic generational GC, perhaps using
+It would be nice to have a generational GC that uses the space from
 `parallel-mmc` for the old generation but a pcc-style copying nursery.
+We have `generational-pcc` now, so this should be possible.
 
 Support for concurrent marking in `mmc` would be good as well, perhaps
 with a SATB barrier.  (Or, if you are the sort of person to bet on
