@@ -1411,7 +1411,8 @@ nofl_space_should_evacuate(struct nofl_space *space, uint8_t metadata_byte,
 }
 
 static inline int
-nofl_space_set_mark(struct nofl_space *space, uint8_t *metadata, uint8_t byte) {
+nofl_space_set_mark_relaxed(struct nofl_space *space, uint8_t *metadata,
+                            uint8_t byte) {
   uint8_t mask = NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_MARK_0
     | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
   atomic_store_explicit(metadata,
@@ -1421,9 +1422,20 @@ nofl_space_set_mark(struct nofl_space *space, uint8_t *metadata, uint8_t byte) {
 }
 
 static inline int
+nofl_space_set_mark(struct nofl_space *space, uint8_t *metadata, uint8_t byte) {
+  uint8_t mask = NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_MARK_0
+    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
+  atomic_store_explicit(metadata,
+                        (byte & ~mask) | space->marked_mask,
+                        memory_order_release);
+  return 1;
+}
+
+static inline int
 nofl_space_set_nonempty_mark(struct nofl_space *space, uint8_t *metadata,
                              uint8_t byte, struct gc_ref ref) {
-  nofl_space_set_mark(space, metadata, byte);
+  // FIXME: Check that relaxed atomics are actually worth it.
+  nofl_space_set_mark_relaxed(space, metadata, byte);
   nofl_block_set_mark(gc_ref_value(ref));
   return 1;
 }
@@ -1490,13 +1502,24 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
     // Impossible.
     GC_CRASH();
   case GC_FORWARDING_STATE_ACQUIRED: {
-    // We claimed the object successfully; evacuating is up to us.
+    // We claimed the object successfully.
+
+    // First check again if someone else tried to evacuate this object and ended
+    // up marking in place instead.
+    byte = atomic_load_explicit(metadata, memory_order_acquire);
+    if (byte & space->marked_mask) {
+      // Indeed, already marked in place.
+      gc_atomic_forward_abort(&fwd);
+      return 0;
+    }
+
+    // Otherwise, we try to evacuate.
     size_t object_granules = nofl_space_live_object_granules(metadata);
     struct gc_ref new_ref = nofl_evacuation_allocate(evacuate, space,
                                                      object_granules);
     if (!gc_ref_is_null(new_ref)) {
-      // Copy object contents before committing, as we don't know what
-      // part of the object (if any) will be overwritten by the
+      // Whee, it works!  Copy object contents before committing, as we don't
+      // know what part of the object (if any) will be overwritten by the
       // commit.
       memcpy(gc_ref_heap_object(new_ref), gc_ref_heap_object(old_ref),
              object_granules * NOFL_GRANULE_SIZE);
@@ -1512,11 +1535,12 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
       return nofl_space_set_nonempty_mark(space, new_metadata, byte,
                                           new_ref);
     } else {
-      // Well shucks; allocation failed, marking the end of
-      // opportunistic evacuation.  No future evacuation of this
-      // object will succeed.  Mark in place instead.
+      // Well shucks; allocation failed.  Mark in place and then release the
+      // object.
+      nofl_space_set_mark(space, metadata, byte);
+      nofl_block_set_mark(gc_ref_value(old_ref));
       gc_atomic_forward_abort(&fwd);
-      return nofl_space_set_nonempty_mark(space, metadata, byte, old_ref);
+      return 1;
     }
     break;
   }
