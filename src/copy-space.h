@@ -346,7 +346,7 @@ copy_space_field_logged_byte(struct gc_edge edge) {
   base += offsetof(struct copy_space_slab, blocks);
   uintptr_t field = (addr & (COPY_SPACE_SLAB_SIZE - 1)) / sizeof(uintptr_t);
   uintptr_t byte = field / 8;
-  return (uint8_t*) (base + field);
+  return (uint8_t*) (base + byte);
 }
 
 static uint8_t
