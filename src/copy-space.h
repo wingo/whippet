@@ -149,6 +149,17 @@ struct copy_space {
   size_t nslabs;
 };
 
+enum copy_space_forward_result {
+  // We went to forward an edge, but the target was already forwarded, so we
+  // just updated the edge.
+  COPY_SPACE_FORWARD_UPDATED,
+  // We went to forward an edge and evacuated the referent to a new location.
+  COPY_SPACE_FORWARD_EVACUATED,
+  // We went to forward an edge but failed to acquire memory for its new
+  // location.
+  COPY_SPACE_FORWARD_FAILED,
+};
+
 struct copy_space_allocator {
   uintptr_t hp;
   uintptr_t limit;
@@ -473,9 +484,7 @@ copy_space_allocator_release_partly_full_block(struct copy_space_allocator *allo
 static inline struct gc_ref
 copy_space_allocate(struct copy_space_allocator *alloc,
                     struct copy_space *space,
-                    size_t size,
-                    void (*get_more_empty_blocks)(void *data),
-                    void *data) {
+                    size_t size) {
   GC_ASSERT(size > 0);
   GC_ASSERT(size <= gc_allocator_large_threshold());
   size = align_up(size, gc_allocator_small_granule_size());
@@ -490,8 +499,8 @@ copy_space_allocate(struct copy_space_allocator *alloc,
       goto done;
     copy_space_allocator_release_full_block(alloc, space);
   }
-  while (!copy_space_allocator_acquire_empty_block(alloc, space))
-    get_more_empty_blocks(data);
+  if (!copy_space_allocator_acquire_empty_block(alloc, space))
+    return gc_ref_null();
   // The newly acquired block is empty and is therefore large enough for
   // a small allocation.
 
@@ -588,12 +597,13 @@ copy_space_gc_during_evacuation(void *data) {
   GC_CRASH();
 }
 
-static inline int
+static inline enum copy_space_forward_result
 copy_space_forward_atomic(struct copy_space *space, struct gc_edge edge,
                           struct gc_ref old_ref,
                           struct copy_space_allocator *alloc) {
   struct gc_atomic_forward fwd = gc_atomic_forward_begin(old_ref);
 
+retry:
   if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
     gc_atomic_forward_acquire(&fwd);
 
@@ -605,33 +615,34 @@ copy_space_forward_atomic(struct copy_space *space, struct gc_edge edge,
   case GC_FORWARDING_STATE_ACQUIRED: {
     // We claimed the object successfully; evacuating is up to us.
     size_t bytes = gc_atomic_forward_object_size(&fwd);
-    struct gc_ref new_ref =
-      copy_space_allocate(alloc, space, bytes,
-                          copy_space_gc_during_evacuation, NULL);
+    struct gc_ref new_ref = copy_space_allocate(alloc, space, bytes);
+    if (gc_ref_is_null(new_ref)) {
+      gc_atomic_forward_abort(&fwd);
+      return COPY_SPACE_FORWARD_FAILED;
+    }
     // Copy object contents before committing, as we don't know what
     // part of the object (if any) will be overwritten by the
     // commit.
     memcpy(gc_ref_heap_object(new_ref), gc_ref_heap_object(old_ref), bytes);
     gc_atomic_forward_commit(&fwd, new_ref);
     gc_edge_update(edge, new_ref);
-    return 1;
+    return COPY_SPACE_FORWARD_EVACUATED;
   }
   case GC_FORWARDING_STATE_BUSY:
     // Someone else claimed this object first.  Spin until new address
     // known, or evacuation aborts.
     for (size_t spin_count = 0;; spin_count++) {
       if (gc_atomic_forward_retry_busy(&fwd))
-        break;
+        goto retry;
       yield_for_spin(spin_count);
     }
-    GC_ASSERT(fwd.state == GC_FORWARDING_STATE_FORWARDED);
-    // Fall through.
+    GC_CRASH(); // Unreachable.
   case GC_FORWARDING_STATE_FORWARDED:
     // The object has been evacuated already.  Update the edge;
     // whoever forwarded the object will make sure it's eventually
     // traced.
     gc_edge_update(edge, gc_ref(gc_atomic_forward_address(&fwd)));
-    return 0;
+    return COPY_SPACE_FORWARD_UPDATED;
   }
 }
 
@@ -640,6 +651,7 @@ copy_space_forward_if_traced_atomic(struct copy_space *space,
                                     struct gc_edge edge,
                                     struct gc_ref old_ref) {
   struct gc_atomic_forward fwd = gc_atomic_forward_begin(old_ref);
+retry:
   switch (fwd.state) {
   case GC_FORWARDING_STATE_NOT_FORWARDED:
     return 0;
@@ -648,11 +660,10 @@ copy_space_forward_if_traced_atomic(struct copy_space *space,
     // known.
     for (size_t spin_count = 0;; spin_count++) {
       if (gc_atomic_forward_retry_busy(&fwd))
-        break;
+        goto retry;
       yield_for_spin(spin_count);
     }
-    GC_ASSERT(fwd.state == GC_FORWARDING_STATE_FORWARDED);
-    // Fall through.
+    GC_CRASH(); // Unreachable.
   case GC_FORWARDING_STATE_FORWARDED:
     gc_edge_update(edge, gc_ref(gc_atomic_forward_address(&fwd)));
     return 1;
@@ -661,24 +672,24 @@ copy_space_forward_if_traced_atomic(struct copy_space *space,
   }
 }
 
-static inline int
+static inline enum copy_space_forward_result
 copy_space_forward_nonatomic(struct copy_space *space, struct gc_edge edge,
                              struct gc_ref old_ref,
                              struct copy_space_allocator *alloc) {
   uintptr_t forwarded = gc_object_forwarded_nonatomic(old_ref);
   if (forwarded) {
     gc_edge_update(edge, gc_ref(forwarded));
-    return 0;
+    return COPY_SPACE_FORWARD_UPDATED;
   } else {
     size_t size;
     gc_trace_object(old_ref, NULL, NULL, NULL, &size);
-    struct gc_ref new_ref =
-      copy_space_allocate(alloc, space, size,
-                          copy_space_gc_during_evacuation, NULL);
+    struct gc_ref new_ref = copy_space_allocate(alloc, space, size);
+    if (gc_ref_is_null(new_ref))
+      return COPY_SPACE_FORWARD_FAILED;
     memcpy(gc_ref_heap_object(new_ref), gc_ref_heap_object(old_ref), size);
     gc_object_forward_nonatomic(old_ref, new_ref);
     gc_edge_update(edge, new_ref);
-    return 1;
+    return COPY_SPACE_FORWARD_EVACUATED;
   }
 }
 
@@ -694,7 +705,7 @@ copy_space_forward_if_traced_nonatomic(struct copy_space *space,
   return 0;
 }
 
-static inline int
+static inline enum copy_space_forward_result
 copy_space_forward(struct copy_space *src_space, struct copy_space *dst_space,
                    struct gc_edge edge,
                    struct gc_ref old_ref,

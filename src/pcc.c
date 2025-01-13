@@ -287,6 +287,31 @@ static inline int edge_is_from_survivor(struct gc_heap *heap,
   return copy_space_contains_edge_aligned(heap_new_space(heap), edge);
 }
 
+static inline int forward(struct copy_space *src_space,
+                          struct copy_space *dst_space,
+                          struct gc_edge edge,
+                          struct gc_ref ref,
+                          struct copy_space_allocator *dst_alloc) {
+  switch (copy_space_forward(src_space, dst_space, edge, ref, dst_alloc)) {
+  case COPY_SPACE_FORWARD_UPDATED:
+    return 0;
+  case COPY_SPACE_FORWARD_EVACUATED:
+    return 1;
+  case COPY_SPACE_FORWARD_FAILED:
+    // If space is really tight and reordering of objects during evacuation
+    // resulted in more end-of-block fragmentation and thus block use than
+    // before collection started, we can actually run out of memory while
+    // collecting.  We should probably attempt to expand the heap here, at
+    // least by a single block; it's better than the alternatives.  For now,
+    // abort.
+    fprintf(stderr, "Out of memory\n");
+    GC_CRASH();
+    break;
+  default:
+    GC_CRASH();
+  }
+}
+
 static inline int do_minor_trace(struct gc_heap *heap, struct gc_edge edge,
                                  struct gc_ref ref,
                                  struct gc_trace_worker_data *data) {
@@ -324,16 +349,32 @@ static inline int do_minor_trace(struct gc_heap *heap, struct gc_edge edge,
     // However however, it is hard to distinguish between edges from promoted
     // objects and edges from old objects, so we mostly just rely on an
     // idempotent "log if unlogged" operation instead.
-    int promote = copy_space_should_promote(new_space, ref);
-    struct copy_space *dst_space = promote ? old_space : new_space;
-    struct copy_space_allocator *alloc = promote
-      ? trace_worker_old_space_allocator(data)
-      : trace_worker_new_space_allocator(data);
-    // Update the remembered set for promoted-to-survivor edges.
-    if (!promote && !edge_is_from_survivor(heap, edge)
-        && remember_edge_to_survivor_object(heap, edge))
-      gc_field_set_writer_add_edge(trace_worker_field_logger(data), edge);
-    return copy_space_forward(new_space, dst_space, edge, ref, alloc);
+    if (!copy_space_should_promote(new_space, ref)) {
+      // Try to leave the object in newspace as a survivor.  If the edge is from
+      // a promoted object, we will need to add it to the remembered set.
+      if (!edge_is_from_survivor(heap, edge)
+          && remember_edge_to_survivor_object(heap, edge)) {
+        // Log the edge even though in rare conditions the referent could end up
+        // being promoted by us (if we run out of newspace) or a remote
+        // evacuation thread (if they run out of newspace).
+        gc_field_set_writer_add_edge(trace_worker_field_logger(data), edge);
+      }
+      switch (copy_space_forward(new_space, new_space, edge, ref,
+                                 trace_worker_new_space_allocator(data))) {
+      case COPY_SPACE_FORWARD_UPDATED:
+        return 0;
+      case COPY_SPACE_FORWARD_EVACUATED:
+        return 1;
+      case COPY_SPACE_FORWARD_FAILED:
+        // Ran out of newspace!  Fall through to promote instead.
+        break;
+      default:
+        GC_CRASH();
+      }
+    }
+    // Promote the object.
+    return forward(new_space, old_space, edge, ref,
+                   trace_worker_old_space_allocator(data));
   } else {
     // Note that although the target of the edge might not be in lospace, this
     // will do what we want and return 1 if and only if ref is was a young
@@ -354,16 +395,16 @@ static inline int do_trace(struct gc_heap *heap, struct gc_edge edge,
     struct copy_space *new_space = heap_new_space(heap);
     struct copy_space *old_space = heap_old_space(heap);
     if (new_space_contains(heap, ref))
-      return copy_space_forward(new_space, old_space, edge, ref,
-                                trace_worker_old_space_allocator(data));
+      return forward(new_space, old_space, edge, ref,
+                     trace_worker_old_space_allocator(data));
     if (old_space_contains(heap, ref))
-      return copy_space_forward(old_space, old_space, edge, ref,
-                                trace_worker_old_space_allocator(data));
+      return forward(old_space, old_space, edge, ref,
+                     trace_worker_old_space_allocator(data));
   } else {
     if (GC_LIKELY(copy_space_contains(heap_mono_space(heap), ref)))
-      return copy_space_forward(heap_mono_space(heap), heap_mono_space(heap),
-                                edge, ref,
-                                trace_worker_mono_space_allocator(data));
+      return forward(heap_mono_space(heap), heap_mono_space(heap),
+                     edge, ref,
+                     trace_worker_mono_space_allocator(data));
   }
 
   // Fall through for objects in large or extern spaces.
@@ -916,12 +957,17 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
   if (size > gc_allocator_large_threshold())
     return allocate_large(mut, size);
 
-  struct gc_ref ret =
-    copy_space_allocate(&mut->allocator,
-                        heap_allocation_space(mutator_heap(mut)),
-                        size,
-                        get_more_empty_blocks_for_mutator,
-                        mut);
+  struct gc_ref ret;
+  while (1) {
+    ret = copy_space_allocate(&mut->allocator,
+                              heap_allocation_space(mutator_heap(mut)),
+                              size);
+    if (gc_ref_is_null(ret))
+      trigger_collection(mut, GC_COLLECTION_MINOR);
+    else
+      break;
+  }
+
   gc_clear_fresh_allocation(ret, size);
   return gc_ref_heap_object(ret);
 }
