@@ -599,7 +599,6 @@ copy_space_forward_atomic(struct copy_space *space, struct gc_edge edge,
 
   switch (fwd.state) {
   case GC_FORWARDING_STATE_NOT_FORWARDED:
-  case GC_FORWARDING_STATE_ABORTED:
   default:
     // Impossible.
     GC_CRASH();

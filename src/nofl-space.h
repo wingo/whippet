@@ -1497,7 +1497,6 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
 
   switch (fwd.state) {
   case GC_FORWARDING_STATE_NOT_FORWARDED:
-  case GC_FORWARDING_STATE_ABORTED:
   default:
     // Impossible.
     GC_CRASH();
@@ -1552,7 +1551,7 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
         break;
       yield_for_spin(spin_count);
     }
-    if (fwd.state == GC_FORWARDING_STATE_ABORTED)
+    if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
       // Remove evacuation aborted; remote will mark and enqueue.
       return 0;
     ASSERT(fwd.state == GC_FORWARDING_STATE_FORWARDED);
@@ -1599,7 +1598,7 @@ nofl_space_forward_if_evacuated(struct nofl_space *space,
         break;
       yield_for_spin(spin_count);
     }
-    if (fwd.state == GC_FORWARDING_STATE_ABORTED)
+    if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
       // Remote evacuation aborted; remote will mark and enqueue.
       return 1;
     ASSERT(fwd.state == GC_FORWARDING_STATE_FORWARDED);

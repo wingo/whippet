@@ -122,9 +122,10 @@ gc_atomic_forward_retry_busy(struct gc_atomic_forward *fwd) {
                                        memory_order_acquire);
   if (tag == gcobj_busy)
     return 0;
-  if (tag & gcobj_not_forwarded_bit)
-    fwd->state = GC_FORWARDING_STATE_ABORTED;
-  else {
+  if (tag & gcobj_not_forwarded_bit) {
+    fwd->state = GC_FORWARDING_STATE_NOT_FORWARDED;
+    fwd->data = tag;
+  } else {
     fwd->state = GC_FORWARDING_STATE_FORWARDED;
     fwd->data = tag;
   }
@@ -149,7 +150,7 @@ static inline void
 gc_atomic_forward_abort(struct gc_atomic_forward *fwd) {
   GC_ASSERT(fwd->state == GC_FORWARDING_STATE_ACQUIRED);
   atomic_store_explicit(tag_word(fwd->ref), fwd->data, memory_order_release);
-  fwd->state = GC_FORWARDING_STATE_ABORTED;
+  fwd->state = GC_FORWARDING_STATE_NOT_FORWARDED;
 }
 
 static inline size_t
