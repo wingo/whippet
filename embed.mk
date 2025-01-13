@@ -47,6 +47,10 @@ GC_STEM_pcc        = pcc
 GC_CFLAGS_pcc      = -DGC_PRECISE_ROOTS=1 -DGC_PARALLEL=1
 GC_LIBS_pcc       = -lm
 
+GC_STEM_generational_pcc   = $(GC_STEM_pcc)
+GC_CFLAGS_generational_pcc = $(GC_CFLAGS_pcc) -DGC_GENERATIONAL=1
+GC_LIBS_generational_pcc   = $(GC_LIBS_pcc)
+
 define mmc_variant
 GC_STEM_$(1)       = mmc
 GC_CFLAGS_$(1)     = $(2)
