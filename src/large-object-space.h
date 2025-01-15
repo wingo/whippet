@@ -250,6 +250,16 @@ large_object_space_remember_edge(struct large_object_space *space,
 }
 
 static void
+large_object_space_forget_edge(struct large_object_space *space,
+                               struct gc_edge edge) {
+  uintptr_t edge_addr = gc_edge_address(edge);
+  pthread_mutex_lock(&space->lock);
+  GC_ASSERT(address_set_contains(&space->remembered_edges, edge_addr));
+  address_set_remove(&space->remembered_edges, edge_addr);
+  pthread_mutex_unlock(&space->lock);
+}
+
+static void
 large_object_space_clear_remembered_edges(struct large_object_space *space) {
   address_set_clear(&space->remembered_edges);
 }

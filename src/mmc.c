@@ -264,6 +264,13 @@ tracer_visit(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
     gc_trace_worker_enqueue(worker, gc_edge_ref(edge));
 }
 
+static inline int
+trace_remembered_edge(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
+  tracer_visit(edge, heap, trace_data);
+  // Keep the edge in the remembered set; we clear these in bulk later.
+  return 1;
+}
+
 static inline struct gc_ref
 do_trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
                           int possibly_interior) {
@@ -380,7 +387,7 @@ trace_root(struct gc_root root, struct gc_heap *heap,
     break;
   case GC_ROOT_KIND_EDGE_BUFFER:
     gc_field_set_visit_edge_buffer(&heap->remembered_set, root.edge_buffer,
-                                   tracer_visit, heap, worker);
+                                   trace_remembered_edge, heap, worker);
     break;
   default:
     GC_CRASH();

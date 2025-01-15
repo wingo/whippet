@@ -174,21 +174,26 @@ gc_field_set_clear(struct gc_field_set *set,
 static inline void
 gc_field_set_visit_edge_buffer(struct gc_field_set *set,
                                struct gc_edge_buffer *buf,
-                               void (*visit)(struct gc_edge,
-                                             struct gc_heap*,
-                                             void *data),
+                               int (*visit)(struct gc_edge,
+                                            struct gc_heap*,
+                                            void *data),
                                struct gc_heap *heap,
                                void *data) GC_ALWAYS_INLINE;
 static inline void
 gc_field_set_visit_edge_buffer(struct gc_field_set *set,
                                struct gc_edge_buffer *buf,
-                               void (*visit)(struct gc_edge,
-                                             struct gc_heap*,
-                                             void *data),
+                               int (*visit)(struct gc_edge,
+                                            struct gc_heap*,
+                                            void *data),
                                struct gc_heap *heap,
                                void *data) {
-  for (size_t i = 0; i < buf->size; i++)
-    visit(buf->edges[i], heap, data);
+  size_t i = 0;
+  while (i < buf->size) {
+    if (visit(buf->edges[i], heap, data))
+      i++;
+    else
+      buf->edges[i] = buf->edges[--buf->size];
+  }
   gc_field_set_release_buffer(set, buf);
 }
 
