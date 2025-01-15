@@ -54,6 +54,9 @@ struct gc_heap {
   size_t processor_count;
   size_t max_active_mutator_count;
   int check_pending_ephemerons;
+#if GC_GENERATIONAL
+  struct gc_pending_ephemerons *nursery_pending_ephemerons;
+#endif
   struct gc_pending_ephemerons *pending_ephemerons;
   struct gc_finalizer_state *finalizer_state;
   size_t mutator_count;
@@ -768,7 +771,7 @@ static void resolve_ephemerons_lazily(struct gc_heap *heap) {
 static void resolve_ephemerons_eagerly(struct gc_heap *heap) {
   atomic_store_explicit(&heap->check_pending_ephemerons, 1,
                         memory_order_release);
-  gc_scan_pending_ephemerons(heap->pending_ephemerons, heap, 0, 1);
+  gc_scan_pending_ephemerons(gc_heap_pending_ephemerons(heap), heap, 0, 1);
 }
 
 static void trace_resolved_ephemerons(struct gc_heap *heap) {
@@ -794,7 +797,7 @@ static void resolve_finalizers(struct gc_heap *heap) {
 }
 
 static void sweep_ephemerons(struct gc_heap *heap) {
-  return gc_sweep_pending_ephemerons(heap->pending_ephemerons, 0, 1);
+  return gc_sweep_pending_ephemerons(gc_heap_pending_ephemerons(heap), 0, 1);
 }
 
 static int
@@ -1059,6 +1062,10 @@ void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
 }
 
 struct gc_pending_ephemerons *gc_heap_pending_ephemerons(struct gc_heap *heap) {
+#if GC_GENERATIONAL
+  if (is_minor_collection(heap))
+    return heap->nursery_pending_ephemerons;
+#endif
   return heap->pending_ephemerons;
 }
 
@@ -1088,14 +1095,25 @@ void gc_set_finalizer_callback(struct gc_heap *heap,
   gc_finalizer_state_set_callback(heap->finalizer_state, callback);
 }
 
-static int heap_prepare_pending_ephemerons(struct gc_heap *heap) {
-  struct gc_pending_ephemerons *cur = heap->pending_ephemerons;
-  size_t target = heap->size * heap->pending_ephemerons_size_factor;
+static int
+heap_do_prepare_pending_ephemerons(struct gc_heap *heap,
+                                   struct gc_pending_ephemerons **loc,
+                                   size_t size) {
+  size_t target = size * heap->pending_ephemerons_size_factor;
   double slop = heap->pending_ephemerons_size_slop;
 
-  heap->pending_ephemerons = gc_prepare_pending_ephemerons(cur, target, slop);
+  return !!(*loc = gc_prepare_pending_ephemerons(*loc, target, slop));
+}
 
-  return !!heap->pending_ephemerons;
+static int heap_prepare_pending_ephemerons(struct gc_heap *heap) {
+  return heap_do_prepare_pending_ephemerons(heap, &heap->pending_ephemerons,
+                                             heap->size)
+#if GC_GENERATIONAL
+    && heap_do_prepare_pending_ephemerons(heap,
+                                          &heap->nursery_pending_ephemerons,
+                                          heap->per_processor_nursery_size * 2)
+#endif
+    ;
 }
 
 struct gc_options {

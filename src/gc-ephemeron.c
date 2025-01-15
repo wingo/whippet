@@ -199,6 +199,7 @@ ephemeron_list_follow(struct gc_ephemeron **loc,
                       struct gc_ephemeron** (*get_next)(struct gc_ephemeron*),
                       int (*is_live)(struct gc_ephemeron*)) {
   struct gc_ephemeron *head = atomic_load_explicit(loc, memory_order_acquire);
+  if (!head) return NULL;
 
   while (1) {
     struct gc_ephemeron *new_head = head;
