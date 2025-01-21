@@ -1770,7 +1770,7 @@ static void
 nofl_space_expand(struct nofl_space *space, size_t bytes) {
   double overhead = ((double)NOFL_META_BLOCKS_PER_SLAB) / NOFL_BLOCKS_PER_SLAB;
   ssize_t to_acquire = -nofl_space_maybe_reacquire_memory(space, bytes);
-  if (to_acquire <= 0) return;
+  if (to_acquire < NOFL_BLOCK_SIZE) return;
   to_acquire *= (1 + overhead);
   size_t reserved = align_up(to_acquire, NOFL_SLAB_SIZE);
   size_t nslabs = reserved / NOFL_SLAB_SIZE;
