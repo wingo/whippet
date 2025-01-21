@@ -1222,6 +1222,10 @@ static void
 nofl_space_verify_sweepable_blocks(struct nofl_space *space,
                                    struct nofl_block_list *list)
 {
+  if (GC_CONSERVATIVE_TRACE)
+    // No intrinsic way to measure object size, only the extrinsic
+    // metadata bytes.
+    return;
   for (struct nofl_block_ref b = nofl_block_for_addr(list->blocks);
        !nofl_block_is_null(b);
        b = nofl_block_next(b)) {
@@ -1254,6 +1258,10 @@ nofl_space_verify_sweepable_blocks(struct nofl_space *space,
 static void
 nofl_space_verify_swept_blocks(struct nofl_space *space,
                                struct nofl_block_list *list) {
+  if (GC_CONSERVATIVE_TRACE)
+    // No intrinsic way to measure object size, only the extrinsic
+    // metadata bytes.
+    return;
   for (struct nofl_block_ref b = nofl_block_for_addr(list->blocks);
        !nofl_block_is_null(b);
        b = nofl_block_next(b)) {
