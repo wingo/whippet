@@ -298,6 +298,8 @@ large_object_space_remove_from_freelist(struct large_object_space *space,
   if (dead->next)
     dead->next->value.dead.prev = dead->prev;
   *dead->prev = dead->next;
+  dead->prev = NULL;
+  dead->next = NULL;
 }
 
 static void
@@ -305,7 +307,7 @@ large_object_space_sweep_one(uintptr_t addr, uintptr_t node_bits,
                              void *data) {
   struct large_object_space *space = data;
   struct large_object_node *node = (struct large_object_node*) node_bits;
-  if (!GC_GENERATIONAL && !node->value.is_live)
+  if (!node->value.is_live)
     return;
   GC_ASSERT(node->value.is_live);
   uint8_t mark = atomic_load_explicit(large_object_node_mark_loc(node),
