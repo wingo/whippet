@@ -425,8 +425,10 @@ large_object_space_alloc(struct large_object_space *space, size_t npages) {
         struct large_object tail = {node->key.addr + size, node->key.size - size};
         struct large_object_data tail_value = {0,};
         node->key.size = size;
+        pthread_mutex_lock(&space->object_tree_lock);
         struct large_object_node *tail_node =
           large_object_tree_insert(&space->object_tree, tail, tail_value);
+        pthread_mutex_unlock(&space->object_tree_lock);
         large_object_space_add_to_freelist(space, tail_node);
       }
 
