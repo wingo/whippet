@@ -134,7 +134,7 @@ do_trace(struct gc_heap *heap, struct gc_edge edge, struct gc_ref ref,
   if (GC_LIKELY(nofl_space_contains(heap_nofl_space(heap), ref)))
     return nofl_space_evacuate_or_mark_object(heap_nofl_space(heap), edge, ref,
                                               &data->allocator);
-  else if (large_object_space_contains(heap_large_object_space(heap), ref))
+  else if (large_object_space_contains_with_lock(heap_large_object_space(heap), ref))
     return large_object_space_mark(heap_large_object_space(heap), ref);
   else
     return gc_extern_space_visit(heap_extern_space(heap), edge, ref);
