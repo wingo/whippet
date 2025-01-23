@@ -207,7 +207,7 @@ static void visit_semi_space(struct gc_heap *heap, struct semi_space *space,
 static void visit_large_object_space(struct gc_heap *heap,
                                      struct large_object_space *space,
                                      struct gc_ref ref) {
-  if (large_object_space_copy(space, ref)) {
+  if (large_object_space_mark(space, ref)) {
     if (GC_UNLIKELY(heap->check_pending_ephemerons))
       gc_resolve_pending_ephemerons(ref, heap);
 
@@ -245,7 +245,8 @@ static void visit(struct gc_edge edge, struct gc_heap *heap) {
     return;
   if (semi_space_contains(heap_semi_space(heap), ref))
     visit_semi_space(heap, heap_semi_space(heap), edge, ref);
-  else if (large_object_space_contains(heap_large_object_space(heap), ref))
+  else if (large_object_space_contains_with_lock(heap_large_object_space(heap),
+                                                 ref))
     visit_large_object_space(heap, heap_large_object_space(heap), ref);
   else
     visit_external_object(heap, heap->extern_space, edge, ref);
@@ -268,8 +269,8 @@ int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
       return 0;
     gc_edge_update(edge, gc_ref(forwarded));
     return 1;
-  } else if (large_object_space_contains(heap_large_object_space(heap), ref)) {
-    return large_object_space_is_copied(heap_large_object_space(heap), ref);
+  } else if (large_object_space_contains_with_lock(heap_large_object_space(heap), ref)) {
+    return large_object_space_is_marked(heap_large_object_space(heap), ref);
   }
   GC_CRASH();
 }

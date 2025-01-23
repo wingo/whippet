@@ -135,8 +135,7 @@ do_trace(struct gc_heap *heap, struct gc_edge edge, struct gc_ref ref,
     return nofl_space_evacuate_or_mark_object(heap_nofl_space(heap), edge, ref,
                                               &data->allocator);
   else if (large_object_space_contains(heap_large_object_space(heap), ref))
-    return large_object_space_mark_object(heap_large_object_space(heap),
-                                          ref);
+    return large_object_space_mark(heap_large_object_space(heap), ref);
   else
     return gc_extern_space_visit(heap_extern_space(heap), edge, ref);
 }
@@ -170,8 +169,8 @@ gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
     return nofl_space_forward_or_mark_if_traced(nofl_space, edge, ref);
 
   struct large_object_space *lospace = heap_large_object_space(heap);
-  if (large_object_space_contains(lospace, ref))
-    return large_object_space_is_copied(lospace, ref);
+  if (large_object_space_contains_with_lock(lospace, ref))
+    return large_object_space_is_marked(lospace, ref);
 
   GC_CRASH();
 }

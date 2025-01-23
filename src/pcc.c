@@ -382,7 +382,7 @@ static inline int do_minor_trace(struct gc_heap *heap, struct gc_edge edge,
     // Note that although the target of the edge might not be in lospace, this
     // will do what we want and return 1 if and only if ref is was a young
     // object in lospace.
-    return large_object_space_copy(heap_large_object_space(heap), ref);
+    return large_object_space_mark(heap_large_object_space(heap), ref);
   }
 }
 
@@ -411,8 +411,8 @@ static inline int do_trace(struct gc_heap *heap, struct gc_edge edge,
   }
 
   // Fall through for objects in large or extern spaces.
-  if (large_object_space_contains(heap_large_object_space(heap), ref))
-    return large_object_space_mark_object(heap_large_object_space(heap), ref);
+  if (large_object_space_contains_with_lock(heap_large_object_space(heap), ref))
+    return large_object_space_mark(heap_large_object_space(heap), ref);
   else
     return gc_extern_space_visit(heap_extern_space(heap), edge, ref);
 }
@@ -451,8 +451,8 @@ int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
       return copy_space_forward_if_traced(heap_mono_space(heap), edge, ref);
   }
 
-  if (large_object_space_contains(heap_large_object_space(heap), ref))
-    return large_object_space_is_copied(heap_large_object_space(heap), ref);
+  if (large_object_space_contains_with_lock(heap_large_object_space(heap), ref))
+    return large_object_space_is_marked(heap_large_object_space(heap), ref);
   GC_CRASH();
 }
 

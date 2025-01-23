@@ -16,13 +16,17 @@
 #include "background-thread.h"
 #include "freelist.h"
 
-// Logically the large object space is a treadmill space -- somewhat like a
-// copying collector, in that we allocate into tospace, and collection flips
-// tospace to fromspace, except that we just keep a record on the side of which
-// objects are in which space.  That way we slot into the abstraction of a
-// copying collector while not actually copying data.
+// A mark-sweep space with generational support.
 
 struct gc_heap;
+
+enum large_object_state {
+  LARGE_OBJECT_NURSERY = 0,
+  LARGE_OBJECT_MARKED_BIT = 1,
+  LARGE_OBJECT_MARK_TOGGLE_BIT = 2,
+  LARGE_OBJECT_MARK_0 = LARGE_OBJECT_MARKED_BIT,
+  LARGE_OBJECT_MARK_1 = LARGE_OBJECT_MARKED_BIT | LARGE_OBJECT_MARK_TOGGLE_BIT
+};
 
 struct large_object {
   uintptr_t addr;
@@ -30,7 +34,7 @@ struct large_object {
 };
 struct large_object_node;
 struct large_object_live_data {
-  uint8_t is_survivor;
+  uint8_t mark;
 };
 struct large_object_dead_data {
   uint8_t age;
@@ -65,16 +69,34 @@ DEFINE_FREELIST(large_object_freelist, sizeof(uintptr_t) * 8 - 1, 2,
                 struct large_object_node*);
 
 struct large_object_space {
-  // Access to all members protected by lock.
+  // Lock for object_map, quarantine, nursery, and marked.
   pthread_mutex_t lock;
+  // Lock for object_tree.
+  pthread_mutex_t object_tree_lock;
+  // Lock for remembered_edges.
+  pthread_mutex_t remembered_edges_lock;
+  // Locking order: You must hold the space lock when taking
+  // object_tree_lock.  Take no other lock while holding
+  // object_tree_lock.  remembered_edges_lock is a leaf; take no locks
+  // when holding it.
+
+  // The value for a large_object_node's "mark" field indicating a
+  // marked object; always nonzero, and alternating between two values
+  // at every major GC.
+  uint8_t marked;
 
   // Splay tree of objects, keyed by <addr, size> tuple.  Useful when
   // looking up object-for-address.
   struct large_object_tree object_tree;
+
   // Hash table of objects, where values are pointers to splay tree
   // nodes.  Useful when you have the object address and just want to
   // check something about it (for example its size).
   struct address_map object_map;
+
+  // In generational configurations, we collect all allocations in the
+  // last cycle into the nursery.
+  struct address_map nursery;
 
   // Size-segregated freelist of dead objects.  Allocations are first
   // served from the quarantine freelist before falling back to the OS
@@ -83,6 +105,10 @@ struct large_object_space {
   // mucking about too much with the TLB and so on.
   struct large_object_freelist quarantine;
 
+  // Set of edges from lospace that may reference young objects,
+  // possibly in other spaces.
+  struct address_set remembered_edges;
+
   size_t page_size;
   size_t page_size_log2;
   size_t total_pages;
@@ -90,17 +116,6 @@ struct large_object_space {
   size_t live_pages_at_last_collection;
   size_t pages_freed_by_last_collection;
   int synchronous_release;
-
-  // A partition of the set of live objects into three sub-spaces.  If
-  // all collections are major, the survivor space will always be empty.
-  // The values of these maps are splay tree nodes.
-  struct address_map from_space;
-  struct address_map to_space;
-  struct address_map survivor_space;
-
-  // Set of edges from lospace that may reference young objects,
-  // possibly in other spaces.
-  struct address_set remembered_edges;
 };
 
 static size_t
@@ -114,10 +129,16 @@ large_object_space_size_at_last_collection(struct large_object_space *space) {
 }
 
 static inline int
+large_object_space_contains_with_lock(struct large_object_space *space,
+                                      struct gc_ref ref) {
+  return address_map_contains(&space->object_map, gc_ref_value(ref));
+}
+
+static inline int
 large_object_space_contains(struct large_object_space *space,
                             struct gc_ref ref) {
   pthread_mutex_lock(&space->lock);
-  int ret = address_map_contains(&space->object_map, gc_ref_value(ref));
+  int ret = large_object_space_contains_with_lock(space, ref);
   pthread_mutex_unlock(&space->lock);
   return ret;
 }
@@ -125,37 +146,22 @@ large_object_space_contains(struct large_object_space *space,
 static inline struct gc_ref
 large_object_space_object_containing_edge(struct large_object_space *space,
                                           struct gc_edge edge) {
-  pthread_mutex_lock(&space->lock);
+  pthread_mutex_lock(&space->object_tree_lock);
   struct large_object_node *node =
     large_object_tree_lookup(&space->object_tree, gc_edge_address(edge));
   uintptr_t addr = (node && node->value.is_live) ? node->key.addr : 0;
-  pthread_mutex_unlock(&space->lock);
+  pthread_mutex_unlock(&space->object_tree_lock);
   return gc_ref(addr);
 }
 
 static void
-large_object_space_flip_survivor(uintptr_t addr, uintptr_t node_bits,
-                                 void *data) {
-  struct large_object_space *space = data;
-  struct large_object_node *node = (void*)node_bits;
-  GC_ASSERT(node->value.is_live && node->value.live.is_survivor);
-  node->value.live.is_survivor = 0;
-  address_map_add(&space->from_space, addr, (uintptr_t)node);
-}
-
-static void
 large_object_space_start_gc(struct large_object_space *space, int is_minor_gc) {
-  // Flip.  Note that when we flip, fromspace is empty, but it might have
-  // allocated storage, so we do need to do a proper swap.
-  struct address_map tmp;
-  memcpy(&tmp, &space->from_space, sizeof(tmp));
-  memcpy(&space->from_space, &space->to_space, sizeof(tmp));
-  memcpy(&space->to_space, &tmp, sizeof(tmp));
-  
+  // Take the space lock to prevent
+  // large_object_space_process_quarantine from concurrently mutating
+  // the object map.
+  pthread_mutex_lock(&space->lock);
   if (!is_minor_gc) {
-    address_map_for_each(&space->survivor_space,
-                         large_object_space_flip_survivor, space);
-    address_map_clear(&space->survivor_space);
+    space->marked ^= LARGE_OBJECT_MARK_TOGGLE_BIT;
     space->live_pages_at_last_collection = 0;
   }
 }
@@ -170,56 +176,57 @@ large_object_space_object_size(struct large_object_space *space,
   return node->key.size;
 }
 
-static void
-large_object_space_do_copy(struct large_object_space *space,
-                           struct large_object_node *node) {
-  GC_ASSERT(address_map_contains(&space->from_space, node->key.addr));
+static uint8_t*
+large_object_node_mark_loc(struct large_object_node *node) {
   GC_ASSERT(node->value.is_live);
-  GC_ASSERT(!node->value.live.is_survivor);
-  uintptr_t addr = node->key.addr;
-  size_t bytes = node->key.size;
-  uintptr_t node_bits = (uintptr_t)node;
-  space->live_pages_at_last_collection += bytes >> space->page_size_log2;
-  address_map_remove(&space->from_space, addr);
-  if (GC_GENERATIONAL) {
-    node->value.live.is_survivor = 1;
-    address_map_add(&space->survivor_space, addr, node_bits);
-  } else {
-    address_map_add(&space->to_space, addr, node_bits);
-  }
+  return &node->value.live.mark;
+}
+
+static uint8_t
+large_object_node_get_mark(struct large_object_node *node) {
+  return atomic_load_explicit(large_object_node_mark_loc(node),
+                              memory_order_acquire);
+}
+
+static struct large_object_node*
+large_object_space_lookup(struct large_object_space *space, struct gc_ref ref) {
+  return (struct large_object_node*) address_map_lookup(&space->object_map,
+                                                        gc_ref_value(ref),
+                                                        0);
 }
 
 static int
-large_object_space_copy(struct large_object_space *space, struct gc_ref ref) {
-  int copied = 0;
-  uintptr_t addr = gc_ref_value(ref);
-  pthread_mutex_lock(&space->lock);
-  uintptr_t node_bits = address_map_lookup(&space->from_space, addr, 0);
-  if (node_bits) {
-    large_object_space_do_copy(space, (struct large_object_node*) node_bits);
-    // Object is grey; place it on mark stack to visit its fields.
-    copied = 1;
-  }
-  pthread_mutex_unlock(&space->lock);
-  return copied;
+large_object_space_mark(struct large_object_space *space, struct gc_ref ref) {
+  struct large_object_node *node = large_object_space_lookup(space, ref);
+  if (!node)
+    return 0;
+  GC_ASSERT(node->value.is_live);
+
+  uint8_t *loc = large_object_node_mark_loc(node);
+  uint8_t mark = atomic_load_explicit(loc, memory_order_relaxed);
+  do {
+    if (mark == space->marked)
+      return 0;
+  } while (!atomic_compare_exchange_weak_explicit(loc, &mark, space->marked,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire));
+
+  size_t pages = node->key.size >> space->page_size_log2;
+  space->live_pages_at_last_collection += pages;
+
+  return 1;
 }
 
 static int
-large_object_space_is_copied(struct large_object_space *space,
+large_object_space_is_marked(struct large_object_space *space,
                              struct gc_ref ref) {
-  GC_ASSERT(large_object_space_contains(space, ref));
-  int copied = 0;
-  uintptr_t addr = gc_ref_value(ref);
-  pthread_mutex_lock(&space->lock);
-  copied = !address_map_contains(&space->from_space, addr);
-  pthread_mutex_unlock(&space->lock);
-  return copied;
-}
+  struct large_object_node *node = large_object_space_lookup(space, ref);
+  if (!node)
+    return 0;
+  GC_ASSERT(node->value.is_live);
 
-static int
-large_object_space_is_survivor_with_lock(struct large_object_space *space,
-                                         struct gc_ref ref) {
-  return address_map_contains(&space->survivor_space, gc_ref_value(ref));
+  return atomic_load_explicit(large_object_node_mark_loc(node),
+                              memory_order_acquire) == space->marked;
 }
 
 static int
@@ -227,7 +234,7 @@ large_object_space_is_survivor(struct large_object_space *space,
                                struct gc_ref ref) {
   GC_ASSERT(large_object_space_contains(space, ref));
   pthread_mutex_lock(&space->lock);
-  int old = large_object_space_is_survivor_with_lock(space, ref);
+  int old = large_object_space_is_marked(space, ref);
   pthread_mutex_unlock(&space->lock);
   return old;
 }
@@ -237,15 +244,17 @@ large_object_space_remember_edge(struct large_object_space *space,
                                  struct gc_ref obj,
                                  struct gc_edge edge) {
   GC_ASSERT(large_object_space_contains(space, obj));
-  int remembered = 0;
+  if (!large_object_space_is_survivor(space, obj))
+    return 0;
+
   uintptr_t edge_addr = gc_edge_address(edge);
-  pthread_mutex_lock(&space->lock);
-  if (large_object_space_is_survivor_with_lock(space, obj)
-      && !address_set_contains(&space->remembered_edges, edge_addr)) {
+  int remembered = 0;
+  pthread_mutex_lock(&space->remembered_edges_lock);
+  if (!address_set_contains(&space->remembered_edges, edge_addr)) {
     address_set_add(&space->remembered_edges, edge_addr);
     remembered = 1;
   }
-  pthread_mutex_unlock(&space->lock);
+  pthread_mutex_unlock(&space->remembered_edges_lock);
   return remembered;
 }
 
@@ -253,20 +262,15 @@ static void
 large_object_space_forget_edge(struct large_object_space *space,
                                struct gc_edge edge) {
   uintptr_t edge_addr = gc_edge_address(edge);
-  pthread_mutex_lock(&space->lock);
+  pthread_mutex_lock(&space->remembered_edges_lock);
   GC_ASSERT(address_set_contains(&space->remembered_edges, edge_addr));
   address_set_remove(&space->remembered_edges, edge_addr);
-  pthread_mutex_unlock(&space->lock);
+  pthread_mutex_unlock(&space->remembered_edges_lock);
 }
 
 static void
 large_object_space_clear_remembered_edges(struct large_object_space *space) {
   address_set_clear(&space->remembered_edges);
-}
-
-static int large_object_space_mark_object(struct large_object_space *space,
-                                          struct gc_ref ref) {
-  return large_object_space_copy(space, ref);
 }
 
 static void
@@ -297,18 +301,24 @@ large_object_space_remove_from_freelist(struct large_object_space *space,
 }
 
 static void
-large_object_space_reclaim_one(uintptr_t addr, uintptr_t node_bits,
-                               void *data) {
+large_object_space_sweep_one(uintptr_t addr, uintptr_t node_bits,
+                             void *data) {
   struct large_object_space *space = data;
   struct large_object_node *node = (struct large_object_node*) node_bits;
+  if (!GC_GENERATIONAL && !node->value.is_live)
+    return;
   GC_ASSERT(node->value.is_live);
-  large_object_space_add_to_freelist(space, node);
+  uint8_t mark = atomic_load_explicit(large_object_node_mark_loc(node),
+                                      memory_order_acquire);
+  if (mark != space->marked)
+    large_object_space_add_to_freelist(space, node);
 }
 
 static void
 large_object_space_process_quarantine(void *data) {
   struct large_object_space *space = data;
   pthread_mutex_lock(&space->lock);
+  pthread_mutex_lock(&space->object_tree_lock);
   for (size_t idx = 0; idx < large_object_freelist_num_size_classes(); idx++) {
     struct large_object_node **link = &space->quarantine.buckets[idx];
     for (struct large_object_node *node = *link; node; node = *link) {
@@ -324,16 +334,23 @@ large_object_space_process_quarantine(void *data) {
       }
     }
   }
+  pthread_mutex_unlock(&space->object_tree_lock);
   pthread_mutex_unlock(&space->lock);
 }
 
 static void
 large_object_space_finish_gc(struct large_object_space *space,
                              int is_minor_gc) {
-  pthread_mutex_lock(&space->lock);
-  address_map_for_each(&space->from_space, large_object_space_reclaim_one,
-                       space);
-  address_map_clear(&space->from_space);
+  if (GC_GENERATIONAL) {
+    address_map_for_each(is_minor_gc ? &space->nursery : &space->object_map,
+                         large_object_space_sweep_one,
+                         space);
+    address_map_clear(&space->nursery);
+  } else {
+    address_map_for_each(&space->object_map,
+                         large_object_space_sweep_one,
+                         space);
+  }
   size_t free_pages =
     space->total_pages - space->live_pages_at_last_collection;
   space->pages_freed_by_last_collection = free_pages - space->free_pages;
@@ -366,24 +383,20 @@ large_object_space_mark_conservative_ref(struct large_object_space *space,
     addr -= displacement;
   }
 
-  pthread_mutex_lock(&space->lock);
-  struct large_object_node *node = NULL;
+  struct large_object_node *node;
   if (possibly_interior) {
+    pthread_mutex_lock(&space->object_tree_lock);
     node = large_object_tree_lookup(&space->object_tree, addr);
-    if (node && !address_map_contains(&space->from_space, node->key.addr))
-      node = NULL;
+    pthread_mutex_unlock(&space->object_tree_lock);
   } else {
-    uintptr_t node_bits = address_map_lookup(&space->from_space, addr, 0);
-    node = (struct large_object_node*) node_bits;
+    node = large_object_space_lookup(space, gc_ref(addr));
   }
-  struct gc_ref ret = gc_ref_null();
-  if (node) {
-    large_object_space_do_copy(space, node);
-    ret = gc_ref(node->key.addr);
-  }
-  pthread_mutex_unlock(&space->lock);
 
-  return ret;
+  if (node && node->value.is_live &&
+      large_object_space_mark(space, gc_ref(node->key.addr)))
+    return gc_ref(node->key.addr);
+
+  return gc_ref_null();
 }
 
 static void*
@@ -417,8 +430,9 @@ large_object_space_alloc(struct large_object_space *space, size_t npages) {
         large_object_space_add_to_freelist(space, tail_node);
       }
 
-      // Add the object to tospace.
-      address_map_add(&space->to_space, node->key.addr, (uintptr_t)node);
+      // Add the object to the nursery.
+      if (GC_GENERATIONAL)
+        address_map_add(&space->nursery, node->key.addr, (uintptr_t)node);
     
       space->free_pages -= npages;
       ret = (void*)node->key.addr;
@@ -441,15 +455,16 @@ large_object_space_obtain_and_alloc(struct large_object_space *space,
   struct large_object k = { addr, bytes };
   struct large_object_data v = {0,};
   v.is_live = 1;
-  v.live.is_survivor = 0;
+  v.live.mark = 0;
 
   pthread_mutex_lock(&space->lock);
+  pthread_mutex_lock(&space->object_tree_lock);
   struct large_object_node *node =
     large_object_tree_insert(&space->object_tree, k, v);
   uintptr_t node_bits = (uintptr_t)node;
   address_map_add(&space->object_map, addr, node_bits);
-  address_map_add(&space->to_space, addr, node_bits);
   space->total_pages += npages;
+  pthread_mutex_unlock(&space->object_tree_lock);
   pthread_mutex_unlock(&space->lock);
 
   return ret;
@@ -461,18 +476,17 @@ large_object_space_init(struct large_object_space *space,
                         struct gc_background_thread *thread) {
   memset(space, 0, sizeof(*space));
   pthread_mutex_init(&space->lock, NULL);
+  pthread_mutex_init(&space->object_tree_lock, NULL);
+  pthread_mutex_init(&space->remembered_edges_lock, NULL);
 
   space->page_size = getpagesize();
   space->page_size_log2 = __builtin_ctz(space->page_size);
 
   large_object_tree_init(&space->object_tree);
   address_map_init(&space->object_map);
-
+  address_map_init(&space->nursery);
   large_object_freelist_init(&space->quarantine);
 
-  address_map_init(&space->from_space);
-  address_map_init(&space->to_space);
-  address_map_init(&space->survivor_space);
   address_set_init(&space->remembered_edges);
 
   if (thread)
