@@ -813,7 +813,7 @@ heap_can_minor_gc(struct gc_heap *heap) {
   struct copy_space *new_space = heap_new_space(heap);
   struct copy_space *old_space = heap_old_space(heap);
   size_t nursery_size = heap_nursery_size(heap);
-  return copy_space_can_allocate(old_space, nursery_size);
+  return copy_space_can_allocate(old_space, nursery_size) >= nursery_size;
 }
 
 static enum gc_collection_kind

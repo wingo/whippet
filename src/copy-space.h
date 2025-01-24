@@ -567,16 +567,16 @@ copy_space_finish_gc(struct copy_space *space, int is_minor_gc) {
   space->in_gc = 0;
 }
 
-static int
+static size_t
 copy_space_can_allocate(struct copy_space *space, size_t bytes) {
   // With lock!
+  size_t count = 0;
   for (struct copy_space_block *empties = space->empty.list.head;
-       empties;
+       empties && count < bytes;
        empties = empties->next) {
-    if (bytes <= COPY_SPACE_REGION_SIZE) return 1;
-    bytes -= COPY_SPACE_REGION_SIZE;
+    count += COPY_SPACE_REGION_SIZE;
   }
-  return 0;
+  return count;
 }
 
 static void
