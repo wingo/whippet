@@ -30,10 +30,16 @@ BUILD_CFLAGS_debug    = -O0 -g -DGC_DEBUG=1
 
 BUILD_CFLAGS = $(BUILD_CFLAGS_$(or $(BUILD),$(DEFAULT_BUILD)))
 
+USE_LTTNG := $(shell pkg-config --exists lttng-ust && echo 1)
+LTTNG_CPPFLAGS := $(if $(USE_LTTNG), $(shell pkg-config --cflags lttng-ust),)
+LTTNG_LIBS := $(if $(USE_LTTNG), $(shell pkg-config --libs lttng-ust),)
+TRACEPOINT_CPPFLAGS = $(if $(USE_LTTNG),$(LTTNG_CPPFLAGS) -DGC_TRACEPOINT_LTTNG=1,)
+TRACEPOINT_LIBS = $(LTTNG_LIBS)
+
 CC       = gcc
 CFLAGS   = -Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(BUILD_CFLAGS)
-CPPFLAGS = -Iapi
-LDFLAGS  = -lpthread -flto=auto
+CPPFLAGS = -Iapi $(TRACEPOINT_CPPFLAGS)
+LDFLAGS  = -lpthread -flto=auto $(TRACEPOINT_LIBS)
 DEPFLAGS = -MMD -MP -MF $(@:obj/%.o=.deps/%.d)
 COMPILE  = $(CC) $(CFLAGS) $(CPPFLAGS) $(DEPFLAGS) -o $@
 LINK     = $(CC) $(LDFLAGS) -o $@
@@ -51,6 +57,8 @@ obj/gc-platform.o: src/gc-platform-$(PLATFORM).c | .deps obj
 obj/gc-stack.o: src/gc-stack.c | .deps obj
 	$(COMPILE) -c $<
 obj/gc-options.o: src/gc-options.c | .deps obj
+	$(COMPILE) -c $<
+obj/gc-tracepoint.o: src/gc-tracepoint.c | .deps obj
 	$(COMPILE) -c $<
 obj/%.gc-ephemeron.o: src/gc-ephemeron.c | .deps obj
 	$(COMPILE) -include benchmarks/$*-embedder.h -c $<
@@ -110,7 +118,7 @@ obj/$(1).$(2).gc.o: src/$(call gc_impl,$(2)) | .deps obj
 	$$(COMPILE) $(call gc_cflags,$(2)) $(call gc_impl_cflags,$(2)) -include benchmarks/$(1)-embedder.h -c $$<
 obj/$(1).$(2).o: benchmarks/$(1).c | .deps obj
 	$$(COMPILE) $(call gc_cflags,$(2)) -include api/$(call gc_attrs,$(2)) -c $$<
-bin/$(1).$(2): obj/$(1).$(2).gc.o obj/$(1).$(2).o obj/gc-stack.o obj/gc-options.o obj/gc-platform.o obj/$(1).gc-ephemeron.o obj/$(1).gc-finalizer.o | bin
+bin/$(1).$(2): obj/$(1).$(2).gc.o obj/$(1).$(2).o obj/gc-stack.o obj/gc-options.o obj/gc-platform.o obj/gc-tracepoint.o obj/$(1).gc-ephemeron.o obj/$(1).gc-finalizer.o | bin
 	$$(LINK) $$^ $(call gc_libs,$(2))
 endef
 

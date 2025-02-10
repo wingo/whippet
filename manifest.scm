@@ -4,6 +4,7 @@
  '("bash"
    "coreutils"
    "gcc-toolchain"
+   "lttng-ust"
    "glibc"
    "libgc"
    "make"

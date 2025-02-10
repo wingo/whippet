@@ -12,11 +12,17 @@ V ?= 1
 v_0 = @
 v_1 =
 
+GC_USE_LTTNG := $(shell pkg-config --exists lttng-ust && echo 1)
+GC_LTTNG_CPPFLAGS := $(if $(GC_USE_LTTNG), $(shell pkg-config --cflags lttng-ust),)
+GC_LTTNG_LIBS := $(if $(GC_USE_LTTNG), $(shell pkg-config --libs lttng-ust),)
+GC_TRACEPOINT_CPPFLAGS = $(if $(GC_USE_LTTNG),$(GC_LTTNG_CPPFLAGS) -DGC_TRACEPOINT_LTTNG=1,)
+GC_TRACEPOINT_LIBS = $(GC_LTTNG_LIBS)
+
 GC_V        = $(v_$(V))
 GC_CC       = gcc
 GC_CFLAGS   = -Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(GC_BUILD_CFLAGS)
-GC_CPPFLAGS = -I$(WHIPPET)api
-GC_LDFLAGS  = -lpthread -flto=auto
+GC_CPPFLAGS = -I$(WHIPPET)api $(GC_TRACEPOINT_CPPFLAGS)
+GC_LDFLAGS  = -lpthread -flto=auto $(GC_TRACEPOINT_LIBS)
 GC_DEPFLAGS = 
 GC_COMPILE  = $(GC_V)$(GC_CC) $(GC_CFLAGS) $(GC_CPPFLAGS) $(GC_DEPFLAGS) -o $@
 GC_LINK     = $(GC_V)$(GC_CC) $(GC_LDFLAGS) -o $@
