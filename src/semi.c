@@ -9,6 +9,7 @@
 #include "gc-internal.h"
 
 #include "gc-platform.h"
+#include "gc-tracepoint.h"
 #include "heap-sizer.h"
 #include "semi-attrs.h"
 #include "large-object-space.h"
@@ -59,10 +60,15 @@ struct gc_mutator {
   void *event_listener_data;
 };
 
-#define HEAP_EVENT(heap, event, ...)                                    \
-  (heap)->event_listener.event((heap)->event_listener_data, ##__VA_ARGS__)
-#define MUTATOR_EVENT(mut, event, ...)                                  \
-  (mut)->heap->event_listener.event((mut)->event_listener_data, ##__VA_ARGS__)
+#define HEAP_EVENT(heap, event, ...) do {                               \
+    (heap)->event_listener.event((heap)->event_listener_data, ##__VA_ARGS__); \
+    GC_TRACEPOINT(event, ##__VA_ARGS__);                                \
+  } while (0)
+#define MUTATOR_EVENT(mut, event, ...) do {                             \
+    (mut)->heap->event_listener.event((mut)->event_listener_data,       \
+                                      ##__VA_ARGS__);                   \
+    GC_TRACEPOINT(event, ##__VA_ARGS__);                                \
+  } while (0)
 
 static inline void clear_memory(uintptr_t addr, size_t size) {
   memset((char*)addr, 0, size);

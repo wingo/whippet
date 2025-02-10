@@ -17,6 +17,7 @@
 #include "gc-inline.h"
 #include "gc-platform.h"
 #include "gc-trace.h"
+#include "gc-tracepoint.h"
 #include "heap-sizer.h"
 #include "large-object-space.h"
 #if GC_PARALLEL
@@ -74,10 +75,15 @@ struct gc_heap {
   void *event_listener_data;
 };
 
-#define HEAP_EVENT(heap, event, ...)                                    \
-  (heap)->event_listener.event((heap)->event_listener_data, ##__VA_ARGS__)
-#define MUTATOR_EVENT(mut, event, ...)                                  \
-  (mut)->heap->event_listener.event((mut)->event_listener_data, ##__VA_ARGS__)
+#define HEAP_EVENT(heap, event, ...) do {                               \
+    (heap)->event_listener.event((heap)->event_listener_data, ##__VA_ARGS__); \
+    GC_TRACEPOINT(event, ##__VA_ARGS__);                                \
+  } while (0)
+#define MUTATOR_EVENT(mut, event, ...) do {                             \
+    (mut)->heap->event_listener.event((mut)->event_listener_data,       \
+                                      ##__VA_ARGS__);                   \
+    GC_TRACEPOINT(event, ##__VA_ARGS__);                                \
+  } while (0)
 
 struct gc_mutator {
   struct copy_space_allocator allocator;

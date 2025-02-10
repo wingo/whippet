@@ -5,6 +5,7 @@
 
 #include "gc-api.h"
 #include "gc-ephemeron.h"
+#include "gc-tracepoint.h"
 
 #define GC_IMPL 1
 #include "gc-internal.h"
@@ -70,11 +71,16 @@ struct gc_mutator {
 };
 
 struct gc_heap *__the_bdw_gc_heap;
-#define HEAP_EVENT(event, ...)                                    \
-  __the_bdw_gc_heap->event_listener.event(__the_bdw_gc_heap->event_listener_data, ##__VA_ARGS__)
-#define MUTATOR_EVENT(mut, event, ...)                                  \
-  __the_bdw_gc_heap->event_listener.event(mut->event_listener_data, ##__VA_ARGS__)
-
+#define HEAP_EVENT(event, ...) do {                                     \
+    __the_bdw_gc_heap->event_listener.event(__the_bdw_gc_heap->event_listener_data, \
+                                            ##__VA_ARGS__);             \
+    GC_TRACEPOINT(event, ##__VA_ARGS__);                                \
+  } while (0)
+#define MUTATOR_EVENT(mut, event, ...) do {                             \
+    __the_bdw_gc_heap->event_listener.event(mut->event_listener_data,   \
+                                            ##__VA_ARGS__);             \
+    GC_TRACEPOINT(event, ##__VA_ARGS__);                                \
+  } while (0)
 static inline size_t gc_inline_bytes_to_freelist_index(size_t bytes) {
   return (bytes - 1U) / GC_INLINE_GRANULE_BYTES;
 }
@@ -386,7 +392,8 @@ static inline struct gc_mutator *add_mutator(struct gc_heap *heap) {
   struct gc_mutator *ret =
     GC_generic_malloc(sizeof(struct gc_mutator), mutator_gc_kind);
   ret->heap = heap;
-  ret->event_listener_data = HEAP_EVENT(mutator_added);
+  ret->event_listener_data =
+    heap->event_listener.mutator_added(heap->event_listener_data);
 
   pthread_mutex_lock(&heap->lock);
   ret->next = heap->mutators;
