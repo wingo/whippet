@@ -30,10 +30,12 @@ BUILD_CFLAGS_debug    = -O0 -g -DGC_DEBUG=1
 
 BUILD_CFLAGS = $(BUILD_CFLAGS_$(or $(BUILD),$(DEFAULT_BUILD)))
 
-USE_LTTNG := $(shell pkg-config --exists lttng-ust && echo 1)
-LTTNG_CPPFLAGS := $(if $(USE_LTTNG), $(shell pkg-config --cflags lttng-ust),)
-LTTNG_LIBS := $(if $(USE_LTTNG), $(shell pkg-config --libs lttng-ust),)
-TRACEPOINT_CPPFLAGS = $(if $(USE_LTTNG),$(LTTNG_CPPFLAGS) -DGC_TRACEPOINT_LTTNG=1,)
+USE_LTTNG_0 :=
+USE_LTTNG_1 := 1
+USE_LTTNG := $(shell pkg-config --exists lttng-ust && echo 1 || echo 0)
+LTTNG_CPPFLAGS := $(if $(USE_LTTNG_$(USE_LTTNG)), $(shell pkg-config --cflags lttng-ust),)
+LTTNG_LIBS := $(if $(USE_LTTNG_$(USE_LTTNG)), $(shell pkg-config --libs lttng-ust),)
+TRACEPOINT_CPPFLAGS = $(if $(USE_LTTNG_$(USE_LTTNG)),$(LTTNG_CPPFLAGS) -DGC_TRACEPOINT_LTTNG=1,)
 TRACEPOINT_LIBS = $(LTTNG_LIBS)
 
 CC       = gcc
