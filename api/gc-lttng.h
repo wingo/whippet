@@ -72,11 +72,30 @@ LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
 LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
   whippet, tracepoint, whippet, mutator_removed, LTTNG_UST_TP_ARGS())
 
-/*
- * Use LTTNG_UST_TRACEPOINT_EVENT(), LTTNG_UST_TRACEPOINT_EVENT_CLASS(),
- * LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(), and
- * LTTNG_UST_TRACEPOINT_LOGLEVEL() here.
- */
+LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
+  whippet, tracepoint, whippet, trace_unpark_all, LTTNG_UST_TP_ARGS())
+LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
+  whippet, tracepoint, whippet, trace_share, LTTNG_UST_TP_ARGS())
+LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
+  whippet, tracepoint, whippet, trace_check_termination_begin, LTTNG_UST_TP_ARGS())
+LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
+  whippet, tracepoint, whippet, trace_check_termination_end, LTTNG_UST_TP_ARGS())
+LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
+  whippet, tracepoint, whippet, trace_steal_begin, LTTNG_UST_TP_ARGS())
+LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
+  whippet, tracepoint, whippet, trace_steal_end, LTTNG_UST_TP_ARGS())
+LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
+  whippet, tracepoint, whippet, trace_roots_begin, LTTNG_UST_TP_ARGS())
+LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
+  whippet, tracepoint, whippet, trace_roots_end, LTTNG_UST_TP_ARGS())
+LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
+  whippet, tracepoint, whippet, trace_objects_begin, LTTNG_UST_TP_ARGS())
+LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
+  whippet, tracepoint, whippet, trace_objects_end, LTTNG_UST_TP_ARGS())
+LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
+  whippet, tracepoint, whippet, trace_worker_begin, LTTNG_UST_TP_ARGS())
+LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
+  whippet, tracepoint, whippet, trace_worker_end, LTTNG_UST_TP_ARGS())
 
 #endif /* _TP_H */
 

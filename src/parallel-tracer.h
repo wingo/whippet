@@ -9,6 +9,7 @@
 #include "assert.h"
 #include "debug.h"
 #include "gc-inline.h"
+#include "gc-tracepoint.h"
 #include "local-worklist.h"
 #include "root-worklist.h"
 #include "shared-worklist.h"
@@ -157,6 +158,7 @@ tracer_unpark_all_workers(struct gc_tracer *tracer) {
   long epoch = old_epoch + 1;
   DEBUG("starting trace; %zu workers; epoch=%ld\n", tracer->worker_count,
         epoch);
+  GC_TRACEPOINT(trace_unpark_all);
   pthread_cond_broadcast(&tracer->cond);
 }
 
@@ -171,6 +173,7 @@ tracer_maybe_unpark_workers(struct gc_tracer *tracer) {
 static inline void
 tracer_share(struct gc_trace_worker *worker) {
   DEBUG("tracer #%zu: sharing\n", worker->id);
+  GC_TRACEPOINT(trace_share);
   size_t to_share = LOCAL_WORKLIST_SHARE_AMOUNT;
   while (to_share) {
     struct gc_ref *objv;
@@ -235,40 +238,45 @@ trace_worker_can_steal_from_any(struct gc_trace_worker *worker,
   return 0;
 }
 
-static int
-trace_worker_should_continue(struct gc_trace_worker *worker) {
+static size_t
+trace_worker_should_continue(struct gc_trace_worker *worker, size_t spin_count) {
   // Helper workers should park themselves immediately if they have no work.
   if (worker->id != 0)
     return 0;
 
   struct gc_tracer *tracer = worker->tracer;
 
-  for (size_t spin_count = 0;; spin_count++) {
-    if (atomic_load_explicit(&tracer->active_tracers,
-                             memory_order_acquire) == 1) {
-      // All trace workers have exited except us, the main worker.  We are
-      // probably done, but we need to synchronize to be sure that there is no
-      // work pending, for example if a worker had a spurious wakeup.  Skip
-      // worker 0 (the main worker).
-      size_t locked = 1;
-      while (locked < tracer->worker_count) {
-        if (pthread_mutex_trylock(&tracer->workers[locked].lock) == 0)
-          locked++;
-        else
-          break;
-      }
-      int done = (locked == tracer->worker_count) &&
-        !trace_worker_can_steal_from_any(worker, tracer);
-      if (done)
-        return 0;
-      while (locked > 1)
-        pthread_mutex_unlock(&tracer->workers[--locked].lock);
-      return 1;
-    }
-    // spin
-    LOG("checking for termination: spinning #%zu\n", spin_count);
+  if (atomic_load_explicit(&tracer->active_tracers, memory_order_acquire) != 1) {
+    LOG("checking for termination: tracers active, spinning #%zu\n", spin_count);
     yield_for_spin(spin_count);
+    return 1;
   }
+
+  // All trace workers have exited except us, the main worker.  We are
+  // probably done, but we need to synchronize to be sure that there is no
+  // work pending, for example if a worker had a spurious wakeup.  Skip
+  // worker 0 (the main worker).
+
+  GC_TRACEPOINT(trace_check_termination_begin);
+  size_t locked = 1;
+  while (locked < tracer->worker_count) {
+    if (pthread_mutex_trylock(&tracer->workers[locked].lock) == 0)
+      locked++;
+    else
+      break;
+  }
+  int done = (locked == tracer->worker_count) &&
+    !trace_worker_can_steal_from_any(worker, tracer);
+  GC_TRACEPOINT(trace_check_termination_end);
+
+  if (done)
+    return 0;
+  while (locked > 1)
+    pthread_mutex_unlock(&tracer->workers[--locked].lock);
+
+  LOG("checking for termination: failed to lock, spinning #%zu\n", spin_count);
+  yield_for_spin(spin_count);
+  return 1;
 }
 
 static struct gc_ref
@@ -285,8 +293,10 @@ trace_worker_steal(struct gc_trace_worker *worker) {
       return obj;
   }
 
+  GC_TRACEPOINT(trace_steal_begin);
   LOG("tracer #%zu: trying to steal\n", worker->id);
   struct gc_ref obj = trace_worker_steal_from_any(worker, tracer);
+  GC_TRACEPOINT(trace_steal_end);
   if (!gc_ref_is_null(obj))
     return obj;
 
@@ -329,7 +339,9 @@ trace_with_data(struct gc_tracer *tracer,
     }
   } else {
     DEBUG("tracer #%zu: tracing objects\n", worker->id);
+    GC_TRACEPOINT(trace_objects_begin);
     size_t n = 0;
+    size_t spin_count = 0;
     do {
       while (1) {
         struct gc_ref ref;
@@ -343,7 +355,8 @@ trace_with_data(struct gc_tracer *tracer,
         trace_one(ref, heap, worker);
         n++;
       }
-    } while (trace_worker_should_continue(worker));
+    } while (trace_worker_should_continue(worker, spin_count++));
+    GC_TRACEPOINT(trace_objects_end);
 
     DEBUG("tracer #%zu: done tracing, %zu objects traced\n", worker->id, n);
   }
@@ -354,8 +367,10 @@ trace_with_data(struct gc_tracer *tracer,
 
 static void
 trace_worker_trace(struct gc_trace_worker *worker) {
+  GC_TRACEPOINT(trace_worker_begin);
   gc_trace_worker_call_with_data(trace_with_data, worker->tracer,
                                  worker->heap, worker);
+  GC_TRACEPOINT(trace_worker_end);
 }
 
 static inline int
@@ -406,9 +421,11 @@ static inline void
 gc_tracer_trace_roots(struct gc_tracer *tracer) {
   DEBUG("starting roots-only trace\n");
 
+  GC_TRACEPOINT(trace_roots_begin);
   tracer->trace_roots_only = 1;
   gc_tracer_trace(tracer);
   tracer->trace_roots_only = 0;
+  GC_TRACEPOINT(trace_roots_end);
   
   GC_ASSERT_EQ(atomic_load(&tracer->active_tracers), 0);
   DEBUG("roots-only trace finished\n");
