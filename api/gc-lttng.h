@@ -81,9 +81,7 @@ LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
 LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
   whippet, tracepoint, whippet, trace_check_termination_end, LTTNG_UST_TP_ARGS())
 LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
-  whippet, tracepoint, whippet, trace_steal_begin, LTTNG_UST_TP_ARGS())
-LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
-  whippet, tracepoint, whippet, trace_steal_end, LTTNG_UST_TP_ARGS())
+  whippet, tracepoint, whippet, trace_steal, LTTNG_UST_TP_ARGS())
 LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
   whippet, tracepoint, whippet, trace_roots_begin, LTTNG_UST_TP_ARGS())
 LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(

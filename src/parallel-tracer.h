@@ -293,10 +293,9 @@ trace_worker_steal(struct gc_trace_worker *worker) {
       return obj;
   }
 
-  GC_TRACEPOINT(trace_steal_begin);
+  GC_TRACEPOINT(trace_steal);
   LOG("tracer #%zu: trying to steal\n", worker->id);
   struct gc_ref obj = trace_worker_steal_from_any(worker, tracer);
-  GC_TRACEPOINT(trace_steal_end);
   if (!gc_ref_is_null(obj))
     return obj;
 
