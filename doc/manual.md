@@ -176,13 +176,14 @@ implementations of that API: `semi`, a simple semi-space collector;
 collector; and `mmc`, a mostly-marking collector inspired by Immix.
 
 The program that embeds Whippet selects the collector implementation at
-build-time.  In the case of the `mmc` collector, the program
-also configures a specific collector mode, again at build-time:
-generational or not, parallel or not, stack-conservative or not, and
-heap-conservative or not.  It may be nice in the future to be able to
-configure these at run-time, but for the time being they are
-compile-time options so that adding new features doesn't change the
-footprint of a more minimal collector.
+build-time.  For `pcc`, the program can also choose whether to be
+generational or not.  For `mmc` collector, the program configures a
+specific collector mode, again at build-time: generational or not,
+parallel or not, stack-conservative or not, and heap-conservative or
+not.  It may be nice in the future to be able to configure these at
+run-time, but for the time being they are compile-time options so that
+adding new features doesn't change the footprint of a more minimal
+collector.
 
 Different collectors have different allocation strategies: for example,
 the BDW collector allocates from thread-local freelists, whereas the
@@ -199,97 +200,58 @@ compiling user code.
 
 ### Compiling the collector
 
-Building the collector is not as easy as it should be.  As an embed-only
-library, we don't get to choose the One True Build System and then just
-build the software in that way; instead Whippet needs to be buildable
-with any build system.  At some point we will have snippets that
-embedders can include in their various build systems, but for now we
-document the low-level structure, so that people can craft the
-appropriate incantations for their program's build system.
+As an embed-only library, Whippet needs to be integrated into the build
+system of its host (embedder).  Currently the only supported build
+system uses GNU make.  We would be happy to add other systems over time.
 
-Whippet consists of some collector-implementation-agnostic independent
-modules, and then the collector implementation itself.  Though Whippet
-tries to put performance-sensitive interfaces in header files, users
-should also compile with link-time optimization (LTO) to remove any
-overhead imposed by the division of code into separate compilation
-units.
+At a high level, first the embedder chooses a collector and defines how
+to specialize the collector against the embedder.  Whippet's `embed.mk`
+Makefile snippet then defines how to build the set of object files that
+define the collector, and how to specialize the embedder against the
+chosen collector.
 
-Usually you want to build with maximum optimization and no debugging
-assertions.  Sometimes you want minimal optimization and all assertions.
-Here's what we do, as a `Makefile` snippet:
+As an example, say you have a file `program.c`, and you want to compile
+it against a Whippet checkout in `whippet/`.  Your headers are in
+`include/`, and you have written an implementation of the embedder
+interface in `host-gc.h`.  In that case you would have a Makefile like
+this:
 
 ```
-DEFAULT_BUILD=opt
-BUILD_CFLAGS_opt=-O2 -g -DNDEBUG
-BUILD_CFLAGS_optdebug=-Og -g -DGC_DEBUG=1
-BUILD_CFLAGS_debug=-O0 -g -DGC_DEBUG=1
-BUILD_CFLAGS=$(BUILD_CFLAGS_$(or $(BUILD),$(DEFAULT_BUILD)))
+HOST_DIR:=$(dir $(lastword $(MAKEFILE_LIST)))
+WHIPPET_DIR=$(HOST_DIR)whippet/
+
+all: out
+
+# The collector to choose: e.g. semi, bdw, pcc, generational-pcc, mmc,
+# parallel-mmc, etc.
+GC_COLLECTOR=pcc
+
+include $(WHIPPET_DIR)embed.mk
+
+# Host cflags go here...
+HOST_CFLAGS=
+
+# Whippet's embed.mk uses this variable when it compiles code that
+# should be specialized against the embedder.
+EMBEDDER_TO_GC_CFLAGS=$(HOST_CFLAGS) -include $(HOST_DIR)host-gc.h
+
+program.o: program.c
+	$(GC_COMPILE) $(HOST_CFLAGS) $(GC_TO_EMBEDDER_CFLAGS) -c $<
+program: program.o $(GC_OBJS)
+	$(GC_LINK) $^ $(GC_LIBS)
 ```
 
-So if you do just plain `make`, it will do an `opt` build.  You can
-specify the build mode by setting `BUILD` on the command line, as in
-`make BUILD=debug`.
+The optimization settings passed to the C compiler are taken from
+`GC_BUILD_CFLAGS`.  Embedders can override this variable directly, or
+via the shorthand `GC_BUILD` variable.  A `GC_BUILD` of `opt` indicates
+maximum optimization and no debugging assertions; `optdebug` adds
+debugging assertions; and `debug` removes optimizations.
 
-Then for the actual compilation flags, we do:
-
-```
-CC=gcc
-CFLAGS=-Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(BUILD_CFLAGS)
-INCLUDES=-I.
-LDFLAGS=-lpthread -flto
-COMPILE=$(CC) $(CFLAGS) $(INCLUDES)
-```
-
-The actual include directory (the dot in `-I.`) should be adjusted as
-appropriate.
-
-#### Collector-implementation-agnostic independent modules
-
-There are currently four generic modules that don't depend on the choice
-of collector.  The first is `gc-stack.o`, which has supporting code to
-associate mutators (threads) with slices of the native stack, in order
-to support conservative root-finding.
-
-```
-$(COMPILE) -o gc-stack.o -c gc-stack.c
-```
-
-The next is a generic options interface, to allow the user to
-parameterize the collector at run-time, for example to implement a
-specific heap sizing strategy.
-
-```
-$(COMPILE) -o gc-options.o -c gc-options.c
-```
-
-Next, where Whippet needs to get data from the operating system, for
-example the number of processors available, it does so behind an
-abstract interface that is selected at compile-time.  The only
-implementation currently is for GNU/Linux, but it's a pretty thin layer,
-so adding more systems should not be difficult.
-
-```
-PLATFORM=gnu-linux
-$(COMPILE) -o gc-platform.o -c gc-platform-$(PLATFORM).c
-```
-
-Finally, something a little more complicated: ephemerons.  Ephemerons
-are objects that make a weak association between a key and a value.  As
-first-class objects, they need to be classifiable by the user system,
-and notably via the `gc_trace_object` procedure, and therefore need to
-have a header whose shape is understandable by the embedding program.
-We do this by including the `gc-embedder-api.h` implementation, via
-`-include`, in this case providing `foo-embedder.h`:
-
-```
-$(COMPILE) -include foo-embedder.h -o gc-ephemeron.o -c gc-ephemeron.c
-```
-
-As for ephemerons, finalizers also have their own compilation unit.
-
-```
-$(COMPILE) -include foo-embedder.h -o gc-finalizer.o -c gc-finalizer.c
-```
+Though Whippet tries to put performance-sensitive interfaces in header
+files, users should also compile with link-time optimization (LTO) to
+remove any overhead imposed by the division of code into separate
+compilation units.  `embed.mk` includes the necessary LTO flags in
+`GC_CFLAGS` and `GC_LDFLAGS`.
 
 #### Compile-time options
 
@@ -316,82 +278,14 @@ Some collectors require specific compile-time options.  For example, the
 semi-space collector has to be able to move all objects; this is not
 compatible with conservative roots or heap edges.
 
-#### Building `semi`
+#### Tracing support
 
-Finally, let's build a collector.  The simplest collector is the
-semi-space collector.  The entirety of the implementation can be had by
-compiling `semi.c`, providing the program's embedder API implementation
-via `-include`:
-
-```
-$(COMPILE) -DGC_PRECISE_ROOTS=1 -include foo-embedder.h -o gc.o -c semi.c
-```
-
-#### Building `bdw`
-
-The next simplest collector uses
-[BDW-GC](https://github.com/ivmai/bdwgc).  This collector must scan the
-roots and heap conservatively.  The collector is parallel if BDW-GC
-itself was compiled with parallelism enabled.
-
-```
-$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 \
-  `pkg-config --cflags bdw-gc` \
-  -include foo-embedder.h -o gc.o -c bdw.c
-```
-
-#### Building `pcc`
-
-The parallel copying collector is like `semi` but better in every way:
-it supports multiple mutator threads, and evacuates in parallel if
-multiple threads are available.
-
-```
-$(COMPILE) -DGC_PARALLEL=1 -DGC_PRECISE_ROOTS=1 \
-  -include foo-embedder.h -o gc.o -c pcc.c
-```
-
-You can also build `pcc` in a generational configuration by passing
-`-DGC_GENERATIONAL=1`.  The nursery is 2 MB per active mutator, capped
-to the number of processors, so if the last cycle had a maximum of 4
-mutator threads active at the same time and your machine has 24 cores,
-your nursery would be 8 MB.
-
-#### Building `mmc`
-
-Finally, there is the mostly-marking collector.  It can collect roots
-precisely or conservatively, trace precisely or conservatively, be
-parallel or not, and be generational or not.
-
-```
-$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1 \
-  -include foo-embedder.h -o gc.o -c mvv.c
-```
-
-### Compiling your program
-
-Any compilation unit that uses the GC API should have the same set of
-compile-time options defined as when compiling the collector.
-Additionally those compilation units should include the "attributes"
-header for the collector in question, namely `semi-attrs.h`,
-`bdw-attrs.h`, `pcc-attrs.h`, or `mmc-attrs.h`.  For example, for
-parallel generational mmc, you might have:
-
-```
-$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1 \
-  -include mmc-attrs.h -o my-program.o -c my-program.c
-```
-
-### Linking the collector into your program
-
-Finally to link, pass all objects to the linker.  You will want to
-ensure that the linker enables `-flto`, for link-time optimization.  We
-do it like this:
-
-```
-$(CC) $(LDFLAGS) -o my-program \
-  my-program.o gc-stack.o gc-platform.o gc-options.o gc-ephemeron.o
-```
+Whippet includes support for low-overhead run-time tracing via
+[LTTng](https://lttng.org/).  If the support library `lttng-ust` is
+present when Whippet is compiled (as checked via `pkg-config`),
+tracepoint support will be present.  See
+[tracepoints.md](./tracepoints.md) for more information on how to get
+performance traces out of Whippet.
 
 ## Using the collector
 
