@@ -83,7 +83,7 @@ Tracing stopped for session auto-20250214-091153
 ```
 
 Whew.  If we did it right, our data is now in
-~/lttng-traces/auto-20250214-091153.
+`~/lttng-traces/auto-20250214-091153`.
 
 ### Visualizing traces
 
