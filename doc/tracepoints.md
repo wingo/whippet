@@ -35,7 +35,7 @@ First, create your tracing session:
 ```
 $ lttng create
 Session auto-20250214-091153 created.
-Traces will be output to $HOME/lttng-traces/auto-20250214-091153
+Traces will be output to ~/lttng-traces/auto-20250214-091153
 ```
 
 You run all these commands as your own user; they don't require root
@@ -83,7 +83,7 @@ Tracing stopped for session auto-20250214-091153
 ```
 
 Whew.  If we did it right, our data is now in
-$HOME/lttng-traces/auto-20250214-091153.
+~/lttng-traces/auto-20250214-091153.
 
 ### Visualizing traces
 
