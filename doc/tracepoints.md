@@ -96,10 +96,11 @@ profiler](https://profiler.firefox.com) and
 work with CTF directly, so we instead need to run a trace converter.
 
 Oddly, there is no trace converter that can read CTF and write something
-that Perfetto (e.g.) can read.  However there is a JSON-based tracing
-format that Perfetto can read, and [Python bindings for Babeltrace, a
-library that works with CTF](https://babeltrace.org/), so that's what we
-do:
+that Perfetto (e.g.) can read.  However there is a [JSON-based tracing
+format that these tools can
+read](https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU/preview?tab=t.0#heading=h.yr4qxyxotyw),
+and [Python bindings for Babeltrace, a library that works with
+CTF](https://babeltrace.org/), so that's what we do:
 
 ```
 $ python3 ctf_to_json.py ~/lttng-traces/auto-20250214-091153 > trace.json
