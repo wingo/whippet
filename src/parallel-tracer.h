@@ -172,7 +172,7 @@ tracer_maybe_unpark_workers(struct gc_tracer *tracer) {
 
 static inline void
 tracer_share(struct gc_trace_worker *worker) {
-  DEBUG("tracer #%zu: sharing\n", worker->id);
+  LOG("tracer #%zu: sharing\n", worker->id);
   GC_TRACEPOINT(trace_share);
   size_t to_share = LOCAL_WORKLIST_SHARE_AMOUNT;
   while (to_share) {
@@ -310,10 +310,10 @@ trace_with_data(struct gc_tracer *tracer,
   atomic_fetch_add_explicit(&tracer->active_tracers, 1, memory_order_acq_rel);
   worker->data = data;
 
-  DEBUG("tracer #%zu: running trace loop\n", worker->id);
+  LOG("tracer #%zu: running trace loop\n", worker->id);
 
   {
-    DEBUG("tracer #%zu: tracing roots\n", worker->id);
+    LOG("tracer #%zu: tracing roots\n", worker->id);
     size_t n = 0;
     do {
       struct gc_root root = root_worklist_pop(&tracer->roots);
@@ -323,7 +323,7 @@ trace_with_data(struct gc_tracer *tracer,
       n++;
     } while (1);
 
-    DEBUG("tracer #%zu: done tracing roots, %zu roots traced\n", worker->id, n);
+    LOG("tracer #%zu: done tracing roots, %zu roots traced\n", worker->id, n);
   }
 
   if (tracer->trace_roots_only) {
@@ -337,7 +337,7 @@ trace_with_data(struct gc_tracer *tracer,
         pthread_mutex_lock(&tracer->workers[i].lock);
     }
   } else {
-    DEBUG("tracer #%zu: tracing objects\n", worker->id);
+    LOG("tracer #%zu: tracing objects\n", worker->id);
     GC_TRACEPOINT(trace_objects_begin);
     size_t n = 0;
     size_t spin_count = 0;
@@ -357,7 +357,7 @@ trace_with_data(struct gc_tracer *tracer,
     } while (trace_worker_should_continue(worker, spin_count++));
     GC_TRACEPOINT(trace_objects_end);
 
-    DEBUG("tracer #%zu: done tracing, %zu objects traced\n", worker->id, n);
+    LOG("tracer #%zu: done tracing, %zu objects traced\n", worker->id, n);
   }
 
   worker->data = NULL;
@@ -398,27 +398,27 @@ gc_tracer_should_parallelize(struct gc_tracer *tracer) {
 
 static inline void
 gc_tracer_trace(struct gc_tracer *tracer) {
-  DEBUG("starting trace; %zu workers\n", tracer->worker_count);
+  LOG("starting trace; %zu workers\n", tracer->worker_count);
 
   for (int i = 1; i < tracer->worker_count; i++)
     pthread_mutex_unlock(&tracer->workers[i].lock);
 
   if (gc_tracer_should_parallelize(tracer)) {
-    DEBUG("waking workers\n");
+    LOG("waking workers\n");
     tracer_unpark_all_workers(tracer);
   } else {
-    DEBUG("starting in local-only mode\n");
+    LOG("starting in local-only mode\n");
   }
 
   trace_worker_trace(&tracer->workers[0]);
   root_worklist_reset(&tracer->roots);
 
-  DEBUG("trace finished\n");
+  LOG("trace finished\n");
 }
 
 static inline void
 gc_tracer_trace_roots(struct gc_tracer *tracer) {
-  DEBUG("starting roots-only trace\n");
+  LOG("starting roots-only trace\n");
 
   GC_TRACEPOINT(trace_roots_begin);
   tracer->trace_roots_only = 1;
@@ -427,7 +427,7 @@ gc_tracer_trace_roots(struct gc_tracer *tracer) {
   GC_TRACEPOINT(trace_roots_end);
   
   GC_ASSERT_EQ(atomic_load(&tracer->active_tracers), 0);
-  DEBUG("roots-only trace finished\n");
+  LOG("roots-only trace finished\n");
 }
 
 #endif // PARALLEL_TRACER_H
