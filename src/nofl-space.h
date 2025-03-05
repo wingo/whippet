@@ -235,12 +235,16 @@ enum nofl_metadata_byte {
   NOFL_METADATA_BYTE_NONE = 0,
   NOFL_METADATA_BYTE_YOUNG = 1,
   NOFL_METADATA_BYTE_MARK_0 = 2,
-  NOFL_METADATA_BYTE_MARK_1 = 4,
-  NOFL_METADATA_BYTE_MARK_2 = 8,
-  NOFL_METADATA_BYTE_MARK_MASK = (NOFL_METADATA_BYTE_YOUNG |
-                                  NOFL_METADATA_BYTE_MARK_0 |
-                                  NOFL_METADATA_BYTE_MARK_1 |
-                                  NOFL_METADATA_BYTE_MARK_2),
+  NOFL_METADATA_BYTE_MARK_1 = 3,
+#if GC_CONCURRENT_TRACE
+  NOFL_METADATA_BYTE_MARK_2 = 4,
+  NOFL_METADATA_BYTE_MARK_MASK = 7,
+  /* NOFL_METADATA_BYTE_UNUSED_0 = 8, */
+#else
+  NOFL_METADATA_BYTE_MARK_MASK = 3,
+  /* NOFL_METADATA_BYTE_UNUSED_0 = 4, */
+  /* NOFL_METADATA_BYTE_UNUSED_1 = 8, */
+#endif
   NOFL_METADATA_BYTE_END = 16,
   NOFL_METADATA_BYTE_PINNED = 32,
   NOFL_METADATA_BYTE_LOGGED_0 = 64,
@@ -254,8 +258,10 @@ nofl_advance_current_mark(uint8_t mark) {
     case NOFL_METADATA_BYTE_MARK_0:
       return NOFL_METADATA_BYTE_MARK_1;
     case NOFL_METADATA_BYTE_MARK_1:
+#if GC_CONCURRENT_TRACE
       return NOFL_METADATA_BYTE_MARK_2;
     case NOFL_METADATA_BYTE_MARK_2:
+#endif
       return NOFL_METADATA_BYTE_MARK_0;
     default:
       GC_CRASH();
@@ -955,10 +961,8 @@ nofl_space_contains_edge(struct nofl_space *space, struct gc_edge edge) {
 static inline int
 nofl_space_is_survivor(struct nofl_space *space, struct gc_ref ref) {
   uint8_t *metadata = nofl_metadata_byte_for_object(ref);
-  uint8_t mask = NOFL_METADATA_BYTE_MARK_0
-    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
   uint8_t byte = atomic_load_explicit(metadata, memory_order_relaxed);
-  return byte & mask;
+  return nofl_metadata_byte_has_mark(byte, space->survivor_mark);
 }
 
 static uint8_t*

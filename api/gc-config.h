@@ -33,4 +33,8 @@
 #define GC_CONSERVATIVE_TRACE 0
 #endif
 
+#ifndef GC_CONCURRENT_TRACE
+#define GC_CONCURRENT_TRACE 0
+#endif
+
 #endif // GC_CONFIG_H
