@@ -150,7 +150,6 @@ struct nofl_block_stack {
 #define NOFL_PAGE_OUT_QUEUE_SIZE 4
 
 struct nofl_space {
-  uint64_t sweep_mask;
   uint8_t live_mask;
   uint8_t marked_mask;
   uint8_t evacuating;
@@ -558,7 +557,7 @@ nofl_clear_memory(uintptr_t addr, size_t size) {
 
 static size_t
 nofl_space_live_object_granules(uint8_t *metadata) {
-  return scan_for_byte(metadata, -1, broadcast_byte(NOFL_METADATA_BYTE_END)) + 1;
+  return scan_for_byte_with_bits(metadata, -1, NOFL_METADATA_BYTE_END) + 1;
 }
 
 static void
@@ -704,7 +703,7 @@ nofl_allocator_finish_hole(struct nofl_allocator *alloc) {
 // reached the end of the block.
 static size_t
 nofl_allocator_next_hole_in_block(struct nofl_allocator *alloc,
-                                  uintptr_t sweep_mask) {
+                                  uint8_t live_mask) {
   GC_ASSERT(nofl_allocator_has_block(alloc));
   GC_ASSERT_EQ(alloc->alloc, alloc->sweep);
   uintptr_t sweep = alloc->sweep;
@@ -721,7 +720,7 @@ nofl_allocator_next_hole_in_block(struct nofl_allocator *alloc,
   // right after a hole, which can point to either the end of the
   // block or to a live object.  Assume that a live object is more
   // common.
-  while (limit_granules && (metadata[0] & sweep_mask)) {
+  while (limit_granules && (metadata[0] & live_mask)) {
     // Object survived collection; skip over it and continue sweeping.
     size_t object_granules = nofl_space_live_object_granules(metadata);
     sweep += object_granules * NOFL_GRANULE_SIZE;
@@ -734,7 +733,8 @@ nofl_allocator_next_hole_in_block(struct nofl_allocator *alloc,
     return 0;
   }
 
-  size_t hole_granules = scan_for_byte(metadata, limit_granules, sweep_mask);
+  size_t hole_granules = scan_for_byte_with_bits(metadata, limit_granules,
+                                                 live_mask);
   size_t free_bytes = hole_granules * NOFL_GRANULE_SIZE;
   GC_ASSERT(hole_granules);
   GC_ASSERT(hole_granules <= limit_granules);
@@ -754,10 +754,10 @@ nofl_allocator_next_hole_in_block(struct nofl_allocator *alloc,
 
 static void
 nofl_allocator_finish_sweeping_in_block(struct nofl_allocator *alloc,
-                                        uintptr_t sweep_mask) {
+                                        uint8_t live_mask) {
   do {
     nofl_allocator_finish_hole(alloc);
-  } while (nofl_allocator_next_hole_in_block(alloc, sweep_mask));
+  } while (nofl_allocator_next_hole_in_block(alloc, live_mask));
 }
 
 static void
@@ -771,7 +771,7 @@ nofl_allocator_release_block(struct nofl_allocator *alloc,
   } else if (space->evacuating) {
     nofl_allocator_release_full_evacuation_target(alloc, space);
   } else {
-    nofl_allocator_finish_sweeping_in_block(alloc, space->sweep_mask);
+    nofl_allocator_finish_sweeping_in_block(alloc, space->live_mask);
     nofl_allocator_release_full_block(alloc, space);
   }
 }
@@ -801,7 +801,7 @@ nofl_allocator_next_hole(struct nofl_allocator *alloc,
   // Sweep current block for a hole.
   if (nofl_allocator_has_block(alloc)) {
     size_t granules =
-      nofl_allocator_next_hole_in_block(alloc, space->sweep_mask);
+      nofl_allocator_next_hole_in_block(alloc, space->live_mask);
     if (granules)
       return granules;
     else
@@ -819,7 +819,7 @@ nofl_allocator_next_hole(struct nofl_allocator *alloc,
     alloc->block.summary->holes_with_fragmentation = 0;
     alloc->block.summary->fragmentation_granules = 0;
     size_t granules =
-      nofl_allocator_next_hole_in_block(alloc, space->sweep_mask);
+      nofl_allocator_next_hole_in_block(alloc, space->live_mask);
     if (granules)
       return granules;
     nofl_allocator_release_full_block(alloc, space);
@@ -1134,7 +1134,6 @@ nofl_space_update_mark_patterns(struct nofl_space *space,
   if (advance_mark_mask)
     space->marked_mask = next_marked_mask;
   space->live_mask = survivor_mask | next_marked_mask;
-  space->sweep_mask = broadcast_byte(space->live_mask);
 }
 
 static void
@@ -1206,7 +1205,7 @@ nofl_space_promote_blocks(struct nofl_space *space) {
     block.summary->holes_with_fragmentation = 0;
     block.summary->fragmentation_granules = 0;
     struct nofl_allocator alloc = { block.addr, block.addr, block };
-    nofl_allocator_finish_sweeping_in_block(&alloc, space->sweep_mask);
+    nofl_allocator_finish_sweeping_in_block(&alloc, space->live_mask);
     atomic_fetch_add(&space->old_generation_granules,
                      NOFL_GRANULES_PER_BLOCK - block.summary->hole_granules);
     nofl_block_list_push(&space->old, block);
