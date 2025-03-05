@@ -421,6 +421,7 @@ large_object_space_alloc(struct large_object_space *space, size_t npages) {
       // Mark the hole as live.
       node->value.is_live = 1;
       memset(&node->value.live, 0, sizeof(node->value.live));
+      node->value.live.mark = LARGE_OBJECT_NURSERY;
 
       // If the hole is actually too big, trim its tail.
       if (node->key.size > size) {
@@ -462,7 +463,7 @@ large_object_space_obtain_and_alloc(struct large_object_space *space,
   struct large_object k = { addr, bytes };
   struct large_object_data v = {0,};
   v.is_live = 1;
-  v.live.mark = 0;
+  v.live.mark = LARGE_OBJECT_NURSERY;
 
   pthread_mutex_lock(&space->lock);
   pthread_mutex_lock(&space->object_tree_lock);
@@ -488,6 +489,8 @@ large_object_space_init(struct large_object_space *space,
 
   space->page_size = getpagesize();
   space->page_size_log2 = __builtin_ctz(space->page_size);
+
+  space->marked = LARGE_OBJECT_MARK_0;
 
   large_object_tree_init(&space->object_tree);
   address_map_init(&space->object_map);
