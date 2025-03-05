@@ -237,6 +237,10 @@ enum nofl_metadata_byte {
   NOFL_METADATA_BYTE_MARK_0 = 2,
   NOFL_METADATA_BYTE_MARK_1 = 4,
   NOFL_METADATA_BYTE_MARK_2 = 8,
+  NOFL_METADATA_BYTE_MARK_MASK = (NOFL_METADATA_BYTE_YOUNG |
+                                  NOFL_METADATA_BYTE_MARK_0 |
+                                  NOFL_METADATA_BYTE_MARK_1 |
+                                  NOFL_METADATA_BYTE_MARK_2),
   NOFL_METADATA_BYTE_END = 16,
   NOFL_METADATA_BYTE_PINNED = 32,
   NOFL_METADATA_BYTE_LOGGED_0 = 64,
@@ -1420,8 +1424,7 @@ nofl_space_should_evacuate(struct nofl_space *space, uint8_t metadata_byte,
 static inline int
 nofl_space_set_mark_relaxed(struct nofl_space *space, uint8_t *metadata,
                             uint8_t byte) {
-  uint8_t mask = NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_MARK_0
-    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
+  uint8_t mask = NOFL_METADATA_BYTE_MARK_MASK;
   atomic_store_explicit(metadata,
                         (byte & ~mask) | space->marked_mask,
                         memory_order_relaxed);
@@ -1430,8 +1433,7 @@ nofl_space_set_mark_relaxed(struct nofl_space *space, uint8_t *metadata,
 
 static inline int
 nofl_space_set_mark(struct nofl_space *space, uint8_t *metadata, uint8_t byte) {
-  uint8_t mask = NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_MARK_0
-    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
+  uint8_t mask = NOFL_METADATA_BYTE_MARK_MASK;
   atomic_store_explicit(metadata,
                         (byte & ~mask) | space->marked_mask,
                         memory_order_release);
