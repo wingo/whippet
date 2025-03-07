@@ -212,7 +212,7 @@ large_object_space_mark(struct large_object_space *space, struct gc_ref ref) {
                                                   memory_order_acquire));
 
   size_t pages = node->key.size >> space->page_size_log2;
-  space->live_pages_at_last_collection += pages;
+  atomic_fetch_add(&space->live_pages_at_last_collection, pages);
 
   return 1;
 }
