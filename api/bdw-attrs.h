@@ -39,7 +39,10 @@ static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
 static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(size_t) {
   return GC_OLD_GENERATION_CHECK_NONE;
 }
-static inline uint8_t gc_old_generation_check_alloc_table_bit_pattern(void) {
+static inline uint8_t gc_old_generation_check_alloc_table_tag_mask(void) {
+  GC_CRASH();
+}
+static inline uint8_t gc_old_generation_check_alloc_table_young_tag(void) {
   GC_CRASH();
 }
 

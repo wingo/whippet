@@ -44,9 +44,11 @@ static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(siz
   }
   return GC_OLD_GENERATION_CHECK_NONE;
 }
-static inline uint8_t gc_old_generation_check_alloc_table_bit_pattern(void) {
-  // The three mark bits.
-  return 2 + 4 + 8;
+static inline uint8_t gc_old_generation_check_alloc_table_tag_mask(void) {
+  return 7;
+}
+static inline uint8_t gc_old_generation_check_alloc_table_young_tag(void) {
+  return 1;
 }
 
 static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) {
@@ -58,12 +60,10 @@ static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) 
   return GC_WRITE_BARRIER_NONE;
 }
 static inline size_t gc_write_barrier_card_table_alignment(void) {
-  GC_ASSERT(GC_GENERATIONAL);
-  return 4 * 1024 * 1024;
+  GC_CRASH();
 }
 static inline size_t gc_write_barrier_card_size(void) {
-  GC_ASSERT(GC_GENERATIONAL);
-  return 256;
+  GC_CRASH();
 }
 static inline size_t gc_write_barrier_field_table_alignment(void) {
   GC_ASSERT(GC_GENERATIONAL);

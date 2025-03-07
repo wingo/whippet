@@ -193,7 +193,9 @@ static inline int gc_object_is_old_generation(struct gc_mutator *mut,
     uintptr_t granule = (addr & (alignment - 1)) / granule_size;
     uint8_t *byte_loc = (uint8_t*)(base + granule);
     uint8_t byte = atomic_load_explicit(byte_loc, memory_order_relaxed);
-    return byte & gc_old_generation_check_alloc_table_bit_pattern();
+    uint8_t mask = gc_old_generation_check_alloc_table_tag_mask();
+    uint8_t young = gc_old_generation_check_alloc_table_young_tag();
+    return (byte & mask) != young;
   }
   case GC_OLD_GENERATION_CHECK_SMALL_OBJECT_NURSERY: {
     struct gc_heap *heap = gc_mutator_heap(mut);
