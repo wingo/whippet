@@ -444,37 +444,32 @@ large_object_space_alloc(struct large_object_space *space, size_t npages) {
     
       space->free_pages -= npages;
       ret = (void*)node->key.addr;
+      memset(ret, 0, size);
       break;
     }
   }
+
+  // If we didn't find anything in the quarantine, get fresh pages from the OS.
+  if (!ret) {
+    ret = gc_platform_acquire_memory(size, 0);
+    if (ret) {
+      uintptr_t addr = (uintptr_t)ret;
+      struct large_object k = { addr, size };
+      struct large_object_data v = {0,};
+      v.is_live = 1;
+      v.live.mark = LARGE_OBJECT_NURSERY;
+
+      pthread_mutex_lock(&space->object_tree_lock);
+      struct large_object_node *node =
+        large_object_tree_insert(&space->object_tree, k, v);
+      uintptr_t node_bits = (uintptr_t)node;
+      address_map_add(&space->object_map, addr, node_bits);
+      space->total_pages += npages;
+      pthread_mutex_unlock(&space->object_tree_lock);
+    }
+  }
+
   pthread_mutex_unlock(&space->lock);
-  return ret;
-}
-
-static void*
-large_object_space_obtain_and_alloc(struct large_object_space *space,
-                                    size_t npages) {
-  size_t bytes = npages * space->page_size;
-  void *ret = gc_platform_acquire_memory(bytes, 0);
-  if (!ret)
-    return NULL;
-
-  uintptr_t addr = (uintptr_t)ret;
-  struct large_object k = { addr, bytes };
-  struct large_object_data v = {0,};
-  v.is_live = 1;
-  v.live.mark = LARGE_OBJECT_NURSERY;
-
-  pthread_mutex_lock(&space->lock);
-  pthread_mutex_lock(&space->object_tree_lock);
-  struct large_object_node *node =
-    large_object_tree_insert(&space->object_tree, k, v);
-  uintptr_t node_bits = (uintptr_t)node;
-  address_map_add(&space->object_map, addr, node_bits);
-  space->total_pages += npages;
-  pthread_mutex_unlock(&space->object_tree_lock);
-  pthread_mutex_unlock(&space->lock);
-
   return ret;
 }
 
