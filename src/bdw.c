@@ -63,6 +63,7 @@ struct gc_heap {
 
 struct gc_mutator {
   void *freelists[GC_INLINE_FREELIST_COUNT];
+  void *pointerless_freelists[GC_INLINE_FREELIST_COUNT];
   struct gc_heap *heap;
   struct gc_mutator_roots *roots;
   struct gc_mutator *next; // with heap lock
@@ -122,25 +123,46 @@ allocate_small(void **freelist, size_t idx, enum gc_inline_kind kind) {
   }
 
   *freelist = *(void **)(head);
+
+  if (kind == GC_INLINE_KIND_POINTERLESS)
+    memset(head, 0, gc_inline_freelist_object_size(idx));
+
   return head;
 }
 
-void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
+void* gc_allocate_slow(struct gc_mutator *mut, size_t size,
+                       enum gc_allocation_kind kind) {
   GC_ASSERT(size != 0);
   if (size <= gc_allocator_large_threshold()) {
     size_t idx = gc_inline_bytes_to_freelist_index(size);
-    return allocate_small(&mut->freelists[idx], idx, GC_INLINE_KIND_NORMAL);
+    void **freelists;
+    enum gc_inline_kind freelist_kind;
+    switch (kind) {
+      case GC_ALLOCATION_TAGGED:
+      case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
+        return allocate_small(&mut->freelists[idx], idx, GC_INLINE_KIND_NORMAL);
+      case GC_ALLOCATION_TAGGED_POINTERLESS:
+      case GC_ALLOCATION_UNTAGGED_POINTERLESS:
+        return allocate_small(&mut->pointerless_freelists[idx], idx,
+                              GC_INLINE_KIND_POINTERLESS);
+      default:
+        GC_CRASH();
+    }
   } else {
-    return GC_malloc(size);
+    switch (kind) {
+      case GC_ALLOCATION_TAGGED:
+      case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
+        return GC_malloc(size);
+      case GC_ALLOCATION_TAGGED_POINTERLESS:
+      case GC_ALLOCATION_UNTAGGED_POINTERLESS: {
+        void *ret = GC_malloc_atomic(size);
+        memset(ret, 0, size);
+        return ret;
+      }
+      default:
+        GC_CRASH();
+    }
   }
-}
-
-void* gc_allocate_pointerless(struct gc_mutator *mut,
-                                            size_t size) {
-  // Because the BDW API requires us to implement a custom marker so
-  // that the pointerless freelist gets traced, even though it's in a
-  // pointerless region, we punt on thread-local pointerless freelists.
-  return GC_malloc_atomic(size);
 }
 
 void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {

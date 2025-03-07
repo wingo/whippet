@@ -22,14 +22,15 @@ static inline size_t gc_allocator_allocation_limit_offset(void) {
   return sizeof(uintptr_t) * 1;
 }
 
-static inline size_t gc_allocator_freelist_offset(size_t size) {
+static inline size_t gc_allocator_freelist_offset(size_t size,
+                                                  enum gc_allocation_kind kind) {
   GC_CRASH();
 }
 
 static inline size_t gc_allocator_alloc_table_alignment(void) {
   return 4 * 1024 * 1024;
 }
-static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) {
+static inline uint8_t gc_allocator_alloc_table_begin_pattern(enum gc_allocation_kind kind) {
   return 1;
 }
 static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {

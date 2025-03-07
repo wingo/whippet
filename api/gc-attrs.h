@@ -2,6 +2,7 @@
 #define GC_ATTRS_H
 
 #include "gc-inline.h"
+#include "gc-allocation-kind.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -19,10 +20,11 @@ static inline size_t gc_allocator_small_granule_size(void) GC_ALWAYS_INLINE;
 static inline size_t gc_allocator_allocation_pointer_offset(void) GC_ALWAYS_INLINE;
 static inline size_t gc_allocator_allocation_limit_offset(void) GC_ALWAYS_INLINE;
 
-static inline size_t gc_allocator_freelist_offset(size_t size) GC_ALWAYS_INLINE;
+static inline size_t gc_allocator_freelist_offset(size_t size,
+                                                  enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
 
 static inline size_t gc_allocator_alloc_table_alignment(void) GC_ALWAYS_INLINE;
-static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) GC_ALWAYS_INLINE;
+static inline uint8_t gc_allocator_alloc_table_begin_pattern(enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
 static inline uint8_t gc_allocator_alloc_table_end_pattern(void) GC_ALWAYS_INLINE;
 
 enum gc_old_generation_check_kind {

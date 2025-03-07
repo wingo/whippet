@@ -505,7 +505,15 @@ static void* allocate_large(struct gc_mutator *mut, size_t size) {
   return ret;
 }
 
-void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
+void* gc_allocate_slow(struct gc_mutator *mut, size_t size,
+                       enum gc_allocation_kind kind) {
+  if (GC_UNLIKELY(kind != GC_ALLOCATION_TAGGED
+                  && kind != GC_ALLOCATION_TAGGED_POINTERLESS)) {
+    fprintf(stderr, "semispace collector cannot make allocations of kind %d\n",
+            (int)kind);
+    GC_CRASH();
+  }
+
   if (size > gc_allocator_large_threshold())
     return allocate_large(mut, size);
 
@@ -522,16 +530,13 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
     return (void *)addr;
   }
 }
-void* gc_allocate_pointerless(struct gc_mutator *mut, size_t size) {
-  return gc_allocate(mut, size);
-}
 
 void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
   GC_CRASH();
 }
 
 struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {
-  return gc_allocate(mut, gc_ephemeron_size());
+  return gc_allocate(mut, gc_ephemeron_size(), GC_ALLOCATION_TAGGED);
 }
 
 void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
@@ -540,7 +545,7 @@ void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
 }
 
 struct gc_finalizer* gc_allocate_finalizer(struct gc_mutator *mut) {
-  return gc_allocate(mut, gc_finalizer_size());
+  return gc_allocate(mut, gc_finalizer_size(), GC_ALLOCATION_TAGGED);
 }
 
 void gc_finalizer_attach(struct gc_mutator *mut, struct gc_finalizer *finalizer,

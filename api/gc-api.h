@@ -2,6 +2,7 @@
 #define GC_API_H_
 
 #include "gc-config.h"
+#include "gc-allocation-kind.h"
 #include "gc-assert.h"
 #include "gc-attrs.h"
 #include "gc-collection-kind.h"
@@ -56,10 +57,10 @@ GC_API_ void* gc_call_without_gc(struct gc_mutator *mut, void* (*f)(void*),
 GC_API_ void gc_collect(struct gc_mutator *mut,
                         enum gc_collection_kind requested_kind);
 
-static inline void gc_update_alloc_table(struct gc_ref obj,
-                                         size_t size) GC_ALWAYS_INLINE;
-static inline void gc_update_alloc_table(struct gc_ref obj,
-                                         size_t size) {
+static inline void gc_update_alloc_table(struct gc_ref obj, size_t size,
+                                         enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
+static inline void gc_update_alloc_table(struct gc_ref obj, size_t size,
+                                         enum gc_allocation_kind kind) {
   size_t alignment = gc_allocator_alloc_table_alignment();
   if (!alignment) return;
 
@@ -69,7 +70,7 @@ static inline void gc_update_alloc_table(struct gc_ref obj,
   uintptr_t granule = (addr & (alignment - 1)) / granule_size;
   uint8_t *alloc = (uint8_t*)(base + granule);
 
-  uint8_t begin_pattern = gc_allocator_alloc_table_begin_pattern();
+  uint8_t begin_pattern = gc_allocator_alloc_table_begin_pattern(kind);
   uint8_t end_pattern = gc_allocator_alloc_table_end_pattern();
   if (end_pattern) {
     size_t granules = size / granule_size;
@@ -86,11 +87,15 @@ static inline void gc_update_alloc_table(struct gc_ref obj,
   }
 }
 
-GC_API_ void* gc_allocate_slow(struct gc_mutator *mut, size_t bytes) GC_NEVER_INLINE;
+GC_API_ void* gc_allocate_slow(struct gc_mutator *mut, size_t bytes,
+                               enum gc_allocation_kind kind) GC_NEVER_INLINE;
 
 static inline void*
-gc_allocate_small_fast_bump_pointer(struct gc_mutator *mut, size_t size) GC_ALWAYS_INLINE;
-static inline void* gc_allocate_small_fast_bump_pointer(struct gc_mutator *mut, size_t size) {
+gc_allocate_small_fast_bump_pointer(struct gc_mutator *mut, size_t size,
+                                    enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
+static inline void* gc_allocate_small_fast_bump_pointer(struct gc_mutator *mut,
+                                                        size_t size,
+                                                        enum gc_allocation_kind kind) {
   GC_ASSERT(size <= gc_allocator_large_threshold());
 
   size_t granule_size = gc_allocator_small_granule_size();
@@ -111,17 +116,20 @@ static inline void* gc_allocate_small_fast_bump_pointer(struct gc_mutator *mut, 
 
   *hp_loc = new_hp;
 
-  gc_update_alloc_table(gc_ref(hp), size);
+  gc_update_alloc_table(gc_ref(hp), size, kind);
 
   return (void*)hp;
 }
 
 static inline void* gc_allocate_small_fast_freelist(struct gc_mutator *mut,
-                                                    size_t size) GC_ALWAYS_INLINE;
-static inline void* gc_allocate_small_fast_freelist(struct gc_mutator *mut, size_t size) {
+                                                    size_t size,
+                                                    enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
+static inline void* gc_allocate_small_fast_freelist(struct gc_mutator *mut,
+                                                    size_t size,
+                                                    enum gc_allocation_kind kind) {
   GC_ASSERT(size <= gc_allocator_large_threshold());
 
-  size_t freelist_offset = gc_allocator_freelist_offset(size);
+  size_t freelist_offset = gc_allocator_freelist_offset(size, kind);
   uintptr_t base_addr = (uintptr_t)mut;
   void **freelist_loc = (void**)(base_addr + freelist_offset);
 
@@ -131,21 +139,23 @@ static inline void* gc_allocate_small_fast_freelist(struct gc_mutator *mut, size
 
   *freelist_loc = *(void**)head;
 
-  gc_update_alloc_table(gc_ref_from_heap_object(head), size);
+  gc_update_alloc_table(gc_ref_from_heap_object(head), size, kind);
 
   return head;
 }
 
-static inline void* gc_allocate_small_fast(struct gc_mutator *mut, size_t size) GC_ALWAYS_INLINE;
-static inline void* gc_allocate_small_fast(struct gc_mutator *mut, size_t size) {
+static inline void* gc_allocate_small_fast(struct gc_mutator *mut, size_t size,
+                                           enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
+static inline void* gc_allocate_small_fast(struct gc_mutator *mut, size_t size,
+                                           enum gc_allocation_kind kind) {
   GC_ASSERT(size != 0);
   GC_ASSERT(size <= gc_allocator_large_threshold());
 
   switch (gc_allocator_kind()) {
   case GC_ALLOCATOR_INLINE_BUMP_POINTER:
-    return gc_allocate_small_fast_bump_pointer(mut, size);
+    return gc_allocate_small_fast_bump_pointer(mut, size, kind);
   case GC_ALLOCATOR_INLINE_FREELIST:
-    return gc_allocate_small_fast_freelist(mut, size);
+    return gc_allocate_small_fast_freelist(mut, size, kind);
   case GC_ALLOCATOR_INLINE_NONE:
     return NULL;
   default:
@@ -153,26 +163,27 @@ static inline void* gc_allocate_small_fast(struct gc_mutator *mut, size_t size) 
   }
 }
 
-static inline void* gc_allocate_fast(struct gc_mutator *mut, size_t size) GC_ALWAYS_INLINE;
-static inline void* gc_allocate_fast(struct gc_mutator *mut, size_t size) {
+static inline void* gc_allocate_fast(struct gc_mutator *mut, size_t size,
+                                     enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
+static inline void* gc_allocate_fast(struct gc_mutator *mut, size_t size,
+                                     enum gc_allocation_kind kind) {
   GC_ASSERT(size != 0);
   if (size > gc_allocator_large_threshold())
     return NULL;
 
-  return gc_allocate_small_fast(mut, size);
+  return gc_allocate_small_fast(mut, size, kind);
 }
 
-static inline void* gc_allocate(struct gc_mutator *mut, size_t size) GC_ALWAYS_INLINE;
-static inline void* gc_allocate(struct gc_mutator *mut, size_t size) {
-  void *ret = gc_allocate_fast(mut, size);
+static inline void* gc_allocate(struct gc_mutator *mut, size_t size,
+                                          enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
+static inline void* gc_allocate(struct gc_mutator *mut, size_t size,
+                                          enum gc_allocation_kind kind) {
+  void *ret = gc_allocate_fast(mut, size, kind);
   if (GC_LIKELY(ret != NULL))
     return ret;
 
-  return gc_allocate_slow(mut, size);
+  return gc_allocate_slow(mut, size, kind);
 }
-
-// FIXME: remove :P
-GC_API_ void* gc_allocate_pointerless(struct gc_mutator *mut, size_t bytes);
 
 GC_API_ int gc_object_is_old_generation_slow(struct gc_mutator *mut,
                                              struct gc_ref obj) GC_NEVER_INLINE;

@@ -891,7 +891,15 @@ collect_for_small_allocation(void *mut) {
 }
 
 void*
-gc_allocate_slow(struct gc_mutator *mut, size_t size) {
+gc_allocate_slow(struct gc_mutator *mut, size_t size,
+                 enum gc_allocation_kind kind) {
+  if (GC_UNLIKELY(kind != GC_ALLOCATION_TAGGED
+                  && kind != GC_ALLOCATION_TAGGED_POINTERLESS)) {
+    fprintf(stderr, "mmc collector cannot make allocations of kind %d\n",
+            (int)kind);
+    GC_CRASH();
+  }
+
   GC_ASSERT(size > 0); // allocating 0 bytes would be silly
 
   if (size > gc_allocator_large_threshold())
@@ -900,12 +908,7 @@ gc_allocate_slow(struct gc_mutator *mut, size_t size) {
   return gc_ref_heap_object(nofl_allocate(&mut->allocator,
                                           heap_nofl_space(mutator_heap(mut)),
                                           size, collect_for_small_allocation,
-                                          mut));
-}
-
-void*
-gc_allocate_pointerless(struct gc_mutator *mut, size_t size) {
-  return gc_allocate(mut, size);
+                                          mut, kind));
 }
 
 void
@@ -952,7 +955,8 @@ gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
 struct gc_ephemeron*
 gc_allocate_ephemeron(struct gc_mutator *mut) {
   struct gc_ref ret =
-    gc_ref_from_heap_object(gc_allocate(mut, gc_ephemeron_size()));
+    gc_ref_from_heap_object(gc_allocate(mut, gc_ephemeron_size(),
+                                        GC_ALLOCATION_TAGGED));
   nofl_space_set_ephemeron_flag(ret);
   return gc_ref_heap_object(ret);
 }
@@ -977,7 +981,7 @@ gc_heap_ephemeron_trace_epoch(struct gc_heap *heap) {
 
 struct gc_finalizer*
 gc_allocate_finalizer(struct gc_mutator *mut) {
-  return gc_allocate(mut, gc_finalizer_size());
+  return gc_allocate(mut, gc_finalizer_size(), GC_ALLOCATION_TAGGED);
 }
 
 void

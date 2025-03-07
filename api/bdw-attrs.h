@@ -21,15 +21,29 @@ static inline size_t gc_allocator_allocation_limit_offset(void) {
   GC_CRASH();
 }
 
-static inline size_t gc_allocator_freelist_offset(size_t size) {
+static inline size_t gc_allocator_freelist_offset(size_t size,
+                                                  enum gc_allocation_kind kind) {
   GC_ASSERT(size);
-  return sizeof(void*) * ((size - 1) / gc_allocator_small_granule_size());
+  size_t base;
+  switch (kind) {
+    case GC_ALLOCATION_TAGGED:
+    case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
+      base = 0;
+      break;
+    case GC_ALLOCATION_UNTAGGED_POINTERLESS:
+    case GC_ALLOCATION_TAGGED_POINTERLESS:
+      base = (sizeof(void*) * gc_allocator_large_threshold() /
+              gc_allocator_small_granule_size());
+      break;
+  }
+  size_t bucket = (size - 1) / gc_allocator_small_granule_size();
+  return base + sizeof(void*) * bucket;
 }
 
 static inline size_t gc_allocator_alloc_table_alignment(void) {
   return 0;
 }
-static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) {
+static inline uint8_t gc_allocator_alloc_table_begin_pattern(enum gc_allocation_kind) {
   GC_CRASH();
 }
 static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
