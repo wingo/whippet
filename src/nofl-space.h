@@ -197,32 +197,42 @@ struct nofl_allocator {
 // Because we want to allow for conservative roots, we need to know
 // whether an address indicates an object or not.  That means that when
 // an object is allocated, it has to set a bit, somewhere.  We use the
-// metadata byte for this purpose, setting the "young" bit.
+// metadata byte for this purpose, setting the "young" mark.
 //
-// The "young" bit's name might make you think about generational
+// The "young" mark's name might make you think about generational
 // collection, and indeed all objects collected in a minor collection
 // will have this bit set.  However, the nofl space never needs to check
-// for the young bit; if it weren't for the need to identify
-// conservative roots, we wouldn't need a young bit at all.  Perhaps in
+// for the young mark; if it weren't for the need to identify
+// conservative roots, we wouldn't need a young mark at all.  Perhaps in
 // an all-precise system, we would be able to avoid the overhead of
 // initializing mark byte upon each fresh allocation.
 //
-// When an object becomes dead after a GC, it will still have a bit set
-// -- maybe the young bit, or maybe a survivor bit.  The sweeper has to
-// clear these bits before the next collection.  But if we add
+// When an object becomes dead after a GC, it will still have a mark set
+// -- maybe the young mark, or maybe a survivor mark.  The sweeper has
+// to clear these marks before the next collection.  If we add
 // concurrent marking, we will also be marking "live" objects, updating
-// their mark bits.  So there are four object states concurrently
-// observable:  young, dead, survivor, and marked.  (We don't currently
-// have concurrent marking, though.)  Even though these states are
-// mutually exclusive, we use separate bits for them because we have the
-// space.  After each collection, the dead, survivor, and marked states
-// rotate by one bit.
+// their mark bits.  So there are three and possibly four object states
+// concurrently observable:  young, dead, survivor, and marked.  (We
+// don't currently have concurrent marking, though.)  We store this
+// state in the low 3 bits of the byte.  After each major collection,
+// the dead, survivor, and marked states rotate.
+//
+// It can be useful to support "raw" allocations, most often
+// pointerless, but for compatibility with BDW-GC, sometimes
+// conservatively-traced tagless data.  We reserve one or two bits for
+// the "kind" of the allocation: either a normal object traceable via
+// `gc_trace_object`, a pointerless untagged allocation that doesn't
+// need tracing, an allocation that should be traced conservatively, or
+// an ephemeron.  The latter two states are only used when conservative
+// tracing is enabled.
 //
 // An object can be pinned, preventing it from being evacuated during
 // collection.  Pinning does not keep the object alive; if it is
 // otherwise unreachable, it will be collected.  To pin an object, a
 // running mutator can set the pinned bit, using atomic
-// compare-and-swap.
+// compare-and-swap.  This bit overlaps the "trace conservatively" and
+// "ephemeron" trace kinds, but that's OK because we don't use the
+// pinned bit in those cases, as all objects are implicitly pinned.
 //
 // For generational collectors, the nofl space supports a field-logging
 // write barrier.  The two logging bits correspond to the two words in a
@@ -230,12 +240,6 @@ struct nofl_allocator {
 // the logged bit; if it is unset, it should try to atomically set the
 // bit, and if that works, then we record the field location as a
 // generational root, adding it to a sequential-store buffer.
-//
-// Finally, for heap-conservative collectors, nofl generally traces all
-// objects in the same way, treating them as an array of conservative
-// edges.  But we need to know when we have an ephemeron.  In that case,
-// we re-use the pinned bit, because it's of no use to us anyway in that
-// configuration, as all objects are pinned.
 enum nofl_metadata_byte {
   NOFL_METADATA_BYTE_NONE = 0,
   NOFL_METADATA_BYTE_YOUNG = 1,
