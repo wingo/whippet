@@ -39,14 +39,11 @@ static inline uint8_t gc_old_generation_check_alloc_table_young_tag(void) GC_ALW
 
 enum gc_write_barrier_kind {
   GC_WRITE_BARRIER_NONE,
-  GC_WRITE_BARRIER_CARD,
   GC_WRITE_BARRIER_FIELD,
   GC_WRITE_BARRIER_SLOW
 };
 
 static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) GC_ALWAYS_INLINE;
-static inline size_t gc_write_barrier_card_table_alignment(void) GC_ALWAYS_INLINE;
-static inline size_t gc_write_barrier_card_size(void) GC_ALWAYS_INLINE;
 static inline size_t gc_write_barrier_field_table_alignment(void) GC_ALWAYS_INLINE;
 static inline ptrdiff_t gc_write_barrier_field_table_offset(void) GC_ALWAYS_INLINE;
 static inline size_t gc_write_barrier_field_fields_per_byte(void) GC_ALWAYS_INLINE;

@@ -49,12 +49,6 @@ static inline uint8_t gc_old_generation_check_alloc_table_young_tag(void) {
 static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t) {
   return GC_WRITE_BARRIER_NONE;
 }
-static inline size_t gc_write_barrier_card_table_alignment(void) {
-  GC_CRASH();
-}
-static inline size_t gc_write_barrier_card_size(void) {
-  GC_CRASH();
-}
 static inline size_t gc_write_barrier_field_table_alignment(void) {
   GC_CRASH();
 }

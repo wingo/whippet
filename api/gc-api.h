@@ -228,15 +228,6 @@ static inline int gc_write_barrier_fast(struct gc_mutator *mut, struct gc_ref ob
   switch (gc_write_barrier_kind(obj_size)) {
   case GC_WRITE_BARRIER_NONE:
     return 0;
-  case GC_WRITE_BARRIER_CARD: {
-    size_t card_table_alignment = gc_write_barrier_card_table_alignment();
-    size_t card_size = gc_write_barrier_card_size();
-    uintptr_t addr = gc_ref_value(obj);
-    uintptr_t base = addr & ~(card_table_alignment - 1);
-    uintptr_t card = (addr & (card_table_alignment - 1)) / card_size;
-    atomic_store_explicit((uint8_t*)(base + card), 1, memory_order_relaxed);
-    return 0;
-  }
   case GC_WRITE_BARRIER_FIELD: {
     if (!gc_object_is_old_generation(mut, obj, obj_size))
       return 0;

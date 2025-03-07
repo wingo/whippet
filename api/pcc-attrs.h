@@ -60,12 +60,6 @@ static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) 
     return GC_WRITE_BARRIER_FIELD;
   return GC_WRITE_BARRIER_SLOW;
 }
-static inline size_t gc_write_barrier_card_table_alignment(void) {
-  GC_CRASH();
-}
-static inline size_t gc_write_barrier_card_size(void) {
-  GC_CRASH();
-}
 static inline size_t gc_write_barrier_field_table_alignment(void) {
   GC_ASSERT(GC_GENERATIONAL);
   return 64 * 1024 * 1024;
