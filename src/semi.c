@@ -495,7 +495,7 @@ static void* allocate_large(struct gc_mutator *mut, size_t size) {
   while (!semi_space_steal_pages(semi_space, npages))
     collect_for_large_alloc(mut, npages);
 
-  void *ret = large_object_space_alloc(space, npages);
+  void *ret = large_object_space_alloc(space, npages, GC_TRACE_PRECISELY);
 
   if (!ret) {
     perror("weird: we have the space but mmap didn't work");

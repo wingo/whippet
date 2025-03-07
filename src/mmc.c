@@ -332,37 +332,41 @@ trace_conservative_edges(uintptr_t low, uintptr_t high, int possibly_interior,
                                   possibly_interior);
 }
 
-static inline void
-trace_one_conservatively(struct gc_ref ref, struct gc_heap *heap,
-                         struct gc_trace_worker *worker) {
-  size_t bytes;
+static inline struct gc_trace_plan
+trace_plan(struct gc_heap *heap, struct gc_ref ref) {
   if (GC_LIKELY(nofl_space_contains(heap_nofl_space(heap), ref))) {
-    // Generally speaking we trace conservatively and don't allow much
-    // in the way of incremental precise marking on a
-    // conservative-by-default heap.  But, we make an exception for
-    // ephemerons.
-    if (GC_UNLIKELY(nofl_is_ephemeron(ref))) {
-      gc_trace_ephemeron(gc_ref_heap_object(ref), tracer_visit, heap,
-                         worker);
-      return;
-    }
-    bytes = nofl_space_object_size(heap_nofl_space(heap), ref);
+    return nofl_space_object_trace_plan(heap_nofl_space(heap), ref);
   } else {
-    bytes = large_object_space_object_size(heap_large_object_space(heap), ref);
+    return large_object_space_object_trace_plan(heap_large_object_space(heap),
+                                                ref);
   }
-  // Intraheap edges are not interior.
-  int possibly_interior = 0;
-  trace_conservative_edges(gc_ref_value(ref), gc_ref_value(ref) + bytes,
-                           possibly_interior, heap, worker);
 }
 
 static inline void
 trace_one(struct gc_ref ref, struct gc_heap *heap,
           struct gc_trace_worker *worker) {
-  if (gc_has_conservative_intraheap_edges())
-    trace_one_conservatively(ref, heap, worker);
-  else
-    gc_trace_object(ref, tracer_visit, heap, worker, NULL);
+  struct gc_trace_plan plan = trace_plan(heap, ref);
+  switch (plan.kind) {
+    case GC_TRACE_PRECISELY:
+      gc_trace_object(ref, tracer_visit, heap, worker, NULL);
+      break;
+    case GC_TRACE_NONE:
+      break;
+    case GC_TRACE_CONSERVATIVELY: {
+      // Intraheap edges are not interior.
+      uintptr_t addr = gc_ref_value(ref);
+      int possibly_interior = 0;
+      trace_conservative_edges(addr, addr + plan.size, possibly_interior,
+                               heap, worker);
+      break;
+    }
+    case GC_TRACE_EPHEMERON:
+      gc_trace_ephemeron(gc_ref_heap_object(ref), tracer_visit, heap,
+                         worker);
+      break;
+    default:
+      GC_CRASH();
+  }
 }
 
 static inline void
@@ -860,8 +864,36 @@ gc_safepoint_slow(struct gc_mutator *mut) {
   heap_unlock(heap);
 }
 
+static enum gc_trace_kind
+compute_trace_kind(enum gc_allocation_kind kind) {
+  if (GC_CONSERVATIVE_TRACE) {
+    switch (kind) {
+      case GC_ALLOCATION_TAGGED:
+      case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
+        return GC_TRACE_CONSERVATIVELY;
+      case GC_ALLOCATION_TAGGED_POINTERLESS:
+      case GC_ALLOCATION_UNTAGGED_POINTERLESS:
+        return GC_TRACE_NONE;
+      default:
+        GC_CRASH();
+      };
+  } else {
+    switch (kind) {
+      case GC_ALLOCATION_TAGGED:
+        return GC_TRACE_PRECISELY;
+      case GC_ALLOCATION_TAGGED_POINTERLESS:
+      case GC_ALLOCATION_UNTAGGED_POINTERLESS:
+        return GC_TRACE_NONE;
+      case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
+      default:
+        GC_CRASH();
+    };
+  }
+}
+
 static void*
-allocate_large(struct gc_mutator *mut, size_t size) {
+allocate_large(struct gc_mutator *mut, size_t size,
+               enum gc_trace_kind kind) {
   struct gc_heap *heap = mutator_heap(mut);
   struct nofl_space *nofl_space = heap_nofl_space(heap);
   struct large_object_space *lospace = heap_large_object_space(heap);
@@ -875,7 +907,7 @@ allocate_large(struct gc_mutator *mut, size_t size) {
     trigger_collection(mut, GC_COLLECTION_COMPACTING, 0);
   atomic_fetch_add(&heap->large_object_pages, npages);
 
-  void *ret = large_object_space_alloc(lospace, npages);
+  void *ret = large_object_space_alloc(lospace, npages, kind);
 
   if (!ret) {
     perror("weird: we have the space but mmap didn't work");
@@ -893,17 +925,10 @@ collect_for_small_allocation(void *mut) {
 void*
 gc_allocate_slow(struct gc_mutator *mut, size_t size,
                  enum gc_allocation_kind kind) {
-  if (GC_UNLIKELY(kind != GC_ALLOCATION_TAGGED
-                  && kind != GC_ALLOCATION_TAGGED_POINTERLESS)) {
-    fprintf(stderr, "mmc collector cannot make allocations of kind %d\n",
-            (int)kind);
-    GC_CRASH();
-  }
-
   GC_ASSERT(size > 0); // allocating 0 bytes would be silly
 
   if (size > gc_allocator_large_threshold())
-    return allocate_large(mut, size);
+    return allocate_large(mut, size, compute_trace_kind(kind));
 
   return gc_ref_heap_object(nofl_allocate(&mut->allocator,
                                           heap_nofl_space(mutator_heap(mut)),
@@ -1121,7 +1146,20 @@ gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   GC_ASSERT_EQ(gc_allocator_allocation_limit_offset(),
                offsetof(struct nofl_allocator, sweep));
   GC_ASSERT_EQ(gc_allocator_alloc_table_alignment(), NOFL_SLAB_SIZE);
-  GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(), NOFL_METADATA_BYTE_YOUNG);
+  GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_TAGGED),
+               NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_PRECISELY);
+  GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_TAGGED_POINTERLESS),
+               NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_NONE);
+  if (GC_CONSERVATIVE_TRACE) {
+    GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_UNTAGGED_CONSERVATIVE),
+                 NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_CONSERVATIVELY);
+    GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_UNTAGGED_POINTERLESS),
+                 NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_NONE);
+  } else {
+    GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_UNTAGGED_POINTERLESS),
+                 NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_NONE |
+                 NOFL_METADATA_BYTE_PINNED);
+  }
   GC_ASSERT_EQ(gc_allocator_alloc_table_end_pattern(), NOFL_METADATA_BYTE_END);
   if (GC_GENERATIONAL) {
     GC_ASSERT_EQ(gc_write_barrier_field_table_alignment(), NOFL_SLAB_SIZE);

@@ -964,7 +964,7 @@ static void* allocate_large(struct gc_mutator *mut, size_t size) {
     trigger_collection(mut, GC_COLLECTION_COMPACTING);
   atomic_fetch_add(&heap->large_object_pages, npages);
 
-  void *ret = large_object_space_alloc(space, npages);
+  void *ret = large_object_space_alloc(space, npages, GC_TRACE_PRECISELY);
 
   if (!ret) {
     perror("weird: we have the space but mmap didn't work");

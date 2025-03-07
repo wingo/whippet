@@ -28,6 +28,18 @@ static inline int gc_has_conservative_roots(void) {
     gc_has_global_conservative_roots();
 }
 
+enum gc_trace_kind {
+  GC_TRACE_PRECISELY,
+  GC_TRACE_NONE,
+  GC_TRACE_CONSERVATIVELY,
+  GC_TRACE_EPHEMERON,
+};
+
+struct gc_trace_plan {
+  enum gc_trace_kind kind;
+  size_t size; // For conservative tracing.
+};
+
 static inline int
 gc_conservative_ref_might_be_a_heap_object(struct gc_conservative_ref ref,
                                            int possibly_interior) {

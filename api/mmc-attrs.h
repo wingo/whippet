@@ -31,10 +31,39 @@ static inline size_t gc_allocator_alloc_table_alignment(void) {
   return 4 * 1024 * 1024;
 }
 static inline uint8_t gc_allocator_alloc_table_begin_pattern(enum gc_allocation_kind kind) {
-  return 1;
+  uint8_t young = 1;
+  uint8_t trace_precisely = 0;
+  uint8_t trace_none = 8;
+  uint8_t trace_conservatively = 16;
+  uint8_t pinned = 16;
+  if (GC_CONSERVATIVE_TRACE) {
+    switch (kind) {
+      case GC_ALLOCATION_TAGGED:
+      case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
+        return young | trace_conservatively;
+      case GC_ALLOCATION_TAGGED_POINTERLESS:
+        return young | trace_none;
+      case GC_ALLOCATION_UNTAGGED_POINTERLESS:
+        return young | trace_none;
+      default:
+        GC_CRASH();
+      };
+  } else {
+    switch (kind) {
+      case GC_ALLOCATION_TAGGED:
+        return young | trace_precisely;
+      case GC_ALLOCATION_TAGGED_POINTERLESS:
+        return young | trace_none;
+      case GC_ALLOCATION_UNTAGGED_POINTERLESS:
+        return young | trace_none | pinned;
+      case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
+      default:
+        GC_CRASH();
+    };
+  }
 }
 static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
-  return 16;
+  return 32;
 }
 
 static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(size_t obj_size) {

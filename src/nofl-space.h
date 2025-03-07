@@ -183,6 +183,11 @@ struct nofl_allocator {
   struct nofl_block_ref block;
 };
 
+#if GC_CONSERVATIVE_TRACE && GC_CONCURRENT_TRACE
+// There are just not enough bits in the mark table.
+#error Unsupported configuration
+#endif
+
 // Each granule has one mark byte stored in a side table.  A granule's
 // mark state is a whole byte instead of a bit to facilitate parallel
 // marking.  (Parallel markers are allowed to race.)  We also use this
@@ -236,21 +241,23 @@ enum nofl_metadata_byte {
   NOFL_METADATA_BYTE_YOUNG = 1,
   NOFL_METADATA_BYTE_MARK_0 = 2,
   NOFL_METADATA_BYTE_MARK_1 = 3,
-#if GC_CONCURRENT_TRACE
   NOFL_METADATA_BYTE_MARK_2 = 4,
   NOFL_METADATA_BYTE_MARK_MASK = 7,
-  /* NOFL_METADATA_BYTE_UNUSED_0 = 8, */
-#else
-  NOFL_METADATA_BYTE_MARK_MASK = 3,
-  /* NOFL_METADATA_BYTE_UNUSED_0 = 4, */
-  /* NOFL_METADATA_BYTE_UNUSED_1 = 8, */
-#endif
-  NOFL_METADATA_BYTE_END = 16,
-  NOFL_METADATA_BYTE_PINNED = 32,
+  NOFL_METADATA_BYTE_TRACE_PRECISELY = 0,
+  NOFL_METADATA_BYTE_TRACE_NONE = 8,
+  NOFL_METADATA_BYTE_TRACE_CONSERVATIVELY = 16,
+  NOFL_METADATA_BYTE_TRACE_EPHEMERON = 24,
+  NOFL_METADATA_BYTE_TRACE_KIND_MASK = 0|8|16|24,
+  NOFL_METADATA_BYTE_PINNED = 16,
+  NOFL_METADATA_BYTE_END = 32,
   NOFL_METADATA_BYTE_LOGGED_0 = 64,
   NOFL_METADATA_BYTE_LOGGED_1 = 128,
-  NOFL_METADATA_BYTE_EPHEMERON = NOFL_METADATA_BYTE_PINNED,
 };
+
+STATIC_ASSERT_EQ(0,
+                 NOFL_METADATA_BYTE_TRACE_PRECISELY&NOFL_METADATA_BYTE_PINNED);
+STATIC_ASSERT_EQ(0,
+                 NOFL_METADATA_BYTE_TRACE_NONE&NOFL_METADATA_BYTE_PINNED);
 
 static uint8_t
 nofl_advance_current_mark(uint8_t mark) {
@@ -258,10 +265,8 @@ nofl_advance_current_mark(uint8_t mark) {
     case NOFL_METADATA_BYTE_MARK_0:
       return NOFL_METADATA_BYTE_MARK_1;
     case NOFL_METADATA_BYTE_MARK_1:
-#if GC_CONCURRENT_TRACE
       return NOFL_METADATA_BYTE_MARK_2;
     case NOFL_METADATA_BYTE_MARK_2:
-#endif
       return NOFL_METADATA_BYTE_MARK_0;
     default:
       GC_CRASH();
@@ -925,14 +930,16 @@ nofl_finish_sweeping(struct nofl_allocator *alloc,
 static inline int
 nofl_is_ephemeron(struct gc_ref ref) {
   uint8_t meta = *nofl_metadata_byte_for_addr(gc_ref_value(ref));
-  return meta & NOFL_METADATA_BYTE_EPHEMERON;
+  uint8_t kind = meta & NOFL_METADATA_BYTE_TRACE_KIND_MASK;
+  return kind == NOFL_METADATA_BYTE_TRACE_EPHEMERON;
 }
 
 static void
 nofl_space_set_ephemeron_flag(struct gc_ref ref) {
   if (gc_has_conservative_intraheap_edges()) {
     uint8_t *metadata = nofl_metadata_byte_for_addr(gc_ref_value(ref));
-    *metadata |= NOFL_METADATA_BYTE_EPHEMERON;
+    uint8_t byte = *metadata & ~NOFL_METADATA_BYTE_TRACE_KIND_MASK;
+    *metadata = byte | NOFL_METADATA_BYTE_TRACE_EPHEMERON;
   }
 }
 
@@ -1465,8 +1472,8 @@ nofl_space_set_nonempty_mark(struct nofl_space *space, uint8_t *metadata,
 
 static inline void
 nofl_space_pin_object(struct nofl_space *space, struct gc_ref ref) {
-  // For the heap-conservative configuration, all objects are pinned,
-  // and we re-use the pinned bit to identify ephemerons.
+  // For the heap-conservative configuration, all objects are pinned, and we use
+  // the pinned bit instead to identify an object's trace kind.
   if (gc_has_conservative_intraheap_edges())
     return;
   uint8_t *metadata = nofl_metadata_byte_for_object(ref);
@@ -1719,6 +1726,46 @@ nofl_space_object_size(struct nofl_space *space, struct gc_ref ref) {
   uint8_t *loc = nofl_metadata_byte_for_object(ref);
   size_t granules = nofl_space_live_object_granules(loc);
   return granules * NOFL_GRANULE_SIZE;
+}
+
+static inline enum gc_trace_kind
+nofl_metadata_byte_trace_kind(uint8_t byte)
+{
+  switch (byte & NOFL_METADATA_BYTE_TRACE_KIND_MASK) {
+  case NOFL_METADATA_BYTE_TRACE_PRECISELY:
+    return GC_TRACE_PRECISELY;
+  case NOFL_METADATA_BYTE_TRACE_NONE:
+    return GC_TRACE_NONE;
+#if GC_CONSERVATIVE_TRACE
+  case NOFL_METADATA_BYTE_TRACE_CONSERVATIVELY:
+    return GC_TRACE_CONSERVATIVELY;
+  case NOFL_METADATA_BYTE_TRACE_EPHEMERON:
+    return GC_TRACE_EPHEMERON;
+#endif
+    default:
+      GC_CRASH();
+  }
+}
+static inline struct gc_trace_plan
+nofl_space_object_trace_plan(struct nofl_space *space, struct gc_ref ref) {
+  uint8_t *loc = nofl_metadata_byte_for_object(ref);
+  uint8_t byte = atomic_load_explicit(loc, memory_order_relaxed);
+  enum gc_trace_kind kind = nofl_metadata_byte_trace_kind(byte);
+  switch (kind) {
+    case GC_TRACE_PRECISELY:
+    case GC_TRACE_NONE:
+      return (struct gc_trace_plan){ kind, };
+#if GC_CONSERVATIVE_TRACE
+    case GC_TRACE_CONSERVATIVELY: {
+      size_t granules = nofl_space_live_object_granules(loc);
+      return (struct gc_trace_plan){ kind, granules * NOFL_GRANULE_SIZE };
+    }
+    case GC_TRACE_EPHEMERON:
+      return (struct gc_trace_plan){ kind, };
+#endif
+    default:
+      GC_CRASH();
+  }
 }
 
 static struct nofl_slab*
