@@ -25,8 +25,6 @@ static inline size_t gc_allocator_alloc_table_alignment(void) GC_ALWAYS_INLINE;
 static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) GC_ALWAYS_INLINE;
 static inline uint8_t gc_allocator_alloc_table_end_pattern(void) GC_ALWAYS_INLINE;
 
-static inline int gc_allocator_needs_clear(void) GC_ALWAYS_INLINE;
-
 enum gc_old_generation_check_kind {
   GC_OLD_GENERATION_CHECK_NONE,
   GC_OLD_GENERATION_CHECK_ALLOC_TABLE,

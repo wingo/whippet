@@ -437,6 +437,7 @@ static void collect(struct gc_mutator *mut, size_t for_alloc) {
   gc_heap_sizer_on_gc(heap->sizer, heap->size, live_size, pause_ns,
                       resize_heap);
   reset_heap_limits(heap);  
+  clear_memory(semi->hp, semi->limit - semi->hp);
 
   HEAP_EVENT(heap, restarting_mutators);
   // fprintf(stderr, "%zd bytes copied\n", (space->size>>1)-(space->limit-space->hp));
@@ -520,8 +521,6 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
       continue;
     }
     space->hp = new_hp;
-    // FIXME: Allow allocator to avoid clearing memory?
-    clear_memory(addr, size);
     return (void *)addr;
   }
 }

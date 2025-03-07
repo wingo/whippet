@@ -36,10 +36,6 @@ static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
   GC_CRASH();
 }
 
-static inline int gc_allocator_needs_clear(void) {
-  return 0;
-}
-
 static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(size_t) {
   return GC_OLD_GENERATION_CHECK_NONE;
 }

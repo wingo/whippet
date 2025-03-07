@@ -36,10 +36,6 @@ static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
   return 16;
 }
 
-static inline int gc_allocator_needs_clear(void) {
-  return 0;
-}
-
 static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(size_t obj_size) {
   if (GC_GENERATIONAL) {
     if (obj_size <= gc_allocator_large_threshold())

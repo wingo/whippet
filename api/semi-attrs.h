@@ -28,10 +28,6 @@ static inline size_t gc_allocator_freelist_offset(size_t size) {
   GC_CRASH();
 }
 
-static inline int gc_allocator_needs_clear(void) {
-  return 1;
-}
-
 static inline size_t gc_allocator_alloc_table_alignment(void) {
   return 0;
 }

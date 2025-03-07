@@ -997,7 +997,6 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
       break;
   }
 
-  gc_clear_fresh_allocation(ret, size);
   return gc_ref_heap_object(ret);
 }
 
