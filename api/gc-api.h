@@ -31,6 +31,8 @@ GC_API_ int gc_init(const struct gc_options *options,
                     struct gc_event_listener event_listener,
                     void *event_listener_data);
 
+GC_API_ uint64_t gc_allocation_counter(struct gc_heap *heap);
+
 GC_API_ struct gc_heap* gc_mutator_heap(struct gc_mutator *mut);
 
 GC_API_ uintptr_t gc_small_object_nursery_low_address(struct gc_heap *heap);

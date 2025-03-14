@@ -1080,12 +1080,25 @@ gc_options_parse_and_set(struct gc_options *options, int option,
   return gc_common_options_parse_and_set(&options->common, option, value);
 }
 
-static uint64_t allocation_counter_from_thread(struct gc_heap *heap) {
+// with heap lock
+static uint64_t allocation_counter(struct gc_heap *heap) {
   uint64_t ret = heap->total_allocated_bytes_at_last_gc;
-  if (pthread_mutex_trylock(&heap->lock)) return ret;
   nofl_space_add_to_allocation_counter(heap_nofl_space(heap), &ret);
   large_object_space_add_to_allocation_counter(heap_large_object_space(heap),
                                                &ret);
+  return ret;
+}
+
+uint64_t gc_allocation_counter(struct gc_heap *heap) {
+  pthread_mutex_lock(&heap->lock);
+  uint64_t ret = allocation_counter(heap);
+  pthread_mutex_unlock(&heap->lock);
+  return ret;
+}
+
+static uint64_t allocation_counter_from_thread(struct gc_heap *heap) {
+  if (pthread_mutex_trylock(&heap->lock)) return 0;
+  uint64_t ret = allocation_counter(heap);
   pthread_mutex_unlock(&heap->lock);
   return ret;
 }

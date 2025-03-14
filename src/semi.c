@@ -618,6 +618,10 @@ static uint64_t get_allocation_counter(struct gc_heap *heap) {
   return heap->total_allocated_bytes_at_last_gc;
 }
 
+uint64_t gc_allocation_counter(struct gc_heap *heap) {
+  return get_allocation_counter(heap);
+}
+
 static void ignore_async_heap_size_adjustment(struct gc_heap *heap,
                                               size_t size) {
 }

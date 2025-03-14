@@ -109,17 +109,20 @@ gc_adaptive_heap_sizer_background_task(void *data) {
   gc_adaptive_heap_sizer_lock(sizer);
   uint64_t bytes_allocated =
     sizer->get_allocation_counter(sizer->heap);
-  uint64_t heartbeat = gc_platform_monotonic_nanoseconds();
-  double rate = (double) (bytes_allocated - sizer->last_bytes_allocated) /
-    (double) (heartbeat - sizer->last_heartbeat);
-  // Just smooth the rate, under the assumption that the denominator is almost
-  // always 1.
-  sizer->smoothed_allocation_rate *= 1.0 - sizer->allocation_smoothing_factor;
-  sizer->smoothed_allocation_rate += rate * sizer->allocation_smoothing_factor;
-  sizer->last_heartbeat = heartbeat;
-  sizer->last_bytes_allocated = bytes_allocated;
-  sizer->set_heap_size(sizer->heap,
-                       gc_adaptive_heap_sizer_calculate_size(sizer));
+  // bytes_allocated being 0 means the request failed; retry later.
+  if (bytes_allocated) {
+    uint64_t heartbeat = gc_platform_monotonic_nanoseconds();
+    double rate = (double) (bytes_allocated - sizer->last_bytes_allocated) /
+      (double) (heartbeat - sizer->last_heartbeat);
+    // Just smooth the rate, under the assumption that the denominator is almost
+    // always 1.
+    sizer->smoothed_allocation_rate *= 1.0 - sizer->allocation_smoothing_factor;
+    sizer->smoothed_allocation_rate += rate * sizer->allocation_smoothing_factor;
+    sizer->last_heartbeat = heartbeat;
+    sizer->last_bytes_allocated = bytes_allocated;
+    sizer->set_heap_size(sizer->heap,
+                         gc_adaptive_heap_sizer_calculate_size(sizer));
+  }
   gc_adaptive_heap_sizer_unlock(sizer);
 }
 

@@ -505,6 +505,10 @@ static void on_heap_resize(GC_word size) {
   HEAP_EVENT(heap_resized, size);
 }
 
+uint64_t gc_allocation_counter(struct gc_heap *heap) {
+  return GC_get_total_bytes();
+}
+
 int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
             struct gc_heap **heap, struct gc_mutator **mutator,
             struct gc_event_listener event_listener,
