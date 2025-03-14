@@ -581,7 +581,7 @@ copy_space_can_allocate(struct copy_space *space, size_t bytes) {
 
 static void
 copy_space_add_to_allocation_counter(struct copy_space *space,
-                                     uintptr_t *counter) {
+                                     uint64_t *counter) {
   *counter += space->allocated_bytes - space->allocated_bytes_at_last_gc;
 }
 
