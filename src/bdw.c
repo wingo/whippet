@@ -399,6 +399,13 @@ mark_mutator(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
                                              state.mark_stack_limit,
                                              NULL);
 
+  for (int i = 0; i < GC_INLINE_FREELIST_COUNT; i++)
+    for (void *head = mut->pointerless_freelists[i]; head; head = *(void**)head)
+      state.mark_stack_ptr = GC_MARK_AND_PUSH (head,
+                                               state.mark_stack_ptr,
+                                               state.mark_stack_limit,
+                                               NULL);
+
   if (mut->roots)
     gc_trace_mutator_roots(mut->roots, bdw_mark_edge, mut->heap, &state);
 
