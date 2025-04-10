@@ -327,7 +327,6 @@ static void *join_thread(void *data) {
 }
 
 int main(int argc, char *argv[]) {
-  size_t sizeof_double_array = sizeof(size_t);
   size_t heap_max_live =
     tree_size(long_lived_tree_depth) * sizeof(Node) +
     tree_size(max_tree_depth) * sizeof(Node) +
