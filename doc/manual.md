@@ -201,8 +201,10 @@ compiling user code.
 ### Compiling the collector
 
 As an embed-only library, Whippet needs to be integrated into the build
-system of its host (embedder).  Currently the only supported build
-system uses GNU make.  We would be happy to add other systems over time.
+system of its host (embedder).  There are two build systems supported
+currently; we would be happy to add other systems over time.
+
+#### GNU make
 
 At a high level, first the embedder chooses a collector and defines how
 to specialize the collector against the embedder.  Whippet's `embed.mk`
@@ -252,6 +254,71 @@ files, users should also compile with link-time optimization (LTO) to
 remove any overhead imposed by the division of code into separate
 compilation units.  `embed.mk` includes the necessary LTO flags in
 `GC_CFLAGS` and `GC_LDFLAGS`.
+
+#### GNU Autotools
+
+To use Whippet from an autotools project, the basic idea is to include a
+`Makefile.am` snippet from the subdirectory containing the Whippet
+checkout.  That will build `libwhippet.la`, which you should link into
+your binary.  There are some `m4` autoconf macros that need to be
+invoked, for example to select the collector.
+
+Let us imagine you have checked out Whippet in `whippet/`.  Let us also
+assume for the moment that we are going to build `mt-gcbench`, a program
+included in Whippet itself.
+
+A top-level autoconf file (`configure.ac`) might look like this:
+
+```autoconf
+AC_PREREQ([2.69])
+AC_INIT([whippet-autotools-example],[0.1.0])
+AC_CONFIG_SRCDIR([whippet/benchmarks/mt-gcbench.c])
+AC_CONFIG_AUX_DIR([build-aux])
+AC_CONFIG_MACRO_DIRS([m4 whippet])
+AM_INIT_AUTOMAKE([subdir-objects foreign])
+
+WHIPPET_ENABLE_LTO
+
+LT_INIT
+
+WARN_CFLAGS=-Wall
+AC_ARG_ENABLE([Werror],
+  AS_HELP_STRING([--disable-Werror],
+                 [Don't stop the build on errors]),
+  [],
+  WARN_CFLAGS="-Wall -Werror")
+CFLAGS="$CFLAGS $WARN_CFLAGS"
+
+WHIPPET_PKG
+
+AC_CONFIG_FILES(Makefile)
+AC_OUTPUT
+```
+
+Then your `Makefile.am` might look like this:
+
+```automake
+noinst_LTLIBRARIES =
+WHIPPET_EMBEDDER_CPPFLAGS = -include whippet/benchmarks/mt-gcbench-embedder.h
+include whippet/embed.am
+
+noinst_PROGRAMS = whippet/benchmarks/mt-gcbench
+
+AM_CFLAGS = $(WHIPPET_CPPFLAGS) $(WHIPPET_CFLAGS) $(WHIPPET_TO_EMBEDDER_CPPFLAGS)
+LDADD = libwhippet.la
+```
+
+To actually build, you do the usual autotools dance:
+
+```bash
+autoreconf -vif && ./configure && make
+```
+
+See `./configure --help` for a list of user-facing options.  Before the
+`WHIPPET_PKG`, you can run e.g. `WHIPPET_PKG_COLLECTOR(mmc)` to set the
+default collector to `mmc`; if you don't do that, the default collector
+is `pcc`.  There are also `WHIPPET_PKG_DEBUG`, `WHIPPET_PKG_TRACING`,
+and `WHIPPET_PKG_PLATFORM`; see `whippet.m4` for more details.
 
 #### Compile-time options
 
