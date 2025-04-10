@@ -77,15 +77,12 @@ libwhippet_la_SOURCES = \
   %D%/src/gc-lock.h \
   %D%/src/gc-platform.h \
   %D%/src/gc-trace.h \
-  %D%/src/generational-roots.h \
   %D%/src/growable-heap-sizer.h \
   %D%/src/heap-sizer.h \
   %D%/src/large-object-space.h \
   %D%/src/local-worklist.h \
   %D%/src/nofl-space.h \
-  %D%/src/nursery.h \
   %D%/src/parallel-tracer.h \
-  %D%/src/remembered-edges.h \
   %D%/src/root.h \
   %D%/src/root-worklist.h \
   %D%/src/serial-tracer.h \
@@ -128,7 +125,7 @@ WHIPPET_CFLAGS_heap_conservative_parallel_generational_mmc = \
 WHIPPET_CFLAGS      = $(WHIPPET_CFLAGS_$(subst -,_,$(WHIPPET_COLLECTOR)))
 WHIPPET_IMPL_CFLAGS =
 WHIPPET_LIBS        = -lm
-WHIPPET_CPPFLAGS    = -I%D%/api
+WHIPPET_CPPFLAGS    = -I$(srcdir)/%D%/api
 WHIPPET_TO_EMBEDDER_CPPFLAGS = $(WHIPPET_CPPFLAGS)
 
 if WHIPPET_ENABLE_DEBUG
@@ -137,24 +134,24 @@ endif
 
 if WHIPPET_COLLECTOR_SEMI
 libwhippet_la_SOURCES += %D%/src/semi.c
-WHIPPET_TO_EMBEDDER_CPPFLAGS += -include %D%/api/semi-attrs.h
+WHIPPET_TO_EMBEDDER_CPPFLAGS += -include $(srcdir)/%D%/api/semi-attrs.h
 endif
 
 if WHIPPET_COLLECTOR_PCC
 libwhippet_la_SOURCES += %D%/src/pcc.c
-WHIPPET_TO_EMBEDDER_CPPFLAGS += -include %D%/api/pcc-attrs.h
+WHIPPET_TO_EMBEDDER_CPPFLAGS += -include $(srcdir)/%D%/api/pcc-attrs.h
 endif
 
 if WHIPPET_COLLECTOR_BDW
 libwhippet_la_SOURCES += %D%/src/bdw.c
 WHIPPET_IMPL_CFLAGS   += $(WHIPPET_BDW_CFLAGS)
 WHIPPET_LIBS          += $(WHIPPET_BDW_LIBS)
-WHIPPET_TO_EMBEDDER_CPPFLAGS += -include %D%/api/bdw-attrs.h
+WHIPPET_TO_EMBEDDER_CPPFLAGS += -include $(srcdir)/%D%/api/bdw-attrs.h
 endif
 
 if WHIPPET_COLLECTOR_MMC
 libwhippet_la_SOURCES += %D%/src/mmc.c
-WHIPPET_TO_EMBEDDER_CPPFLAGS += -include %D%/api/mmc-attrs.h
+WHIPPET_TO_EMBEDDER_CPPFLAGS += -include $(srcdir)/%D%/api/mmc-attrs.h
 endif
 
 # add to cflags: -flto -fvisibility=hidden -fno-strict-aliasing
