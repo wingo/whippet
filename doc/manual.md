@@ -304,14 +304,15 @@ include whippet/embed.am
 
 noinst_PROGRAMS = whippet/benchmarks/mt-gcbench
 whippet_benchmarks_mt_gcbench_SOURCES = \
-  whippet/benchmarks/mt-gcbench.c \
+  whippet/benchmarks/heap-objects.h \
+  whippet/benchmarks/mt-gcbench-embedder.h \
   whippet/benchmarks/mt-gcbench-types.h \
-  whippet/benchmarks/simple-tagging-scheme.h \
+  whippet/benchmarks/mt-gcbench.c \
+  whippet/benchmarks/simple-allocator.h \
+  whippet/benchmarks/simple-gc-embedder.h \
   whippet/benchmarks/simple-roots-api.h \
   whippet/benchmarks/simple-roots-types.h \
-  whippet/benchmarks/simple-allocator.h \
-  whippet/benchmarks/heap-objects.h \
-  whippet/benchmarks/mt-gcbench-embedder.h
+  whippet/benchmarks/simple-tagging-scheme.h
 
 AM_CFLAGS = $(WHIPPET_CPPFLAGS) $(WHIPPET_CFLAGS) $(WHIPPET_TO_EMBEDDER_CPPFLAGS)
 LDADD = libwhippet.la
@@ -330,7 +331,10 @@ See `./configure --help` for a list of user-facing options.  Before the
 `WHIPPET_PKG`, you can run e.g. `WHIPPET_PKG_COLLECTOR(mmc)` to set the
 default collector to `mmc`; if you don't do that, the default collector
 is `pcc`.  There are also `WHIPPET_PKG_DEBUG`, `WHIPPET_PKG_TRACING`,
-and `WHIPPET_PKG_PLATFORM`; see `whippet.m4` for more details.
+and `WHIPPET_PKG_PLATFORM`; see [`whippet.m4`](../whippet.m4) for more
+details.  See also
+[`whippet-autotools`](https://github.com/wingo/whippet-autotools) for an
+example of how this works.
 
 #### Compile-time options
 
