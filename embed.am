@@ -1,0 +1,210 @@
+# Automake snippet for embedding Whippet in an autotools project.
+#
+# The including Makefile.am needs to do this, assuming Whippet is in the
+# whippet/ subdirectory:
+#  
+#     noinst_LTLIBRARIES =
+#     WHIPPET_EMBEDDER_CPPFLAGS = -include src/my-embedder.h
+#     include whippet/embed.am
+#
+# my-embedder.h should provide the various hooks that Whippet needs to
+# specialize itself to the embedder's object representation.
+#
+# The result is a libwhippet.la.  To compile and link against it:
+#
+#     AM_CFLAGS = $(WHIPPET_CPPFLAGS) $(WHIPPET_CFLAGS) $(WHIPPET_TO_EMBEDDER_CPPFLAGS)
+#     LDADD = libwhippet.la
+#     AM_LDFLAGS = $(WHIPPET_TO_EMBEDDER_LDFLAGS)
+#
+# The assumption is that the embedder will build a single copy of
+# Whippet, specialized against a single collector, a single set of
+# embedder hooks, and a single target platform.  The collector and
+# platform should be chosen at configure-time.  Because Automake really
+# wants the set of source files to be visible to it at automake-time, we
+# need to implement these conditions via AM_CONDITIONAL in a
+# configure.ac.  For example for a parallel-mmc configuration on
+# gnu-linux, we would need:
+#
+#     AM_SUBST(WHIPPET_COLLECTOR, parallel-mmc)
+#     AM_CONDITIONAL(WHIPPET_COLLECTOR_SEMI, 0)
+#     AM_CONDITIONAL(WHIPPET_COLLECTOR_PCC, 0)
+#     AM_CONDITIONAL(WHIPPET_COLLECTOR_BDW, 0)
+#     AM_CONDITIONAL(WHIPPET_COLLECTOR_MMC, 1)
+#     AM_CONDITIONAL(WHIPPET_PLATFORM_GNU_LINUX, 1)
+#
+# Then there are other conditionals for compilation options:
+#
+#     AM_CONDITIONAL(WHIPPET_ENABLE_DEBUG, 0)
+#     AM_CONDITIONAL(WHIPPET_USE_LTTNG, 1)
+#
+# Finally, LTO should be enabled, for best performance.  This should be
+# added to CFLAGS at configure-time.
+#
+# Getting all of this in there is gnarly.  See the example configure.ac
+# for one take on the topic.
+
+noinst_LTLIBRARIES += libwhippet-common.la libwhippet.la
+
+libwhippet_common_la_SOURCES = \
+  %D%/src/gc-options-internal.h \
+  %D%/src/gc-options.c \
+  %D%/src/gc-stack.c \
+  %D%/src/gc-stack.h \
+  %D%/src/gc-tracepoint.c
+
+if WHIPPET_PLATFORM_GNU_LINUX
+libwhippet_common_la_SOURCES += %D%/src/gc-platform-gnu-linux.c
+endif
+
+libwhippet_la_SOURCES = \
+  %D%/src/adaptive-heap-sizer.h \
+  %D%/src/address-hash.h \
+  %D%/src/address-map.h \
+  %D%/src/address-set.h \
+  %D%/src/assert.h \
+  %D%/src/background-thread.h \
+  %D%/src/copy-space.h \
+  %D%/src/debug.h \
+  %D%/src/extents.h \
+  %D%/src/field-set.h \
+  %D%/src/freelist.h \
+  %D%/src/gc-align.h \
+  %D%/src/gc-ephemeron-internal.h \
+  %D%/src/gc-ephemeron.c \
+  %D%/src/gc-finalizer-internal.h \
+  %D%/src/gc-finalizer.c \
+  %D%/src/gc-internal.h \
+  %D%/src/gc-lock.h \
+  %D%/src/gc-platform.h \
+  %D%/src/gc-trace.h \
+  %D%/src/generational-roots.h \
+  %D%/src/growable-heap-sizer.h \
+  %D%/src/heap-sizer.h \
+  %D%/src/large-object-space.h \
+  %D%/src/local-worklist.h \
+  %D%/src/nofl-space.h \
+  %D%/src/nursery.h \
+  %D%/src/parallel-tracer.h \
+  %D%/src/remembered-edges.h \
+  %D%/src/root.h \
+  %D%/src/root-worklist.h \
+  %D%/src/serial-tracer.h \
+  %D%/src/shared-worklist.h \
+  %D%/src/simple-worklist.h \
+  %D%/src/spin.h \
+  %D%/src/splay-tree.h \
+  %D%/src/swar.h \
+  %D%/src/tracer.h
+
+WHIPPET_CFLAGS_bdw = -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
+WHIPPET_CFLAGS_semi = -DGC_PRECISE_ROOTS=1
+WHIPPET_CFLAGS_pcc = -DGC_PRECISE_ROOTS=1 -DGC_PARALLEL=1
+WHIPPET_CFLAGS_generational_pcc = $(WHIPPET_CFLAGS_pcc) -DGC_GENERATIONAL=1
+WHIPPET_CFLAGS_mmc = \
+  -DGC_PRECISE_ROOTS=1
+WHIPPET_CFLAGS_generational_mmc = \
+  -DGC_PRECISE_ROOTS=1 -DGC_GENERATIONAL=1
+WHIPPET_CFLAGS_parallel_mmc = \
+  -DGC_PRECISE_ROOTS=1 -DGC_PARALLEL=1
+WHIPPET_CFLAGS_parallel_generational_mmc = \
+  -DGC_PRECISE_ROOTS=1 -DGC_GENERATIONAL=1 -DGC_PARALLEL=1
+WHIPPET_CFLAGS_stack_conservative_mmc = \
+  -DGC_CONSERVATIVE_ROOTS=1
+WHIPPET_CFLAGS_stack_conservative_generational_mmc = \
+  -DGC_CONSERVATIVE_ROOTS=1 -DGC_GENERATIONAL=1
+WHIPPET_CFLAGS_stack_conservative_parallel_mmc = \
+  -DGC_CONSERVATIVE_ROOTS=1 -DGC_PARALLEL=1
+WHIPPET_CFLAGS_stack_conservative_parallel_generational_mmc = \
+  -DGC_CONSERVATIVE_ROOTS=1 -DGC_GENERATIONAL=1 -DGC_PARALLEL=1
+WHIPPET_CFLAGS_heap_conservative_mmc = \
+  -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
+WHIPPET_CFLAGS_heap_conservative_generational_mmc = \
+  -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -DGC_GENERATIONAL=1
+WHIPPET_CFLAGS_heap_conservative_parallel_mmc = \
+  -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -DGC_PARALLEL=1
+WHIPPET_CFLAGS_heap_conservative_parallel_generational_mmc = \
+  -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -DGC_GENERATIONAL=1 -DGC_PARALLEL=1
+
+WHIPPET_CFLAGS      = $(WHIPPET_CFLAGS_$(subst -,_,$(WHIPPET_COLLECTOR)))
+WHIPPET_IMPL_CFLAGS =
+WHIPPET_LIBS        = -lm
+WHIPPET_CPPFLAGS    = -I%D%/api
+WHIPPET_TO_EMBEDDER_CPPFLAGS = $(WHIPPET_CPPFLAGS)
+
+if WHIPPET_ENABLE_DEBUG
+WHIPPET_CFLAGS += -DGC_DEBUG=1
+endif
+
+if WHIPPET_COLLECTOR_SEMI
+libwhippet_la_SOURCES += %D%/src/semi.c
+WHIPPET_TO_EMBEDDER_CPPFLAGS += -include %D%/api/semi-attrs.h
+endif
+
+if WHIPPET_COLLECTOR_PCC
+libwhippet_la_SOURCES += %D%/src/pcc.c
+WHIPPET_TO_EMBEDDER_CPPFLAGS += -include %D%/api/pcc-attrs.h
+endif
+
+if WHIPPET_COLLECTOR_BDW
+libwhippet_la_SOURCES += %D%/src/bdw.c
+WHIPPET_IMPL_CFLAGS   += $(WHIPPET_BDW_CFLAGS)
+WHIPPET_LIBS          += $(WHIPPET_BDW_LIBS)
+WHIPPET_TO_EMBEDDER_CPPFLAGS += -include %D%/api/bdw-attrs.h
+endif
+
+if WHIPPET_COLLECTOR_MMC
+libwhippet_la_SOURCES += %D%/src/mmc.c
+WHIPPET_TO_EMBEDDER_CPPFLAGS += -include %D%/api/mmc-attrs.h
+endif
+
+# add to cflags: -flto -fvisibility=hidden -fno-strict-aliasing
+
+libwhippet_common_la_CPPFLAGS = $(WHIPPET_CPPFLAGS)
+libwhippet_common_la_CFLAGS = -Wall -Wno-unused $(CFLAGS)
+libwhippet_common_la_CFLAGS += $(WHIPPET_CFLAGS)
+libwhippet_common_la_LDFLAGS = -lpthread $(LDFLAGS)
+libwhippet_common_la_LIBADD = $(LIBS)
+
+if WHIPPET_USE_LTTNG
+libwhippet_common_la_CPPFLAGS += $(WHIPPET_LTTNG_CFLAGS) -DGC_TRACEPOINT_LTTNG=1
+WHIPPET_LIBS += $(WHIPPET_LTTNG_LIBS)
+endif
+
+if !WHIPPET_ENABLE_DEBUG
+libwhippet_common_la_CFLAGS += -DNDEBUG
+endif
+
+libwhippet_la_CPPFLAGS = $(libwhippet_common_la_CPPFLAGS) $(WHIPPET_EMBEDDER_CPPFLAGS)
+libwhippet_la_CFLAGS = $(libwhippet_common_la_CFLAGS)
+libwhippet_la_CFLAGS += $(WHIPPET_IMPL_CFLAGS)
+libwhippet_la_LDFLAGS = $(libwhippet_common_la_LDFLAGS) $(WHIPPET_LIBS)
+libwhippet_la_LIBADD = libwhippet-common.la
+
+noinst_HEADERS = \
+  %D%/api/bdw-attrs.h \
+  %D%/api/gc-allocation-kind.h \
+  %D%/api/gc-api.h \
+  %D%/api/gc-assert.h \
+  %D%/api/gc-attrs.h \
+  %D%/api/gc-basic-stats.h \
+  %D%/api/gc-collection-kind.h \
+  %D%/api/gc-config.h \
+  %D%/api/gc-conservative-ref.h \
+  %D%/api/gc-edge.h \
+  %D%/api/gc-embedder-api.h \
+  %D%/api/gc-ephemeron.h \
+  %D%/api/gc-event-listener-chain.h \
+  %D%/api/gc-event-listener.h \
+  %D%/api/gc-finalizer.h \
+  %D%/api/gc-forwarding.h \
+  %D%/api/gc-histogram.h \
+  %D%/api/gc-inline.h \
+  %D%/api/gc-lttng.h \
+  %D%/api/gc-null-event-listener.h \
+  %D%/api/gc-options.h \
+  %D%/api/gc-ref.h \
+  %D%/api/gc-tracepoint.h \
+  %D%/api/gc-visibility.h \
+  %D%/api/mmc-attrs.h \
+  %D%/api/pcc-attrs.h \
+  %D%/api/semi-attrs.h
