@@ -177,7 +177,8 @@ libwhippet_la_CFLAGS += $(WHIPPET_IMPL_CFLAGS)
 libwhippet_la_LDFLAGS = $(libwhippet_common_la_LDFLAGS) $(WHIPPET_LIBS)
 libwhippet_la_LIBADD = libwhippet-common.la
 
-noinst_HEADERS = \
+# Header files that are part of Whippet's API.  Not installed, though.
+libwhippet_la_SOURCES += \
   %D%/api/bdw-attrs.h \
   %D%/api/gc-allocation-kind.h \
   %D%/api/gc-api.h \
