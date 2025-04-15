@@ -85,8 +85,17 @@ AC_DEFUN([WHIPPET_PKG_TRACING],
   AC_SUBST(WHIPPET_LTTNG_CFLAGS)
   AC_SUBST(WHIPPET_LTTNG_LIBS)])
 
+AC_DEFUN([WHIPPET_PKG_BDW],
+ [AC_MSG_CHECKING(for which bdw-gc pkg-config file to use)
+  AC_ARG_WITH(bdw-gc,
+    AS_HELP_STRING([--with-bdw-gc], [Name of BDW-GC pkg-config file]),
+    [bdw_gc="$withval"], [bdw_gc=bdw-gc])
+  AC_MSG_RESULT($bdw_gc)
+  WHIPPET_BDW_GC=$bdw_gc])
+
 AC_DEFUN([WHIPPET_PKG_COLLECTOR],
- [PKG_CHECK_MODULES(WHIPPET_BDW, bdw-gc,
+ [AC_REQUIRE(WHIPPET_PKG_BDW)
+  PKG_CHECK_MODULES(WHIPPET_BDW, $WHIPPET_BDW_GC,
                     [whippet_have_bdw=yes], [whippet_have_bdw=no])
   AC_SUBST(WHIPPET_BDW_CFLAGS)
   AC_SUBST(WHIPPET_BDW_LIBS)
