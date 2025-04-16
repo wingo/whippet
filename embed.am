@@ -80,6 +80,7 @@ libwhippet_la_SOURCES = \
   %D%/src/background-thread.h \
   %D%/src/copy-space.h \
   %D%/src/debug.h \
+  %D%/src/embedder-api-impl.h \
   %D%/src/extents.h \
   %D%/src/field-set.h \
   %D%/src/freelist.h \
