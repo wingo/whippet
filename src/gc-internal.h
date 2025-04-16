@@ -5,6 +5,7 @@
 #error internal header file, not part of API
 #endif
 
+#include "embedder-api-impl.h"
 #include "gc-ephemeron-internal.h"
 #include "gc-finalizer-internal.h"
 #include "gc-options-internal.h"

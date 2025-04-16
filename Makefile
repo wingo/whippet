@@ -24,11 +24,16 @@ COLLECTORS = \
 
 DEFAULT_BUILD := opt
 
-BUILD_CFLAGS_opt      = -O2 -g -DNDEBUG
-BUILD_CFLAGS_optdebug = -Og -g -DGC_DEBUG=1
-BUILD_CFLAGS_debug    = -O0 -g -DGC_DEBUG=1
+BUILD_CFLAGS_opt      = -O2 -g
+BUILD_CFLAGS_optdebug = -Og -g
+BUILD_CFLAGS_debug    = -O0 -g
+
+BUILD_CPPFLAGS_opt      = -DNDEBUG
+BUILD_CPPFLAGS_optdebug = -DGC_DEBUG=1
+BUILD_CPPFLAGS_debug    = -DGC_DEBUG=1
 
 BUILD_CFLAGS = $(BUILD_CFLAGS_$(or $(BUILD),$(DEFAULT_BUILD)))
+BUILD_CPPFLAGS = $(BUILD_CPPFLAGS_$(or $(BUILD),$(DEFAULT_BUILD)))
 
 USE_LTTNG_0 :=
 USE_LTTNG_1 := 1
@@ -40,7 +45,7 @@ TRACEPOINT_LIBS = $(LTTNG_LIBS)
 
 CC       = gcc
 CFLAGS   = -Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(BUILD_CFLAGS)
-CPPFLAGS = -Iapi $(TRACEPOINT_CPPFLAGS)
+CPPFLAGS = -Iapi $(TRACEPOINT_CPPFLAGS) $(BUILD_CPPFLAGS)
 LDFLAGS  = -lpthread -flto=auto $(TRACEPOINT_LIBS)
 DEPFLAGS = -MMD -MP -MF $(@:obj/%.o=.deps/%.d)
 COMPILE  = $(CC) $(CFLAGS) $(CPPFLAGS) $(DEPFLAGS) -o $@
@@ -63,30 +68,30 @@ obj/gc-options.o: src/gc-options.c | .deps obj
 obj/gc-tracepoint.o: src/gc-tracepoint.c | .deps obj
 	$(COMPILE) -c $<
 obj/%.gc-ephemeron.o: src/gc-ephemeron.c | .deps obj
-	$(COMPILE) -include benchmarks/$*-embedder.h -c $<
+	$(COMPILE) -DGC_EMBEDDER=\"../benchmarks/$*-embedder.h\" -c $<
 obj/%.gc-finalizer.o: src/gc-finalizer.c | .deps obj
-	$(COMPILE) -include benchmarks/$*-embedder.h -c $<
+	$(COMPILE) -DGC_EMBEDDER=\"../benchmarks/$*-embedder.h\" -c $<
 
 GC_STEM_bdw   	   = bdw
-GC_CFLAGS_bdw 	   = -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
+GC_CPPFLAGS_bdw    = -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
 GC_IMPL_CFLAGS_bdw = `pkg-config --cflags bdw-gc`
 GC_LIBS_bdw        = `pkg-config --libs bdw-gc`
 
 GC_STEM_semi       = semi
-GC_CFLAGS_semi     = -DGC_PRECISE_ROOTS=1
+GC_CPPFLAGS_semi   = -DGC_PRECISE_ROOTS=1
 GC_LIBS_semi       = -lm
 
 GC_STEM_pcc        = pcc
-GC_CFLAGS_pcc      = -DGC_PRECISE_ROOTS=1 -DGC_PARALLEL=1
+GC_CPPFLAGS_pcc    = -DGC_PRECISE_ROOTS=1 -DGC_PARALLEL=1
 GC_LIBS_pcc        = -lm
 
 GC_STEM_generational_pcc   = $(GC_STEM_pcc)
-GC_CFLAGS_generational_pcc = $(GC_CFLAGS_pcc) -DGC_GENERATIONAL=1
+GC_CPPFLAGS_generational_pcc = $(GC_CPPFLAGS_pcc) -DGC_GENERATIONAL=1
 GC_LIBS_generational_pcc   = $(GC_LIBS_pcc)
 
 define mmc_variant
 GC_STEM_$(1)       = mmc
-GC_CFLAGS_$(1)     = $(2)
+GC_CPPFLAGS_$(1)   = $(2)
 GC_LIBS_$(1)       = -lm
 endef
 
@@ -112,14 +117,14 @@ $(eval $(call trace_mmc_variants))
 make_gc_var    = $$($(1)$(subst -,_,$(2)))
 gc_impl        = $(call make_gc_var,GC_STEM_,$(1)).c
 gc_attrs       = $(call make_gc_var,GC_STEM_,$(1))-attrs.h
-gc_cflags      = $(call make_gc_var,GC_CFLAGS_,$(1))
+gc_cppflags    = $(call make_gc_var,GC_CPPFLAGS_,$(1))
 gc_impl_cflags = $(call make_gc_var,GC_IMPL_CFLAGS_,$(1))
 gc_libs        = $(call make_gc_var,GC_LIBS_,$(1))
 define benchmark_template
 obj/$(1).$(2).gc.o: src/$(call gc_impl,$(2)) | .deps obj
-	$$(COMPILE) $(call gc_cflags,$(2)) $(call gc_impl_cflags,$(2)) -include benchmarks/$(1)-embedder.h -c $$<
+	$$(COMPILE) $(call gc_cppflags,$(2)) $(call gc_impl_cflags,$(2)) -DGC_EMBEDDER=\"../benchmarks/$(1)-embedder.h\" -c $$<
 obj/$(1).$(2).o: benchmarks/$(1).c | .deps obj
-	$$(COMPILE) $(call gc_cflags,$(2)) -include api/$(call gc_attrs,$(2)) -c $$<
+	$$(COMPILE) $(call gc_cppflags,$(2)) -include api/$(call gc_attrs,$(2)) -c $$<
 bin/$(1).$(2): obj/$(1).$(2).gc.o obj/$(1).$(2).o obj/gc-stack.o obj/gc-options.o obj/gc-platform.o obj/gc-tracepoint.o obj/$(1).gc-ephemeron.o obj/$(1).gc-finalizer.o | bin
 	$$(LINK) $$^ $(call gc_libs,$(2))
 endef

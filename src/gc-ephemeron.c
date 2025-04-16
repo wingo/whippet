@@ -6,7 +6,7 @@
 
 #include "address-hash.h"
 #include "debug.h"
-#include "gc-embedder-api.h"
+#include "embedder-api-impl.h"
 #include "gc-ephemeron-internal.h"
 
 // # Overview

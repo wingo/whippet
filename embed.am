@@ -4,7 +4,7 @@
 # whippet/ subdirectory:
 #  
 #     noinst_LTLIBRARIES =
-#     WHIPPET_EMBEDDER_CPPFLAGS = -include src/my-embedder.h
+#     WHIPPET_EMBEDDER_H = $(srcdir)/src/my-embedder.h
 #     include whippet/embed.am
 #
 # my-embedder.h should provide the various hooks that Whippet needs to
@@ -12,9 +12,8 @@
 #
 # The result is a libwhippet.la.  To compile and link against it:
 #
-#     AM_CFLAGS = $(WHIPPET_CPPFLAGS) $(WHIPPET_CFLAGS) $(WHIPPET_TO_EMBEDDER_CPPFLAGS)
+#     AM_CPPFLAGS = $(WHIPPET_CPPFLAGS)
 #     LDADD = libwhippet.la
-#     AM_LDFLAGS = $(WHIPPET_TO_EMBEDDER_LDFLAGS)
 #
 # The assumption is that the embedder will build a single copy of
 # Whippet, specialized against a single collector, a single set of
@@ -93,72 +92,70 @@ libwhippet_la_SOURCES = \
   %D%/src/swar.h \
   %D%/src/tracer.h
 
-WHIPPET_CFLAGS_bdw = -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
-WHIPPET_CFLAGS_semi = -DGC_PRECISE_ROOTS=1
-WHIPPET_CFLAGS_pcc = -DGC_PRECISE_ROOTS=1 -DGC_PARALLEL=1
-WHIPPET_CFLAGS_generational_pcc = $(WHIPPET_CFLAGS_pcc) -DGC_GENERATIONAL=1
-WHIPPET_CFLAGS_mmc = \
+WHIPPET_CPPFLAGS_bdw = -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
+WHIPPET_CPPFLAGS_semi = -DGC_PRECISE_ROOTS=1
+WHIPPET_CPPFLAGS_pcc = -DGC_PRECISE_ROOTS=1 -DGC_PARALLEL=1
+WHIPPET_CPPFLAGS_generational_pcc = $(WHIPPET_CPPFLAGS_pcc) -DGC_GENERATIONAL=1
+WHIPPET_CPPFLAGS_mmc = \
   -DGC_PRECISE_ROOTS=1
-WHIPPET_CFLAGS_generational_mmc = \
+WHIPPET_CPPFLAGS_generational_mmc = \
   -DGC_PRECISE_ROOTS=1 -DGC_GENERATIONAL=1
-WHIPPET_CFLAGS_parallel_mmc = \
+WHIPPET_CPPFLAGS_parallel_mmc = \
   -DGC_PRECISE_ROOTS=1 -DGC_PARALLEL=1
-WHIPPET_CFLAGS_parallel_generational_mmc = \
+WHIPPET_CPPFLAGS_parallel_generational_mmc = \
   -DGC_PRECISE_ROOTS=1 -DGC_GENERATIONAL=1 -DGC_PARALLEL=1
-WHIPPET_CFLAGS_stack_conservative_mmc = \
+WHIPPET_CPPFLAGS_stack_conservative_mmc = \
   -DGC_CONSERVATIVE_ROOTS=1
-WHIPPET_CFLAGS_stack_conservative_generational_mmc = \
+WHIPPET_CPPFLAGS_stack_conservative_generational_mmc = \
   -DGC_CONSERVATIVE_ROOTS=1 -DGC_GENERATIONAL=1
-WHIPPET_CFLAGS_stack_conservative_parallel_mmc = \
+WHIPPET_CPPFLAGS_stack_conservative_parallel_mmc = \
   -DGC_CONSERVATIVE_ROOTS=1 -DGC_PARALLEL=1
-WHIPPET_CFLAGS_stack_conservative_parallel_generational_mmc = \
+WHIPPET_CPPFLAGS_stack_conservative_parallel_generational_mmc = \
   -DGC_CONSERVATIVE_ROOTS=1 -DGC_GENERATIONAL=1 -DGC_PARALLEL=1
-WHIPPET_CFLAGS_heap_conservative_mmc = \
+WHIPPET_CPPFLAGS_heap_conservative_mmc = \
   -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
-WHIPPET_CFLAGS_heap_conservative_generational_mmc = \
+WHIPPET_CPPFLAGS_heap_conservative_generational_mmc = \
   -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -DGC_GENERATIONAL=1
-WHIPPET_CFLAGS_heap_conservative_parallel_mmc = \
+WHIPPET_CPPFLAGS_heap_conservative_parallel_mmc = \
   -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -DGC_PARALLEL=1
-WHIPPET_CFLAGS_heap_conservative_parallel_generational_mmc = \
+WHIPPET_CPPFLAGS_heap_conservative_parallel_generational_mmc = \
   -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -DGC_GENERATIONAL=1 -DGC_PARALLEL=1
 
-WHIPPET_CFLAGS      = $(WHIPPET_CFLAGS_$(subst -,_,$(WHIPPET_COLLECTOR)))
+WHIPPET_CPPFLAGS    = $(WHIPPET_CPPFLAGS_$(subst -,_,$(WHIPPET_COLLECTOR)))
+WHIPPET_CPPFLAGS    += -I$(srcdir)/%D%/api
 WHIPPET_IMPL_CFLAGS =
 WHIPPET_LIBS        = -lm
-WHIPPET_CPPFLAGS    = -I$(srcdir)/%D%/api
-WHIPPET_TO_EMBEDDER_CPPFLAGS = $(WHIPPET_CPPFLAGS)
 
 if WHIPPET_ENABLE_DEBUG
-WHIPPET_CFLAGS += -DGC_DEBUG=1
+WHIPPET_CPPFLAGS += -DGC_DEBUG=1
 endif
 
 if WHIPPET_COLLECTOR_SEMI
 libwhippet_la_SOURCES += %D%/src/semi.c
-WHIPPET_TO_EMBEDDER_CPPFLAGS += -include $(srcdir)/%D%/api/semi-attrs.h
+WHIPPET_CPPFLAGS      += -DWHIPPET_ATTRS=\"$(srcdir)/%D%/api/semi-attrs.h\"
 endif
 
 if WHIPPET_COLLECTOR_PCC
 libwhippet_la_SOURCES += %D%/src/pcc.c
-WHIPPET_TO_EMBEDDER_CPPFLAGS += -include $(srcdir)/%D%/api/pcc-attrs.h
+WHIPPET_CPPFLAGS       += -DWHIPPET_ATTRS=\"$(srcdir)/%D%/api/pcc-attrs.h\"
 endif
 
 if WHIPPET_COLLECTOR_BDW
 libwhippet_la_SOURCES += %D%/src/bdw.c
 WHIPPET_IMPL_CFLAGS   += $(WHIPPET_BDW_CFLAGS)
 WHIPPET_LIBS          += $(WHIPPET_BDW_LIBS)
-WHIPPET_TO_EMBEDDER_CPPFLAGS += -include $(srcdir)/%D%/api/bdw-attrs.h
+WHIPPET_CPPFLAGS      += -DWHIPPET_ATTRS=\"$(srcdir)/%D%/api/bdw-attrs.h\"
 endif
 
 if WHIPPET_COLLECTOR_MMC
 libwhippet_la_SOURCES += %D%/src/mmc.c
-WHIPPET_TO_EMBEDDER_CPPFLAGS += -include $(srcdir)/%D%/api/mmc-attrs.h
+WHIPPET_CPPFLAGS      += -DWHIPPET_ATTRS=\"$(srcdir)/%D%/api/mmc-attrs.h\"
 endif
 
 # add to cflags: -flto -fvisibility=hidden -fno-strict-aliasing
 
 libwhippet_common_la_CPPFLAGS = $(WHIPPET_CPPFLAGS)
 libwhippet_common_la_CFLAGS = -Wall -Wno-unused $(CFLAGS)
-libwhippet_common_la_CFLAGS += $(WHIPPET_CFLAGS)
 libwhippet_common_la_LDFLAGS = -lpthread $(LDFLAGS)
 libwhippet_common_la_LIBADD = $(LIBS)
 
@@ -171,7 +168,8 @@ if !WHIPPET_ENABLE_DEBUG
 libwhippet_common_la_CFLAGS += -DNDEBUG
 endif
 
-libwhippet_la_CPPFLAGS = $(libwhippet_common_la_CPPFLAGS) $(WHIPPET_EMBEDDER_CPPFLAGS)
+libwhippet_la_CPPFLAGS = $(libwhippet_common_la_CPPFLAGS)
+libwhippet_la_CPPFLAGS += -DGC_EMBEDDER=\"$(WHIPPET_EMBEDDER_H)\"
 libwhippet_la_CFLAGS = $(libwhippet_common_la_CFLAGS)
 libwhippet_la_CFLAGS += $(WHIPPET_IMPL_CFLAGS)
 libwhippet_la_LDFLAGS = $(libwhippet_common_la_LDFLAGS) $(WHIPPET_LIBS)

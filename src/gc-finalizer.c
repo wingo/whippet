@@ -6,7 +6,7 @@
 #define GC_IMPL 1
 
 #include "debug.h"
-#include "gc-embedder-api.h"
+#include "embedder-api-impl.h"
 #include "gc-ephemeron-internal.h" // for gc_visit_ephemeron_key
 #include "gc-finalizer-internal.h"
 
