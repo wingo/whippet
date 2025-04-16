@@ -3,11 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define GC_IMPL 1
+
 #include "gc-api.h"
 #include "gc-ephemeron.h"
 #include "gc-tracepoint.h"
 
-#define GC_IMPL 1
 #include "gc-internal.h"
 
 #include "bdw-attrs.h"

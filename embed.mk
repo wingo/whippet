@@ -103,7 +103,7 @@ gc_libs        = $(call gc_var,GC_LIBS_,$(1))
 
 GC_IMPL        	    = $(call gc_impl,$(GC_COLLECTOR))
 GC_CPPFLAGS         += $(call gc_cppflags,$(GC_COLLECTOR))
-GC_CPPFLAGS         += -DWHIPPET_ATTRS=\"$(GC_BASE)api/$(GC_IMPL)-attrs.h\"
+GC_CPPFLAGS         += -DGC_ATTRS=\"$(GC_BASE)api/$(GC_IMPL)-attrs.h\"
 GC_IMPL_CFLAGS 	    = $(call gc_impl_cflags,$(GC_COLLECTOR))
 GC_LIBS             = $(call gc_libs,$(GC_COLLECTOR))
 

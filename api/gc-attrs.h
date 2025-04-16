@@ -66,4 +66,12 @@ static inline enum gc_cooperative_safepoint_kind gc_cooperative_safepoint_kind(v
 
 static inline int gc_can_pin_objects(void) GC_ALWAYS_INLINE;
 
+#ifndef GC_IMPL
+#ifdef GC_ATTRS
+#include GC_ATTRS
+#else
+#error Fix build system to pass -DGC_ATTRS="path/to/foo-attrs.h" for selected GC
+#endif // GC_ATTRS
+#endif // GC_IMPL
+
 #endif // GC_ATTRS_H

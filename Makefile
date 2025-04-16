@@ -118,13 +118,14 @@ make_gc_var    = $$($(1)$(subst -,_,$(2)))
 gc_impl        = $(call make_gc_var,GC_STEM_,$(1)).c
 gc_attrs       = $(call make_gc_var,GC_STEM_,$(1))-attrs.h
 gc_cppflags    = $(call make_gc_var,GC_CPPFLAGS_,$(1))
+gc_cppflags    += -DGC_ATTRS=\"../api/$(call gc_attrs,$(1))\"
 gc_impl_cflags = $(call make_gc_var,GC_IMPL_CFLAGS_,$(1))
 gc_libs        = $(call make_gc_var,GC_LIBS_,$(1))
 define benchmark_template
 obj/$(1).$(2).gc.o: src/$(call gc_impl,$(2)) | .deps obj
 	$$(COMPILE) $(call gc_cppflags,$(2)) $(call gc_impl_cflags,$(2)) -DGC_EMBEDDER=\"../benchmarks/$(1)-embedder.h\" -c $$<
 obj/$(1).$(2).o: benchmarks/$(1).c | .deps obj
-	$$(COMPILE) $(call gc_cppflags,$(2)) -include api/$(call gc_attrs,$(2)) -c $$<
+	$$(COMPILE) $(call gc_cppflags,$(2)) -c $$<
 bin/$(1).$(2): obj/$(1).$(2).gc.o obj/$(1).$(2).o obj/gc-stack.o obj/gc-options.o obj/gc-platform.o obj/gc-tracepoint.o obj/$(1).gc-ephemeron.o obj/$(1).gc-finalizer.o | bin
 	$$(LINK) $$^ $(call gc_libs,$(2))
 endef

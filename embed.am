@@ -44,18 +44,34 @@
 
 noinst_LTLIBRARIES += libwhippet-common.la libwhippet.la
 
-libwhippet_common_la_SOURCES = \
-  %D%/src/gc-options-internal.h \
-  %D%/src/gc-options.c \
-  %D%/src/gc-stack.c \
-  %D%/src/gc-stack.h \
-  %D%/src/gc-tracepoint.c
-
-if WHIPPET_PLATFORM_GNU_LINUX
-libwhippet_common_la_SOURCES += %D%/src/gc-platform-gnu-linux.c
-endif
-
 libwhippet_la_SOURCES = \
+  %D%/api/bdw-attrs.h \
+  %D%/api/gc-allocation-kind.h \
+  %D%/api/gc-api.h \
+  %D%/api/gc-assert.h \
+  %D%/api/gc-attrs.h \
+  %D%/api/gc-basic-stats.h \
+  %D%/api/gc-collection-kind.h \
+  %D%/api/gc-config.h \
+  %D%/api/gc-conservative-ref.h \
+  %D%/api/gc-edge.h \
+  %D%/api/gc-embedder-api.h \
+  %D%/api/gc-ephemeron.h \
+  %D%/api/gc-event-listener-chain.h \
+  %D%/api/gc-event-listener.h \
+  %D%/api/gc-finalizer.h \
+  %D%/api/gc-forwarding.h \
+  %D%/api/gc-histogram.h \
+  %D%/api/gc-inline.h \
+  %D%/api/gc-lttng.h \
+  %D%/api/gc-null-event-listener.h \
+  %D%/api/gc-options.h \
+  %D%/api/gc-ref.h \
+  %D%/api/gc-tracepoint.h \
+  %D%/api/gc-visibility.h \
+  %D%/api/mmc-attrs.h \
+  %D%/api/pcc-attrs.h \
+  %D%/api/semi-attrs.h \
   %D%/src/adaptive-heap-sizer.h \
   %D%/src/address-hash.h \
   %D%/src/address-map.h \
@@ -74,16 +90,21 @@ libwhippet_la_SOURCES = \
   %D%/src/gc-finalizer.c \
   %D%/src/gc-internal.h \
   %D%/src/gc-lock.h \
+  %D%/src/gc-options-internal.h \
+  %D%/src/gc-options.c \
   %D%/src/gc-platform.h \
+  %D%/src/gc-stack.c \
+  %D%/src/gc-stack.h \
   %D%/src/gc-trace.h \
+  %D%/src/gc-tracepoint.c \
   %D%/src/growable-heap-sizer.h \
   %D%/src/heap-sizer.h \
   %D%/src/large-object-space.h \
   %D%/src/local-worklist.h \
   %D%/src/nofl-space.h \
   %D%/src/parallel-tracer.h \
-  %D%/src/root.h \
   %D%/src/root-worklist.h \
+  %D%/src/root.h \
   %D%/src/serial-tracer.h \
   %D%/src/shared-worklist.h \
   %D%/src/simple-worklist.h \
@@ -91,6 +112,10 @@ libwhippet_la_SOURCES = \
   %D%/src/splay-tree.h \
   %D%/src/swar.h \
   %D%/src/tracer.h
+
+if WHIPPET_PLATFORM_GNU_LINUX
+libwhippet_la_SOURCES += %D%/src/gc-platform-gnu-linux.c
+endif
 
 WHIPPET_CPPFLAGS_bdw = -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
 WHIPPET_CPPFLAGS_semi = -DGC_PRECISE_ROOTS=1
@@ -132,75 +157,38 @@ endif
 
 if WHIPPET_COLLECTOR_SEMI
 libwhippet_la_SOURCES += %D%/src/semi.c
-WHIPPET_CPPFLAGS      += -DWHIPPET_ATTRS=\"$(srcdir)/%D%/api/semi-attrs.h\"
+WHIPPET_CPPFLAGS      += -DGC_ATTRS=\"$(srcdir)/%D%/api/semi-attrs.h\"
 endif
 
 if WHIPPET_COLLECTOR_PCC
 libwhippet_la_SOURCES += %D%/src/pcc.c
-WHIPPET_CPPFLAGS       += -DWHIPPET_ATTRS=\"$(srcdir)/%D%/api/pcc-attrs.h\"
+WHIPPET_CPPFLAGS       += -DGC_ATTRS=\"$(srcdir)/%D%/api/pcc-attrs.h\"
 endif
 
 if WHIPPET_COLLECTOR_BDW
 libwhippet_la_SOURCES += %D%/src/bdw.c
 WHIPPET_IMPL_CFLAGS   += $(WHIPPET_BDW_CFLAGS)
 WHIPPET_LIBS          += $(WHIPPET_BDW_LIBS)
-WHIPPET_CPPFLAGS      += -DWHIPPET_ATTRS=\"$(srcdir)/%D%/api/bdw-attrs.h\"
+WHIPPET_CPPFLAGS      += -DGC_ATTRS=\"$(srcdir)/%D%/api/bdw-attrs.h\"
 endif
 
 if WHIPPET_COLLECTOR_MMC
 libwhippet_la_SOURCES += %D%/src/mmc.c
-WHIPPET_CPPFLAGS      += -DWHIPPET_ATTRS=\"$(srcdir)/%D%/api/mmc-attrs.h\"
+WHIPPET_CPPFLAGS      += -DGC_ATTRS=\"$(srcdir)/%D%/api/mmc-attrs.h\"
 endif
 
 # add to cflags: -flto -fvisibility=hidden -fno-strict-aliasing
 
-libwhippet_common_la_CPPFLAGS = $(WHIPPET_CPPFLAGS)
-libwhippet_common_la_CFLAGS = -Wall -Wno-unused $(CFLAGS)
-libwhippet_common_la_LDFLAGS = -lpthread $(LDFLAGS)
-libwhippet_common_la_LIBADD = $(LIBS)
-
-if WHIPPET_USE_LTTNG
-libwhippet_common_la_CPPFLAGS += $(WHIPPET_LTTNG_CFLAGS) -DGC_TRACEPOINT_LTTNG=1
-WHIPPET_LIBS += $(WHIPPET_LTTNG_LIBS)
-endif
+libwhippet_la_CPPFLAGS = $(WHIPPET_CPPFLAGS)
+libwhippet_la_CPPFLAGS += -DGC_EMBEDDER=\"../../$(srcdir)/$(WHIPPET_EMBEDDER_H)\"
+libwhippet_la_CFLAGS = -Wall -Wno-unused $(CFLAGS) $(WHIPPET_IMPL_CFLAGS)
+libwhippet_la_LDFLAGS = -lpthread $(LDFLAGS) $(WHIPPET_LIBS)
 
 if !WHIPPET_ENABLE_DEBUG
-libwhippet_common_la_CFLAGS += -DNDEBUG
+libwhippet_la_CPPFLAGS += -DNDEBUG
 endif
 
-libwhippet_la_CPPFLAGS = $(libwhippet_common_la_CPPFLAGS)
-libwhippet_la_CPPFLAGS += -DGC_EMBEDDER=\"$(WHIPPET_EMBEDDER_H)\"
-libwhippet_la_CFLAGS = $(libwhippet_common_la_CFLAGS)
-libwhippet_la_CFLAGS += $(WHIPPET_IMPL_CFLAGS)
-libwhippet_la_LDFLAGS = $(libwhippet_common_la_LDFLAGS) $(WHIPPET_LIBS)
-libwhippet_la_LIBADD = libwhippet-common.la
-
-# Header files that are part of Whippet's API.  Not installed, though.
-libwhippet_la_SOURCES += \
-  %D%/api/bdw-attrs.h \
-  %D%/api/gc-allocation-kind.h \
-  %D%/api/gc-api.h \
-  %D%/api/gc-assert.h \
-  %D%/api/gc-attrs.h \
-  %D%/api/gc-basic-stats.h \
-  %D%/api/gc-collection-kind.h \
-  %D%/api/gc-config.h \
-  %D%/api/gc-conservative-ref.h \
-  %D%/api/gc-edge.h \
-  %D%/api/gc-embedder-api.h \
-  %D%/api/gc-ephemeron.h \
-  %D%/api/gc-event-listener-chain.h \
-  %D%/api/gc-event-listener.h \
-  %D%/api/gc-finalizer.h \
-  %D%/api/gc-forwarding.h \
-  %D%/api/gc-histogram.h \
-  %D%/api/gc-inline.h \
-  %D%/api/gc-lttng.h \
-  %D%/api/gc-null-event-listener.h \
-  %D%/api/gc-options.h \
-  %D%/api/gc-ref.h \
-  %D%/api/gc-tracepoint.h \
-  %D%/api/gc-visibility.h \
-  %D%/api/mmc-attrs.h \
-  %D%/api/pcc-attrs.h \
-  %D%/api/semi-attrs.h
+if WHIPPET_USE_LTTNG
+libwhippet_la_CPPFLAGS += $(WHIPPET_LTTNG_CFLAGS) -DGC_TRACEPOINT_LTTNG=1
+WHIPPET_LIBS += $(WHIPPET_LTTNG_LIBS)
+endif
