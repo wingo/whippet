@@ -42,7 +42,7 @@
 # Getting all of this in there is gnarly.  See the example configure.ac
 # for one take on the topic.
 
-noinst_LTLIBRARIES += libwhippet-common.la libwhippet.la
+noinst_LTLIBRARIES += libwhippet.la
 
 libwhippet_la_SOURCES = \
   %D%/api/bdw-attrs.h \
