@@ -37,7 +37,7 @@ GC_COMPILE  = $(GC_V)$(GC_CC) $(GC_CFLAGS) $(GC_CPPFLAGS) $(GC_DEPFLAGS) -o $@
 GC_LINK     = $(GC_V)$(GC_CC) $(GC_LDFLAGS) -o $@
 GC_PLATFORM = gnu-linux
 GC_OBJDIR   =
-GC_EMBEDDER_CPPFLAGS += -DGC_EMBEDDER=\"../../$(GC_EMBEDDER_H)\"
+GC_EMBEDDER_CPPFLAGS += -DGC_EMBEDDER=\"$(abspath $(GC_EMBEDDER_H))\"
 
 $(GC_OBJDIR)gc-platform.o: $(GC_BASE)src/gc-platform-$(GC_PLATFORM).c
 	$(GC_COMPILE) -c $<
@@ -100,15 +100,10 @@ gc_cppflags    = $(call gc_var,GC_CPPFLAGS_,$(1))
 gc_impl_cflags = $(call gc_var,GC_IMPL_CFLAGS_,$(1))
 gc_libs        = $(call gc_var,GC_LIBS_,$(1))
 
-#GC_RELATIVE_BASE = $(dir $(subst  ,/,$(patsubst %,..,$(strip $(subst /, ,$<)))))
-#GC_RELATIVE_BASE = $(patsubst %,..,$(strip $(subst /, ,$<)))
-#GC_RELATIVE_BASE = $(patsubst %,..,$(strip $(subst /, ,$<)))
-empty:=
-space:= $(empty) $(empty)
-GC_RELATIVE_BASE = $(dir $(subst $(space),/,$(patsubst %,..,$(strip $(subst /, ,$<)))))$(GC_BASE)
 GC_IMPL        	    = $(call gc_impl,$(GC_COLLECTOR))
 GC_CPPFLAGS         += $(call gc_cppflags,$(GC_COLLECTOR))
-GC_CPPFLAGS         += -DGC_ATTRS=\"$(GC_RELATIVE_BASE)api/$(call gc_attrs,$(GC_COLLECTOR))\"
+GC_ATTRS_H          = $(GC_BASE)api/$(call gc_attrs,$(GC_COLLECTOR))
+GC_CPPFLAGS         += -DGC_ATTRS=\"$(abspath $(GC_ATTRS_H))\"
 GC_IMPL_CFLAGS 	    = $(call gc_impl_cflags,$(GC_COLLECTOR))
 GC_LIBS             = $(call gc_libs,$(GC_COLLECTOR))
 
