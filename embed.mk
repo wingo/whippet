@@ -1,7 +1,6 @@
 GC_COLLECTOR ?= pcc
 GC_EMBEDDER_H ?= whippet-embedder.h
 GC_EMBEDDER_CPPFLAGS ?=
-GC_EMBEDDER_CFLAGS ?=
 
 DEFAULT_BUILD := opt
 
@@ -38,7 +37,7 @@ GC_COMPILE  = $(GC_V)$(GC_CC) $(GC_CFLAGS) $(GC_CPPFLAGS) $(GC_DEPFLAGS) -o $@
 GC_LINK     = $(GC_V)$(GC_CC) $(GC_LDFLAGS) -o $@
 GC_PLATFORM = gnu-linux
 GC_OBJDIR   =
-GC_EMBEDDER_CPPFLAGS += -DGC_EMBEDDER=\"$(GC_EMBEDDER_H)\"
+GC_EMBEDDER_CPPFLAGS += -DGC_EMBEDDER=\"../../$(GC_EMBEDDER_H)\"
 
 $(GC_OBJDIR)gc-platform.o: $(GC_BASE)src/gc-platform-$(GC_PLATFORM).c
 	$(GC_COMPILE) -c $<
@@ -49,9 +48,9 @@ $(GC_OBJDIR)gc-options.o: $(GC_BASE)src/gc-options.c
 $(GC_OBJDIR)gc-tracepoint.o: $(GC_BASE)src/gc-tracepoint.c
 	$(GC_COMPILE) -c $<
 $(GC_OBJDIR)gc-ephemeron.o: $(GC_BASE)src/gc-ephemeron.c
-	$(GC_COMPILE) $(GC_EMBEDDER_CFLAGS) -c $<
+	$(GC_COMPILE) $(GC_EMBEDDER_CPPFLAGS) -c $<
 $(GC_OBJDIR)gc-finalizer.o: $(GC_BASE)src/gc-finalizer.c
-	$(GC_COMPILE) $(GC_EMBEDDER_CFLAGS) -c $<
+	$(GC_COMPILE) $(GC_EMBEDDER_CPPFLAGS) -c $<
 
 GC_STEM_bdw   	   = bdw
 GC_CPPFLAGS_bdw    = -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
@@ -101,13 +100,19 @@ gc_cppflags    = $(call gc_var,GC_CPPFLAGS_,$(1))
 gc_impl_cflags = $(call gc_var,GC_IMPL_CFLAGS_,$(1))
 gc_libs        = $(call gc_var,GC_LIBS_,$(1))
 
+#GC_RELATIVE_BASE = $(dir $(subst  ,/,$(patsubst %,..,$(strip $(subst /, ,$<)))))
+#GC_RELATIVE_BASE = $(patsubst %,..,$(strip $(subst /, ,$<)))
+#GC_RELATIVE_BASE = $(patsubst %,..,$(strip $(subst /, ,$<)))
+empty:=
+space:= $(empty) $(empty)
+GC_RELATIVE_BASE = $(dir $(subst $(space),/,$(patsubst %,..,$(strip $(subst /, ,$<)))))$(GC_BASE)
 GC_IMPL        	    = $(call gc_impl,$(GC_COLLECTOR))
 GC_CPPFLAGS         += $(call gc_cppflags,$(GC_COLLECTOR))
-GC_CPPFLAGS         += -DGC_ATTRS=\"$(GC_BASE)api/$(GC_IMPL)-attrs.h\"
+GC_CPPFLAGS         += -DGC_ATTRS=\"$(GC_RELATIVE_BASE)api/$(call gc_attrs,$(GC_COLLECTOR))\"
 GC_IMPL_CFLAGS 	    = $(call gc_impl_cflags,$(GC_COLLECTOR))
 GC_LIBS             = $(call gc_libs,$(GC_COLLECTOR))
 
 $(GC_OBJDIR)gc-impl.o: $(GC_BASE)src/$(call gc_impl,$(GC_COLLECTOR))
-	$(GC_COMPILE) $(GC_IMPL_CFLAGS) $(EMBEDDER_TO_GC_CFLAGS) -c $<
+	$(GC_COMPILE) $(GC_IMPL_CFLAGS) $(GC_EMBEDDER_CPPFLAGS) -c $<
 
 GC_OBJS=$(foreach O,gc-platform.o gc-stack.o gc-options.o gc-tracepoint.o gc-ephemeron.o gc-finalizer.o gc-impl.o,$(GC_OBJDIR)$(O))
