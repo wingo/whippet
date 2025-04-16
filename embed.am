@@ -180,7 +180,7 @@ endif
 # add to cflags: -flto -fvisibility=hidden -fno-strict-aliasing
 
 libwhippet_la_CPPFLAGS = $(WHIPPET_CPPFLAGS)
-libwhippet_la_CPPFLAGS += -DGC_EMBEDDER=\"../../$(srcdir)/$(WHIPPET_EMBEDDER_H)\"
+libwhippet_la_CPPFLAGS += -DGC_EMBEDDER=\"../../$(WHIPPET_EMBEDDER_H)\"
 libwhippet_la_CFLAGS = -Wall -Wno-unused $(CFLAGS) $(WHIPPET_IMPL_CFLAGS)
 libwhippet_la_LDFLAGS = -lpthread $(LDFLAGS) $(WHIPPET_LIBS)
 
