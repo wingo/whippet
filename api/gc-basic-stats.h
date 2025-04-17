@@ -24,6 +24,7 @@ struct gc_basic_stats {
   uint64_t cpu_collector_usec;
   size_t heap_size;
   size_t max_heap_size;
+  size_t live_data_size;
   size_t max_live_data_size;
   struct gc_latency pause_times;
 };
@@ -111,6 +112,7 @@ static inline void gc_basic_stats_heap_resized(void *data, size_t size) {
 
 static inline void gc_basic_stats_live_data_size(void *data, size_t size) {
   struct gc_basic_stats *stats = data;
+  stats->live_data_size = size;
   if (size > stats->max_live_data_size)
     stats->max_live_data_size = size;
 }
