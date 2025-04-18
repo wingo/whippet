@@ -135,7 +135,8 @@ int main(int argc, char *argv[]) {
   struct gc_heap *heap;
   struct gc_mutator *mut;
   struct gc_basic_stats stats;
-  if (!gc_init(options, NULL, &heap, &mut, GC_BASIC_STATS, &stats)) {
+  if (!gc_init(options, gc_empty_stack_addr(), &heap, &mut,
+               GC_BASIC_STATS, &stats)) {
     fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
             heap_size);
     return 1;

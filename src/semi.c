@@ -670,7 +670,7 @@ int gc_options_parse_and_set(struct gc_options *options, int option,
   return gc_common_options_parse_and_set(&options->common, option, value);
 }
 
-int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
+int gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
             struct gc_heap **heap, struct gc_mutator **mut,
             struct gc_event_listener event_listener,
             void *event_listener_data) {
@@ -722,7 +722,7 @@ void gc_heap_set_extern_space(struct gc_heap *heap,
   heap->extern_space = space;
 }
 
-struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *base,
+struct gc_mutator* gc_init_for_thread(struct gc_stack_addr base,
                                       struct gc_heap *heap) {
   fprintf(stderr,
           "Semispace copying collector not appropriate for multithreaded use.\n");

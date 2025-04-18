@@ -490,6 +490,10 @@ static void on_collection_event(GC_EventType event) {
     // Sloppily attribute finalizers and eager reclamation to
     // ephemerons.
     HEAP_EVENT(ephemerons_traced);
+    // FIXME: This overestimates the live data size, as blocks that have at
+    // least one live object will be lazily swept, and free space discovered in
+    // those objects will be added to GC_bytes_found, which would need to be
+    // subtracted from this value.
     HEAP_EVENT(live_data_size, GC_get_heap_size() - GC_get_free_bytes());
     break;
   case GC_EVENT_END:
@@ -517,7 +521,7 @@ uint64_t gc_allocation_counter(struct gc_heap *heap) {
   return GC_get_total_bytes();
 }
 
-int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
+int gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
             struct gc_heap **heap, struct gc_mutator **mutator,
             struct gc_event_listener event_listener,
             void *event_listener_data) {
@@ -613,9 +617,9 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   return 1;
 }
 
-struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *stack_base,
+struct gc_mutator* gc_init_for_thread(struct gc_stack_addr stack_base,
                                       struct gc_heap *heap) {
-  struct GC_stack_base base = { stack_base };
+  struct GC_stack_base base = { gc_stack_addr_as_pointer (stack_base) };
   GC_register_my_thread(&base);
   return add_mutator(heap);
 }

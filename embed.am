@@ -67,6 +67,7 @@ libwhippet_la_SOURCES = \
   %D%/api/gc-null-event-listener.h \
   %D%/api/gc-options.h \
   %D%/api/gc-ref.h \
+  %D%/api/gc-stack-addr.h \
   %D%/api/gc-tracepoint.h \
   %D%/api/gc-visibility.h \
   %D%/api/mmc-attrs.h \

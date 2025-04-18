@@ -26,40 +26,37 @@ static uintptr_t current_thread_hot_stack_addr(void) {
 // FIXME: check platform stack growth direction.
 #define HOTTER_THAN <=
 
-static void capture_current_thread_hot_stack_addr(struct gc_stack_addr *addr) {
-  addr->addr = current_thread_hot_stack_addr();
+static struct gc_stack_addr capture_current_thread_hot_stack_addr(void) {
+  return gc_stack_addr(current_thread_hot_stack_addr());
 }
 
-static void capture_current_thread_cold_stack_addr(struct gc_stack_addr *addr) {
-  addr->addr = gc_platform_current_thread_stack_base();
+static struct gc_stack_addr capture_current_thread_cold_stack_addr(void) {
+  return gc_stack_addr(gc_platform_current_thread_stack_base());
 }
 
-void gc_stack_init(struct gc_stack *stack, struct gc_stack_addr *base) {
-  if (base)
-    stack->cold = *base;
-  else
-    capture_current_thread_cold_stack_addr(&stack->cold);
-  stack->hot = stack->cold;
+void gc_stack_init(struct gc_stack *stack, struct gc_stack_addr base) {
+  if (gc_stack_addr_is_empty (base))
+    base = capture_current_thread_cold_stack_addr();
+  stack->cold = stack->hot = base;
 }
 
 void gc_stack_capture_hot(struct gc_stack *stack) {
-  capture_current_thread_hot_stack_addr(&stack->hot);
+  stack->hot = capture_current_thread_hot_stack_addr();
   setjmp(stack->registers);
   GC_ASSERT(stack->hot.addr HOTTER_THAN stack->cold.addr);
 }
 
-static void* call_with_stack(void* (*)(struct gc_stack_addr*, void*),
-                             struct gc_stack_addr*, void*) GC_NEVER_INLINE;
-static void* call_with_stack(void* (*f)(struct gc_stack_addr *, void *),
-                             struct gc_stack_addr *addr, void *arg) {
+static void* call_with_stack(void* (*)(struct gc_stack_addr, void*),
+                             struct gc_stack_addr, void*) GC_NEVER_INLINE;
+static void* call_with_stack(void* (*f)(struct gc_stack_addr, void *),
+                             struct gc_stack_addr addr, void *arg) {
   return f(addr, arg);
 }
-void* gc_call_with_stack_addr(void* (*f)(struct gc_stack_addr *base,
+void* gc_call_with_stack_addr(void* (*f)(struct gc_stack_addr base,
                                          void *arg),
                               void *arg) {
-  struct gc_stack_addr base;
-  capture_current_thread_hot_stack_addr(&base);
-  return call_with_stack(f, &base, arg);
+  struct gc_stack_addr base = capture_current_thread_hot_stack_addr();
+  return call_with_stack(f, base, arg);
 }
 
 void gc_stack_visit(struct gc_stack *stack,

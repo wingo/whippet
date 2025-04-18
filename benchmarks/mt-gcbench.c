@@ -258,7 +258,7 @@ struct call_with_gc_data {
   void* (*f)(struct thread *);
   struct gc_heap *heap;
 };
-static void* call_with_gc_inner(struct gc_stack_addr *addr, void *arg) {
+static void* call_with_gc_inner(struct gc_stack_addr addr, void *arg) {
   struct call_with_gc_data *data = arg;
   struct gc_mutator *mut = gc_init_for_thread(addr, data->heap);
   struct thread t = { mut, };
@@ -364,7 +364,8 @@ int main(int argc, char *argv[]) {
   struct gc_heap *heap;
   struct gc_mutator *mut;
   struct gc_basic_stats stats;
-  if (!gc_init(options, NULL, &heap, &mut, GC_BASIC_STATS, &stats)) {
+  if (!gc_init(options, gc_empty_stack_addr(), &heap, &mut,
+               GC_BASIC_STATS, &stats)) {
     fprintf(stderr, "Failed to initialize GC with heap size %zu bytes\n",
             heap_size);
     return 1;

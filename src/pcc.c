@@ -1218,7 +1218,7 @@ static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   return 1;
 }
 
-int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
+int gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
             struct gc_heap **heap, struct gc_mutator **mut,
             struct gc_event_listener event_listener,
             void *event_listener_data) {
@@ -1294,7 +1294,7 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   return 1;
 }
 
-struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *stack_base,
+struct gc_mutator* gc_init_for_thread(struct gc_stack_addr stack_base,
                                       struct gc_heap *heap) {
   struct gc_mutator *ret = calloc(1, sizeof(struct gc_mutator));
   if (!ret)
