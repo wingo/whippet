@@ -150,7 +150,7 @@ WHIPPET_CPPFLAGS_heap_conservative_parallel_generational_mmc = \
 
 WHIPPET_CPPFLAGS    = $(WHIPPET_CPPFLAGS_$(subst -,_,$(WHIPPET_COLLECTOR)))
 WHIPPET_CPPFLAGS    += -I$(srcdir)/%D%/api
-WHIPPET_IMPL_CFLAGS =
+WHIPPET_IMPL_CFLAGS = -fno-strict-aliasing
 WHIPPET_LIBS        = -lm
 
 if WHIPPET_ENABLE_DEBUG
