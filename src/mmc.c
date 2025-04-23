@@ -66,6 +66,7 @@ struct gc_heap {
   struct gc_heap_sizer sizer;
   struct gc_event_listener event_listener;
   void *event_listener_data;
+  void* (*allocation_failure)(struct gc_heap*, size_t);
 };
 
 #define HEAP_EVENT(heap, event, ...) do {                               \
@@ -511,20 +512,18 @@ heap_estimate_live_data_after_gc(struct gc_heap *heap,
   return bytes;
 }
 
-static void
-detect_out_of_memory(struct gc_heap *heap, uintptr_t allocation_since_last_gc) {
-  if (heap->sizer.policy != GC_HEAP_SIZE_FIXED)
-    return;
+static int
+compute_progress(struct gc_heap *heap, uintptr_t allocation_since_last_gc) {
+  struct nofl_space *nofl = heap_nofl_space(heap);
+  return allocation_since_last_gc > nofl_space_fragmentation(nofl);
+}
 
-  if (allocation_since_last_gc > nofl_space_fragmentation(heap_nofl_space(heap)))
-    return;
-
-  if (heap->gc_kind == GC_COLLECTION_MINOR)
-    return;
-
-  // No allocation since last gc: out of memory.
-  fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
-  GC_CRASH();
+static int
+compute_success(struct gc_heap *heap, enum gc_collection_kind gc_kind,
+                int progress) {
+  return progress
+    || gc_kind == GC_COLLECTION_MINOR
+    || heap->sizer.policy != GC_HEAP_SIZE_FIXED;
 }
 
 static double
@@ -750,12 +749,10 @@ sweep_ephemerons(struct gc_heap *heap) {
   return gc_sweep_pending_ephemerons(heap->pending_ephemerons, 0, 1);
 }
 
-static void collect(struct gc_mutator *mut,
-                    enum gc_collection_kind requested_kind,
-                    int requested_by_user) GC_NEVER_INLINE;
-static void
-collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind,
-        int requested_by_user) {
+static int collect(struct gc_mutator *mut,
+                   enum gc_collection_kind requested_kind) GC_NEVER_INLINE;
+static int
+collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
   struct nofl_space *nofl_space = heap_nofl_space(heap);
   struct large_object_space *lospace = heap_large_object_space(heap);
@@ -773,8 +770,7 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind,
   nofl_space_add_to_allocation_counter(nofl_space, &allocation_counter);
   large_object_space_add_to_allocation_counter(lospace, &allocation_counter);
   heap->total_allocated_bytes_at_last_gc += allocation_counter;
-  if (!requested_by_user)
-    detect_out_of_memory(heap, allocation_counter);
+  int progress = compute_progress(heap, allocation_counter);
   enum gc_collection_kind gc_kind =
     determine_collection_kind(heap, requested_kind);
   int is_minor = gc_kind == GC_COLLECTION_MINOR;
@@ -821,12 +817,12 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind,
   heap->size_at_last_gc = heap->size;
   HEAP_EVENT(heap, restarting_mutators);
   allow_mutators_to_continue(heap);
+  return compute_success(heap, gc_kind, progress);
 }
 
-static void
+static int
 trigger_collection(struct gc_mutator *mut,
-                   enum gc_collection_kind requested_kind,
-                   int requested_by_user) {
+                   enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
   int prev_kind = -1;
   gc_stack_capture_hot(&mut->stack);
@@ -836,14 +832,16 @@ trigger_collection(struct gc_mutator *mut,
   heap_lock(heap);
   while (mutators_are_stopping(heap))
     prev_kind = pause_mutator_for_collection(heap, mut);
+  int success = 1;
   if (prev_kind < (int)requested_kind)
-    collect(mut, requested_kind, requested_by_user);
+    success = collect(mut, requested_kind);
   heap_unlock(heap);
+  return success;
 }
 
 void
 gc_collect(struct gc_mutator *mut, enum gc_collection_kind kind) {
-  trigger_collection(mut, kind, 1);
+  trigger_collection(mut, kind);
 }
 
 int*
@@ -903,8 +901,10 @@ allocate_large(struct gc_mutator *mut, size_t size,
   nofl_space_request_release_memory(nofl_space,
                                     npages << lospace->page_size_log2);
 
-  while (!nofl_space_shrink(nofl_space, 0))
-    trigger_collection(mut, GC_COLLECTION_COMPACTING, 0);
+  while (!nofl_space_shrink(nofl_space, 0)) {
+    if (!trigger_collection(mut, GC_COLLECTION_COMPACTING))
+      return heap->allocation_failure(heap, size);
+  }
   atomic_fetch_add(&heap->large_object_pages, npages);
 
   void *ret = large_object_space_alloc(lospace, npages, kind);
@@ -919,7 +919,7 @@ allocate_large(struct gc_mutator *mut, size_t size,
 
 static void
 collect_for_small_allocation(void *mut) {
-  trigger_collection(mut, GC_COLLECTION_ANY, 0);
+  trigger_collection(mut, GC_COLLECTION_ANY);
 }
 
 void*
@@ -930,10 +930,16 @@ gc_allocate_slow(struct gc_mutator *mut, size_t size,
   if (size > gc_allocator_large_threshold())
     return allocate_large(mut, size, compute_trace_kind(kind));
 
-  return gc_ref_heap_object(nofl_allocate(&mut->allocator,
-                                          heap_nofl_space(mutator_heap(mut)),
-                                          size, collect_for_small_allocation,
-                                          mut, kind));
+  struct gc_heap *heap = mutator_heap(mut);
+  while (1) {
+    struct gc_ref ret = nofl_allocate(&mut->allocator, heap_nofl_space(heap),
+                                      size, kind);
+    if (!gc_ref_is_null(ret))
+      return gc_ref_heap_object(ret);
+    if (trigger_collection(mut, GC_COLLECTION_ANY))
+      continue;
+    return heap->allocation_failure(heap, size);
+  }
 }
 
 void
@@ -1109,6 +1115,12 @@ static void set_heap_size_from_thread(struct gc_heap *heap, size_t size) {
   pthread_mutex_unlock(&heap->lock);
 }
 
+static void* allocation_failure(struct gc_heap *heap, size_t size) {
+  fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
+  GC_CRASH();
+  return NULL;
+}
+
 static int
 heap_init(struct gc_heap *heap, const struct gc_options *options) {
   // *heap is already initialized to 0.
@@ -1143,6 +1155,7 @@ heap_init(struct gc_heap *heap, const struct gc_options *options) {
                                    allocation_counter_from_thread,
                                    set_heap_size_from_thread,
                                    heap->background_thread);
+  heap->allocation_failure = allocation_failure;
 
   return 1;
 }

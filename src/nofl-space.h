@@ -880,8 +880,7 @@ nofl_allocator_next_hole(struct nofl_allocator *alloc,
 
 static struct gc_ref
 nofl_allocate(struct nofl_allocator *alloc, struct nofl_space *space,
-              size_t size, void (*gc)(void*), void *gc_data,
-              enum gc_allocation_kind kind) {
+              size_t size, enum gc_allocation_kind kind) {
   GC_ASSERT(size > 0);
   GC_ASSERT(size <= gc_allocator_large_threshold());
   size = align_up(size, NOFL_GRANULE_SIZE);
@@ -894,7 +893,7 @@ nofl_allocate(struct nofl_allocator *alloc, struct nofl_space *space,
         break;
       }
       if (!hole)
-        gc(gc_data);
+        return gc_ref_null();
     }
   }
 
