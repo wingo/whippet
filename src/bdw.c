@@ -122,6 +122,7 @@ allocate_small(void **freelist, size_t idx, enum gc_inline_kind kind) {
   }
 
   *freelist = *(void **)(head);
+  *(void**)head = NULL;
 
   if (kind == GC_INLINE_KIND_POINTERLESS)
     memset(head, 0, gc_inline_freelist_object_size(idx));

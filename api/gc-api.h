@@ -140,6 +140,7 @@ static inline void* gc_allocate_small_fast_freelist(struct gc_mutator *mut,
     return NULL;
 
   *freelist_loc = *(void**)head;
+  *(void**)head = NULL;
 
   gc_update_alloc_table(gc_ref_from_heap_object(head), size, kind);
 
