@@ -7,13 +7,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-enum gc_allocator_kind {
-  GC_ALLOCATOR_INLINE_BUMP_POINTER,
-  GC_ALLOCATOR_INLINE_FREELIST,
-  GC_ALLOCATOR_INLINE_NONE
+enum gc_inline_allocator_kind {
+  GC_INLINE_ALLOCATOR_BUMP_POINTER,
+  GC_INLINE_ALLOCATOR_FREELIST,
+  GC_INLINE_ALLOCATOR_NONE
 };
 
-static inline enum gc_allocator_kind gc_allocator_kind(void) GC_ALWAYS_INLINE;
+static inline enum gc_inline_allocator_kind gc_inline_allocator_kind(enum gc_allocation_kind) GC_ALWAYS_INLINE;
 static inline size_t gc_allocator_large_threshold(void) GC_ALWAYS_INLINE;
 static inline size_t gc_allocator_small_granule_size(void) GC_ALWAYS_INLINE;
 

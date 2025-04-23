@@ -4,8 +4,15 @@
 #include "gc-attrs.h"
 #include "gc-assert.h"
 
-static inline enum gc_allocator_kind gc_allocator_kind(void) {
-  return GC_ALLOCATOR_INLINE_FREELIST;
+static inline enum gc_inline_allocator_kind
+gc_inline_allocator_kind(enum gc_allocation_kind kind) {
+  switch (kind) {
+    case GC_ALLOCATION_TAGGED:
+    case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
+      return GC_INLINE_ALLOCATOR_FREELIST;
+    default:
+      return GC_INLINE_ALLOCATOR_NONE;
+  }
 }
 static inline size_t gc_allocator_small_granule_size(void) {
   return 2 * sizeof(void *);
@@ -30,11 +37,8 @@ static inline size_t gc_allocator_freelist_offset(size_t size,
     case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
       base = 0;
       break;
-    case GC_ALLOCATION_UNTAGGED_POINTERLESS:
-    case GC_ALLOCATION_TAGGED_POINTERLESS:
-      base = (sizeof(void*) * gc_allocator_large_threshold() /
-              gc_allocator_small_granule_size());
-      break;
+    default:
+      GC_CRASH();
   }
   size_t bucket = (size - 1) / gc_allocator_small_granule_size();
   return base + sizeof(void*) * bucket;

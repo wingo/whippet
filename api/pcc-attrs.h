@@ -8,8 +8,8 @@
 static const uintptr_t GC_ALIGNMENT = 8;
 static const size_t GC_LARGE_OBJECT_THRESHOLD = 8192;
 
-static inline enum gc_allocator_kind gc_allocator_kind(void) {
-  return GC_ALLOCATOR_INLINE_BUMP_POINTER;
+static inline enum gc_inline_allocator_kind gc_inline_allocator_kind(enum gc_allocation_kind kind) {
+  return GC_INLINE_ALLOCATOR_BUMP_POINTER;
 }
 static inline size_t gc_allocator_small_granule_size(void) {
   return GC_ALIGNMENT;

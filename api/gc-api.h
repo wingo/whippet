@@ -154,12 +154,12 @@ static inline void* gc_allocate_small_fast(struct gc_mutator *mut, size_t size,
   GC_ASSERT(size != 0);
   GC_ASSERT(size <= gc_allocator_large_threshold());
 
-  switch (gc_allocator_kind()) {
-  case GC_ALLOCATOR_INLINE_BUMP_POINTER:
+  switch (gc_inline_allocator_kind(kind)) {
+  case GC_INLINE_ALLOCATOR_BUMP_POINTER:
     return gc_allocate_small_fast_bump_pointer(mut, size, kind);
-  case GC_ALLOCATOR_INLINE_FREELIST:
+  case GC_INLINE_ALLOCATOR_FREELIST:
     return gc_allocate_small_fast_freelist(mut, size, kind);
-  case GC_ALLOCATOR_INLINE_NONE:
+  case GC_INLINE_ALLOCATOR_NONE:
     return NULL;
   default:
     GC_CRASH();

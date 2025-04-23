@@ -65,7 +65,6 @@ struct gc_heap {
 
 struct gc_mutator {
   void *freelists[GC_INLINE_FREELIST_COUNT];
-  void *pointerless_freelists[GC_INLINE_FREELIST_COUNT];
   struct gc_heap *heap;
   struct gc_mutator_roots *roots;
   struct gc_mutator *next; // with heap lock
@@ -124,9 +123,6 @@ allocate_small(void **freelist, size_t idx, enum gc_inline_kind kind) {
   *freelist = *(void **)(head);
   *(void**)head = NULL;
 
-  if (kind == GC_INLINE_KIND_POINTERLESS)
-    memset(head, 0, gc_inline_freelist_object_size(idx));
-
   return head;
 }
 
@@ -134,41 +130,38 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size,
                        enum gc_allocation_kind kind) {
   GC_ASSERT(size != 0);
   if (size <= gc_allocator_large_threshold()) {
-    size_t idx = gc_inline_bytes_to_freelist_index(size);
-    void **freelists;
-    enum gc_inline_kind freelist_kind;
-    switch (kind) {
-      case GC_ALLOCATION_TAGGED:
-      case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
-        return allocate_small(&mut->freelists[idx], idx, GC_INLINE_KIND_NORMAL);
-      case GC_ALLOCATION_TAGGED_POINTERLESS:
-      case GC_ALLOCATION_UNTAGGED_POINTERLESS:
-        return allocate_small(&mut->pointerless_freelists[idx], idx,
-                              GC_INLINE_KIND_POINTERLESS);
-      default:
-        GC_CRASH();
-    }
-  } else {
     switch (kind) {
       case GC_ALLOCATION_TAGGED:
       case GC_ALLOCATION_UNTAGGED_CONSERVATIVE: {
-        void *ret = GC_malloc(size);
-        if (GC_LIKELY (ret != NULL))
-          return ret;
-        return __the_bdw_gc_heap->allocation_failure(__the_bdw_gc_heap, size);
+        size_t idx = gc_inline_bytes_to_freelist_index(size);
+        return allocate_small(&mut->freelists[idx], idx, GC_INLINE_KIND_NORMAL);
       }
       case GC_ALLOCATION_TAGGED_POINTERLESS:
-      case GC_ALLOCATION_UNTAGGED_POINTERLESS: {
-        void *ret = GC_malloc_atomic(size);
-        if (GC_LIKELY (ret != NULL)) {
-          memset(ret, 0, size);
-          return ret;
-        }
-        return __the_bdw_gc_heap->allocation_failure(__the_bdw_gc_heap, size);
-      }
+      case GC_ALLOCATION_UNTAGGED_POINTERLESS:
+        break;
       default:
         GC_CRASH();
     }
+  }
+  switch (kind) {
+    case GC_ALLOCATION_TAGGED:
+    case GC_ALLOCATION_UNTAGGED_CONSERVATIVE: {
+      void *ret = GC_malloc(size);
+      if (GC_LIKELY (ret != NULL))
+        return ret;
+      return __the_bdw_gc_heap->allocation_failure(__the_bdw_gc_heap, size);
+    }
+    case GC_ALLOCATION_TAGGED_POINTERLESS:
+    case GC_ALLOCATION_UNTAGGED_POINTERLESS: {
+      void *ret = GC_malloc_atomic(size);
+      if (GC_LIKELY (ret != NULL)) {
+        memset(ret, 0, size);
+        return ret;
+      }
+      return __the_bdw_gc_heap->allocation_failure(__the_bdw_gc_heap, size);
+    }
+    default:
+      GC_CRASH();
   }
 }
 
@@ -400,18 +393,7 @@ mark_mutator(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
     return state.mark_stack_ptr;
   }
 
-  for (int i = 0; i < GC_INLINE_FREELIST_COUNT; i++)
-    state.mark_stack_ptr = GC_MARK_AND_PUSH (mut->freelists[i],
-                                             state.mark_stack_ptr,
-                                             state.mark_stack_limit,
-                                             NULL);
-
-  for (int i = 0; i < GC_INLINE_FREELIST_COUNT; i++)
-    for (void *head = mut->pointerless_freelists[i]; head; head = *(void**)head)
-      state.mark_stack_ptr = GC_MARK_AND_PUSH (head,
-                                               state.mark_stack_ptr,
-                                               state.mark_stack_limit,
-                                               NULL);
+  memset(mut->freelists, 0, sizeof(void*) * GC_INLINE_FREELIST_COUNT);
 
   if (mut->roots)
     gc_trace_mutator_roots(mut->roots, bdw_mark_edge, mut->heap, &state);
