@@ -409,11 +409,23 @@ copy_space_allocator_acquire_block(struct copy_space_allocator *alloc,
   return 0;
 }
 
+static struct copy_space_block*
+copy_space_obtain_empty_block_during_gc(struct copy_space *space,
+                                        const struct gc_lock *lock) {
+  GC_ASSERT(!copy_space_pop_empty_block(space, lock));
+  struct copy_space_block *block = copy_space_page_in_block(space, lock);
+  if (block)
+    atomic_fetch_add(&space->bytes_to_page_out, COPY_SPACE_BLOCK_SIZE);
+  return block;
+}
+
 static int
 copy_space_allocator_acquire_empty_block(struct copy_space_allocator *alloc,
                                          struct copy_space *space) {
   struct gc_lock lock = copy_space_lock(space);
   struct copy_space_block *block = copy_space_pop_empty_block(space, &lock);
+  if (!block && space->in_gc)
+    block = copy_space_obtain_empty_block_during_gc(space, &lock);
   gc_lock_release(&lock);
   if (copy_space_allocator_acquire_block(alloc, block, space->active_region)) {
     block->in_core = 1;
@@ -925,7 +937,10 @@ static int
 copy_space_init(struct copy_space *space, size_t size, uint32_t flags,
                 struct gc_background_thread *thread) {
   size = align_up(size, COPY_SPACE_BLOCK_SIZE);
-  size_t reserved = align_up(size, COPY_SPACE_SLAB_SIZE);
+  // Reserve a few extra blocks to handle the fragmentation problem
+  // (https://wingolog.org/archives/2024/07/10/copying-collectors-with-block-structured-heaps-are-unreliable).
+  size_t reserved = size + COPY_SPACE_BLOCK_SIZE * 16;
+  reserved = align_up(reserved, COPY_SPACE_SLAB_SIZE);
   if (flags & COPY_SPACE_ALIGNED)
     reserved = copy_space_round_up_power_of_two(reserved);
   size_t nslabs = reserved / COPY_SPACE_SLAB_SIZE;
