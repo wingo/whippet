@@ -287,7 +287,7 @@ copy_space_request_release_memory(struct copy_space *space, size_t bytes) {
   return atomic_fetch_add(&space->bytes_to_page_out, bytes) + bytes;
 }
 
-static int
+static ssize_t
 copy_space_page_out_blocks_until_memory_released(struct copy_space *space) {
   ssize_t pending = atomic_load(&space->bytes_to_page_out);
   struct gc_lock lock = copy_space_lock(space);
@@ -299,7 +299,7 @@ copy_space_page_out_blocks_until_memory_released(struct copy_space *space) {
                - COPY_SPACE_BLOCK_SIZE);
   }
   gc_lock_release(&lock);
-  return pending <= 0;
+  return pending;
 }
 
 static ssize_t

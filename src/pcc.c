@@ -73,6 +73,7 @@ struct gc_heap {
   struct gc_heap_sizer sizer;
   struct gc_event_listener event_listener;
   void *event_listener_data;
+  void* (*allocation_failure)(struct gc_heap *, size_t);
 };
 
 #define HEAP_EVENT(heap, event, ...) do {                               \
@@ -862,10 +863,26 @@ copy_spaces_allocated_bytes(struct gc_heap *heap)
     : heap_mono_space(heap)->allocated_bytes_at_last_gc;
 }
 
-static enum gc_collection_kind
+static int
+resolve_pending_large_allocation_and_compute_success(struct gc_heap *heap,
+                                                     int is_minor_gc) {
+  struct copy_space *space = heap_resizable_space(heap);
+  ssize_t deficit = copy_space_page_out_blocks_until_memory_released(space);
+  if (is_minor_gc)
+    return 1;
+  if (deficit <= 0)
+    return copy_space_can_allocate(space, gc_allocator_large_threshold());
+  deficit = align_up(deficit, COPY_SPACE_BLOCK_SIZE);
+  if (heap->sizer.policy == GC_HEAP_SIZE_FIXED)
+    return 0;
+  resize_heap(heap, heap->size + deficit);
+  return 1;
+}
+
+static int
 collect(struct gc_mutator *mut,
         enum gc_collection_kind requested_kind) GC_NEVER_INLINE;
-static enum gc_collection_kind
+static int
 collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
   struct large_object_space *lospace = heap_large_object_space(heap);
@@ -920,32 +937,28 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   HEAP_EVENT(heap, live_data_size, live_size);
   gc_heap_sizer_on_gc(heap->sizer, heap->size, live_size, pause_ns,
                       resize_heap);
-  {
-    struct copy_space *space = heap_resizable_space(heap);
-    if (!copy_space_page_out_blocks_until_memory_released(space)
-        && heap->sizer.policy == GC_HEAP_SIZE_FIXED) {
-      fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
-      GC_CRASH();
-    }
-  }
+  int success =
+    resolve_pending_large_allocation_and_compute_success(heap, is_minor_gc);
   HEAP_EVENT(heap, restarting_mutators);
   allow_mutators_to_continue(heap);
-  return gc_kind;
+  return success;
 }
 
-static void trigger_collection(struct gc_mutator *mut,
-                               enum gc_collection_kind requested_kind) {
+static int trigger_collection(struct gc_mutator *mut,
+                              enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
   copy_space_allocator_finish(&mut->allocator, heap_allocation_space(heap));
   if (GC_GENERATIONAL)
     gc_field_set_writer_release_buffer(mutator_field_logger(mut));
   heap_lock(heap);
   int prev_kind = -1;
+  int success = 1;
   while (mutators_are_stopping(heap))
     prev_kind = pause_mutator_for_collection(heap, mut);
   if (prev_kind < (int)requested_kind)
-    collect(mut, requested_kind);
+    success = collect(mut, requested_kind);
   heap_unlock(heap);
+  return success;
 }
 
 void gc_collect(struct gc_mutator *mut, enum gc_collection_kind kind) {
@@ -955,13 +968,18 @@ void gc_collect(struct gc_mutator *mut, enum gc_collection_kind kind) {
 static void* allocate_large(struct gc_mutator *mut, size_t size) {
   struct gc_heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);
+  struct copy_space *copy_space = heap_resizable_space(heap);
 
   size_t npages = large_object_space_npages(space, size);
+  size_t page_bytes = npages << space->page_size_log2;
 
-  copy_space_request_release_memory(heap_resizable_space(heap),
-                                    npages << space->page_size_log2);
-  while (!copy_space_page_out_blocks_until_memory_released(heap_resizable_space(heap)))
-    trigger_collection(mut, GC_COLLECTION_COMPACTING);
+  copy_space_request_release_memory(copy_space, page_bytes);
+  if (copy_space_page_out_blocks_until_memory_released(copy_space) > 0
+      && !trigger_collection(mut, GC_COLLECTION_COMPACTING)) {
+    copy_space_maybe_reacquire_memory(copy_space, page_bytes);
+    return heap->allocation_failure(heap, size);
+  }
+
   atomic_fetch_add(&heap->large_object_pages, npages);
 
   void *ret = large_object_space_alloc(space, npages, GC_TRACE_PRECISELY);
@@ -972,10 +990,6 @@ static void* allocate_large(struct gc_mutator *mut, size_t size) {
   }
 
   return ret;
-}
-
-static void get_more_empty_blocks_for_mutator(void *mut) {
-  trigger_collection(mut, GC_COLLECTION_MINOR);
 }
 
 void* gc_allocate_slow(struct gc_mutator *mut, size_t size,
@@ -996,10 +1010,11 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size,
     ret = copy_space_allocate(&mut->allocator,
                               heap_allocation_space(mutator_heap(mut)),
                               size);
-    if (gc_ref_is_null(ret))
-      trigger_collection(mut, GC_COLLECTION_MINOR);
-    else
+    if (!gc_ref_is_null(ret))
       break;
+    if (trigger_collection(mut, GC_COLLECTION_MINOR))
+      continue;
+    return mutator_heap(mut)->allocation_failure(mutator_heap(mut), size);
   }
 
   return gc_ref_heap_object(ret);
@@ -1178,6 +1193,12 @@ static void set_heap_size_from_thread(struct gc_heap *heap, size_t size) {
   pthread_mutex_unlock(&heap->lock);
 }
 
+static void* allocation_failure(struct gc_heap *heap, size_t size) {
+  fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
+  GC_CRASH();
+  return NULL;
+}
+
 static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   // *heap is already initialized to 0.
 
@@ -1214,6 +1235,7 @@ static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
                                    allocation_counter_from_thread,
                                    set_heap_size_from_thread,
                                    heap->background_thread);
+  heap->allocation_failure = allocation_failure;
 
   return 1;
 }
