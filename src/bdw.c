@@ -60,6 +60,7 @@ struct gc_heap {
   struct gc_finalizer_state *finalizer_state;
   gc_finalizer_callback have_finalizers;
   void *event_listener_data;
+  void* (*allocation_failure)(struct gc_heap *, size_t);
 };
 
 struct gc_mutator {
@@ -116,11 +117,8 @@ allocate_small(void **freelist, size_t idx, enum gc_inline_kind kind) {
     size_t bytes = gc_inline_freelist_object_size(idx);
     GC_generic_malloc_many(bytes, kind, freelist);
     head = *freelist;
-    if (GC_UNLIKELY (!head)) {
-      fprintf(stderr, "ran out of space, heap size %zu\n",
-              GC_get_heap_size());
-      GC_CRASH();
-    }
+    if (GC_UNLIKELY (!head))
+      return __the_bdw_gc_heap->allocation_failure(__the_bdw_gc_heap, bytes);
   }
 
   *freelist = *(void **)(head);
@@ -152,13 +150,20 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size,
   } else {
     switch (kind) {
       case GC_ALLOCATION_TAGGED:
-      case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
-        return GC_malloc(size);
+      case GC_ALLOCATION_UNTAGGED_CONSERVATIVE: {
+        void *ret = GC_malloc(size);
+        if (GC_LIKELY (ret != NULL))
+          return ret;
+        return __the_bdw_gc_heap->allocation_failure(__the_bdw_gc_heap, size);
+      }
       case GC_ALLOCATION_TAGGED_POINTERLESS:
       case GC_ALLOCATION_UNTAGGED_POINTERLESS: {
         void *ret = GC_malloc_atomic(size);
-        memset(ret, 0, size);
-        return ret;
+        if (GC_LIKELY (ret != NULL)) {
+          memset(ret, 0, size);
+          return ret;
+        }
+        return __the_bdw_gc_heap->allocation_failure(__the_bdw_gc_heap, size);
       }
       default:
         GC_CRASH();
@@ -521,6 +526,22 @@ uint64_t gc_allocation_counter(struct gc_heap *heap) {
   return GC_get_total_bytes();
 }
 
+static void* allocation_failure(struct gc_heap *heap, size_t size) {
+  fprintf(stderr, "ran out of space, heap size %zu\n", GC_get_heap_size());
+  GC_CRASH();
+  return NULL;
+}
+
+static void* oom_fn(size_t nbytes) {
+  return NULL;
+}
+
+void gc_heap_set_allocation_failure_handler(struct gc_heap *heap,
+                                            void* (*handler)(struct gc_heap*,
+                                                             size_t)) {
+  heap->allocation_failure = handler;
+}
+
 int gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
             struct gc_heap **heap, struct gc_mutator **mutator,
             struct gc_event_listener event_listener,
@@ -607,6 +628,8 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
   HEAP_EVENT(init, GC_get_heap_size());
   GC_set_on_collection_event(on_collection_event);
   GC_set_on_heap_resize(on_heap_resize);
+  GC_set_oom_fn (oom_fn);
+  (*heap)->allocation_failure = allocation_failure;
 
   *mutator = add_mutator(*heap);
 

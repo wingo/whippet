@@ -42,6 +42,10 @@ struct gc_heap_roots;
 GC_API_ void gc_heap_set_roots(struct gc_heap *heap,
                                struct gc_heap_roots *roots);
 
+GC_API_ void gc_heap_set_allocation_failure_handler(struct gc_heap *heap,
+                                                    void* (*)(struct gc_heap*,
+                                                              size_t));
+
 struct gc_extern_space;
 GC_API_ void gc_heap_set_extern_space(struct gc_heap *heap,
                                       struct gc_extern_space *space);

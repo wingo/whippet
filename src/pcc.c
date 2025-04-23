@@ -1199,6 +1199,12 @@ static void* allocation_failure(struct gc_heap *heap, size_t size) {
   return NULL;
 }
 
+void gc_heap_set_allocation_failure_handler(struct gc_heap *heap,
+                                            void* (*handler)(struct gc_heap*,
+                                                             size_t)) {
+  heap->allocation_failure = handler;
+}
+
 static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   // *heap is already initialized to 0.
 
