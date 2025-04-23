@@ -162,12 +162,12 @@ gc_platform_acquire_memory_from_reservation(struct gc_reservation reservation,
   GC_ASSERT(size <= reservation.size);
   GC_ASSERT(offset <= reservation.size - size);
 
-  void *mem = mmap((void*)(reservation.base + offset), size,
-                   PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-  if (mem == MAP_FAILED) {
-    perror("mmap failed");
+  void *mem = (void*)(reservation.base + offset);
+  if (mprotect(mem, size, PROT_READ|PROT_WRITE)) {
+    perror("mprotect failed");
     return NULL;
   }
+  // FIXME: Should we gc_platform_populate_memory() here?
 
   return mem;
 }
