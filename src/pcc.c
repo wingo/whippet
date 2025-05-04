@@ -965,6 +965,14 @@ void gc_collect(struct gc_mutator *mut, enum gc_collection_kind kind) {
   trigger_collection(mut, kind);
 }
 
+int gc_heap_contains(struct gc_heap *heap, struct gc_ref ref) {
+  GC_ASSERT(gc_ref_is_heap_object(ref));
+  return (GC_GENERATIONAL
+          ? (new_space_contains(heap, ref) || old_space_contains(heap, ref))
+          : copy_space_contains(heap_mono_space(heap), ref))
+    || large_object_space_contains(heap_large_object_space(heap), ref);
+}
+
 static void* allocate_large(struct gc_mutator *mut, size_t size) {
   struct gc_heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);

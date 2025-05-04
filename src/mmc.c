@@ -844,6 +844,13 @@ gc_collect(struct gc_mutator *mut, enum gc_collection_kind kind) {
   trigger_collection(mut, kind);
 }
 
+int
+gc_heap_contains(struct gc_heap *heap, struct gc_ref ref) {
+  GC_ASSERT(gc_ref_is_heap_object(ref));
+  return nofl_space_contains(heap_nofl_space(heap), ref)
+    || large_object_space_contains(heap_large_object_space(heap), ref);
+}
+
 int*
 gc_safepoint_flag_loc(struct gc_mutator *mut) {
   return &mutator_heap(mut)->collecting;

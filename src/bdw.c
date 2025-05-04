@@ -187,6 +187,11 @@ void gc_collect(struct gc_mutator *mut,
   }
 }
 
+int gc_heap_contains(struct gc_heap *heap, struct gc_ref ref) {
+  GC_ASSERT(gc_ref_is_heap_object(ref));
+  return GC_base(gc_ref_heap_object(ref)) != 0;
+}
+
 int gc_object_is_old_generation_slow(struct gc_mutator *mut,
                                      struct gc_ref obj) {
   return 0;

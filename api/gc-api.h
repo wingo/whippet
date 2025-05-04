@@ -59,6 +59,8 @@ GC_API_ void* gc_call_without_gc(struct gc_mutator *mut, void* (*f)(void*),
 GC_API_ void gc_collect(struct gc_mutator *mut,
                         enum gc_collection_kind requested_kind);
 
+GC_API_ int gc_heap_contains(struct gc_heap *heap, struct gc_ref ref);
+
 static inline void gc_update_alloc_table(struct gc_ref obj, size_t size,
                                          enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
 static inline void gc_update_alloc_table(struct gc_ref obj, size_t size,
