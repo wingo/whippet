@@ -248,7 +248,8 @@ void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
   gc_ephemeron_init_internal(mut->heap, ephemeron, key, value);
   if (GC_base((void*)gc_ref_value(key))) {
     struct gc_ref *loc = gc_edge_loc(gc_ephemeron_key_edge(ephemeron));
-    GC_register_disappearing_link((void**)loc);
+    GC_general_register_disappearing_link((void**)loc,
+                                          gc_ref_heap_object(key));
   }
 }
 
