@@ -555,6 +555,12 @@ void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
   gc_ephemeron_init_internal(mutator_heap(mut), ephemeron, key, value);
 }
 
+struct gc_ref gc_ephemeron_swap_value(struct gc_mutator *mut,
+                                      struct gc_ephemeron *e,
+                                      struct gc_ref ref) {
+  return gc_ephemeron_swap_value_internal(e, ref);
+}
+
 struct gc_finalizer* gc_allocate_finalizer(struct gc_mutator *mut) {
   return gc_allocate(mut, gc_finalizer_size(), GC_ALLOCATION_TAGGED);
 }

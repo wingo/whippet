@@ -253,6 +253,12 @@ void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
   }
 }
 
+struct gc_ref gc_ephemeron_swap_value(struct gc_mutator *mut,
+                                      struct gc_ephemeron *e,
+                                      struct gc_ref ref) {
+  return gc_ephemeron_swap_value_internal(e, ref);
+}
+
 int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
   // Pretend the key is traced, to avoid adding this ephemeron to the
   // global table.

@@ -47,6 +47,10 @@ GC_INTERNAL void
 gc_sweep_pending_ephemerons(struct gc_pending_ephemerons *state,
                             size_t shard, size_t nshards);
 
+GC_INTERNAL struct gc_ref
+gc_ephemeron_swap_value_internal(struct gc_ephemeron *ephemeron,
+                                 struct gc_ref value);
+
 GC_INTERNAL void gc_ephemeron_init_internal(struct gc_heap *heap,
                                             struct gc_ephemeron *ephemeron,
                                             struct gc_ref key,

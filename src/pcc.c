@@ -1090,6 +1090,14 @@ void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
   gc_ephemeron_init_internal(mutator_heap(mut), ephemeron, key, value);
 }
 
+struct gc_ref
+gc_ephemeron_swap_value(struct gc_mutator *mut, struct gc_ephemeron *e,
+                        struct gc_ref ref) {
+  gc_write_barrier(mut, gc_ref_from_heap_object(e), gc_ephemeron_size(),
+                   gc_ephemeron_value_edge(e), ref);
+  return gc_ephemeron_swap_value_internal(e, ref);
+}
+
 struct gc_pending_ephemerons *gc_heap_pending_ephemerons(struct gc_heap *heap) {
 #if GC_GENERATIONAL
   if (is_minor_collection(heap))

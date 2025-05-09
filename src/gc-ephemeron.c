@@ -165,19 +165,22 @@
 // Concurrent operations on ephemeron lists
 ////////////////////////////////////////////////////////////////////////
 
+static int
+ephemeron_list_try_push(struct gc_ephemeron **loc,
+                        struct gc_ephemeron *head,
+                        struct gc_ephemeron **tail,
+                        struct gc_ephemeron** (*get_next)(struct gc_ephemeron*)) {
+  *get_next(head) = *tail;
+  return atomic_compare_exchange_weak(loc, tail, head);
+}
+
 static void
 ephemeron_list_push(struct gc_ephemeron **loc,
                     struct gc_ephemeron *head,
                     struct gc_ephemeron** (*get_next)(struct gc_ephemeron*)) {
   struct gc_ephemeron *tail = atomic_load_explicit(loc, memory_order_acquire);
-  while (1) {
-    // There must be no concurrent readers of HEAD, a precondition that
-    // we ensure by only publishing HEAD to LOC at most once per cycle.
-    // Therefore we can use a normal store for the tail pointer.
-    *get_next(head) = tail;
-    if (atomic_compare_exchange_weak(loc, &tail, head))
-      break;
-  }
+  while (!ephemeron_list_try_push(loc, head, &tail, get_next))
+    ;
 }
 
 static struct gc_ephemeron*
@@ -274,6 +277,11 @@ void gc_ephemeron_chain_push(struct gc_ephemeron **loc,
                              struct gc_ephemeron *e) {
   ephemeron_list_push(loc, e, ephemeron_chain);
 }  
+int gc_ephemeron_chain_try_push(struct gc_ephemeron **loc,
+                                struct gc_ephemeron *e,
+                                struct gc_ephemeron **tail) {
+  return ephemeron_list_try_push(loc, e, tail, ephemeron_chain);
+}
 static struct gc_ephemeron* follow_chain(struct gc_ephemeron **loc) {
   return ephemeron_list_follow(loc, ephemeron_chain, ephemeron_is_not_dead);
 }  
@@ -283,6 +291,21 @@ struct gc_ephemeron* gc_ephemeron_chain_head(struct gc_ephemeron **loc) {
 struct gc_ephemeron* gc_ephemeron_chain_next(struct gc_ephemeron *e) {
   return follow_chain(ephemeron_chain(e));
 }
+
+struct gc_ref gc_ephemeron_swap_value_internal(struct gc_ephemeron *e,
+                                               struct gc_ref ref)
+{
+  GC_ASSERT(!gc_ref_is_null(ref));
+
+  uintptr_t prev = atomic_load(&e->value.value);
+  do {
+    if (!prev)
+      break;
+  } while (!atomic_compare_exchange_weak(&e->value.value, &prev, ref.value));
+
+  return gc_ref(prev);
+}
+
 void gc_ephemeron_mark_dead(struct gc_ephemeron *e) {
   atomic_store_explicit(&e->key.value, 0, memory_order_release);
 }
@@ -570,6 +593,9 @@ gc_sweep_pending_ephemerons(struct gc_pending_ephemerons *state,
 void gc_ephemeron_init_internal(struct gc_heap *heap,
                                 struct gc_ephemeron *ephemeron,
                                 struct gc_ref key, struct gc_ref value) {
+  GC_ASSERT(!gc_ref_is_null(key));
+  GC_ASSERT(!gc_ref_is_null(value));
+
   // Caller responsible for any write barrier, though really the
   // assumption is that the ephemeron is younger than the key and the
   // value.
