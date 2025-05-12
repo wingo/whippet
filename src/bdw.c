@@ -53,7 +53,6 @@
 
 struct gc_heap {
   struct gc_heap *freelist; // see mark_heap
-  pthread_mutex_t lock;
   struct gc_heap_roots *roots;
   struct gc_mutator *mutators;
   struct gc_event_listener event_listener;
@@ -67,8 +66,8 @@ struct gc_mutator {
   void *freelists[GC_INLINE_FREELIST_COUNT];
   struct gc_heap *heap;
   struct gc_mutator_roots *roots;
-  struct gc_mutator *next; // with heap lock
-  struct gc_mutator **prev; // with heap lock
+  struct gc_mutator *next; // with global bdw lock
+  struct gc_mutator **prev; // with global bdw lock
   void *event_listener_data;
 };
 
@@ -425,13 +424,13 @@ static inline struct gc_mutator *add_mutator(struct gc_heap *heap) {
   ret->event_listener_data =
     heap->event_listener.mutator_added(heap->event_listener_data);
 
-  pthread_mutex_lock(&heap->lock);
+  GC_alloc_lock();
   ret->next = heap->mutators;
   ret->prev = &heap->mutators;
   if (ret->next)
     ret->next->prev = &ret->next;
   heap->mutators = ret;
-  pthread_mutex_unlock(&heap->lock);
+  GC_alloc_unlock();
 
   return ret;
 }
@@ -613,7 +612,6 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
   }
 
   *heap = GC_generic_malloc(sizeof(struct gc_heap), heap_gc_kind);
-  pthread_mutex_init(&(*heap)->lock, NULL);
 
   (*heap)->event_listener = event_listener;
   (*heap)->event_listener_data = event_listener_data;
@@ -642,12 +640,13 @@ struct gc_mutator* gc_init_for_thread(struct gc_stack_addr stack_base,
   return add_mutator(heap);
 }
 void gc_finish_for_thread(struct gc_mutator *mut) {
-  pthread_mutex_lock(&mut->heap->lock);
+  GC_alloc_lock();
   MUTATOR_EVENT(mut, mutator_removed);
   *mut->prev = mut->next;
   if (mut->next)
     mut->next->prev = mut->prev;
-  pthread_mutex_unlock(&mut->heap->lock);
+  memset(mut, 0, sizeof(*mut));
+  GC_alloc_unlock();
 
   GC_unregister_my_thread();
 }
