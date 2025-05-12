@@ -52,7 +52,6 @@
 #define GC_INLINE_FREELIST_COUNT (256U / GC_INLINE_GRANULE_BYTES)
 
 struct gc_heap {
-  struct gc_heap *freelist; // see mark_heap
   struct gc_heap_roots *roots;
   struct gc_mutator *mutators;
   struct gc_event_listener event_listener;
@@ -315,7 +314,7 @@ mark_ephemeron(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
   
   struct gc_ephemeron *ephemeron = (struct gc_ephemeron*) addr;
 
-  // If this ephemeron is on a freelist, its first word will be a
+  // If this ephemeron is on a freelist, its first word will be a possibly-null
   // freelist link and everything else will be NULL.
   if (!gc_ref_value(gc_edge_ref(gc_ephemeron_value_edge(ephemeron)))) {
     bdw_mark_edge(gc_edge(addr), NULL, &state);
@@ -344,7 +343,7 @@ mark_finalizer(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
   
   struct gc_finalizer *finalizer = (struct gc_finalizer*) addr;
 
-  // If this ephemeron is on a freelist, its first word will be a
+  // If this ephemeron is on a freelist, its first word will be a possibly-null
   // freelist link and everything else will be NULL.
   if (!gc_ref_value(gc_finalizer_object(finalizer))) {
     bdw_mark_edge(gc_edge(addr), NULL, &state);
@@ -366,13 +365,10 @@ mark_heap(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
   
   struct gc_heap *heap = (struct gc_heap*) addr;
 
-  // If this heap is on a freelist... well probably we are screwed, BDW
-  // isn't really made to do multiple heaps in a process.  But still, in
-  // this case, the first word is the freelist and the rest are null.
-  if (heap->freelist) {
-    bdw_mark_edge(gc_edge(addr), NULL, &state);
+  // If this heap is not __the_bdw_gc_heap, either it is on a freelist, or the
+  // heap object is still under construction.  In either case, ignore it.
+  if (heap != __the_bdw_gc_heap)
     return state.mark_stack_ptr;
-  }
 
   if (heap->roots)
     gc_trace_heap_roots(heap->roots, bdw_mark_edge, heap, &state);
@@ -397,9 +393,12 @@ mark_mutator(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
   
   struct gc_mutator *mut = (struct gc_mutator*) addr;
 
-  // If this mutator is on a freelist, its first word will be a
-  // freelist link and everything else will be NULL.
-  if (!mut->heap) {
+  // A mutator is valid and initialized if its "heap" member points to
+  // __the_bdw_gc_heap.  Otherwise it could be on a freelist, in which case its
+  // first word will be a possibly-null freelist link, or it could be under
+  // construction, or it could be exited already.  In any case, mark the free
+  // list link and finish.
+  if (mut->heap != __the_bdw_gc_heap) {
     bdw_mark_edge(gc_edge(addr), NULL, &state);
     return state.mark_stack_ptr;
   }
@@ -420,7 +419,6 @@ mark_mutator(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
 static inline struct gc_mutator *add_mutator(struct gc_heap *heap) {
   struct gc_mutator *ret =
     GC_generic_malloc(sizeof(struct gc_mutator), mutator_gc_kind);
-  ret->heap = heap;
   ret->event_listener_data =
     heap->event_listener.mutator_added(heap->event_listener_data);
 
@@ -430,6 +428,7 @@ static inline struct gc_mutator *add_mutator(struct gc_heap *heap) {
   if (ret->next)
     ret->next->prev = &ret->next;
   heap->mutators = ret;
+  ret->heap = heap;
   GC_alloc_unlock();
 
   return ret;
