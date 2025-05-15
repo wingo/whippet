@@ -1081,6 +1081,9 @@ void gc_safepoint_slow(struct gc_mutator *mut) {
   heap_unlock(heap);
 }
   
+void gc_safepoint_signal_inhibit(struct gc_mutator *mut) { GC_CRASH(); }
+void gc_safepoint_signal_reallow(struct gc_mutator *mut) { GC_CRASH(); }
+
 struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {
   return gc_allocate(mut, gc_ephemeron_size(), GC_ALLOCATION_TAGGED);
 }

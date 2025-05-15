@@ -869,6 +869,9 @@ gc_safepoint_slow(struct gc_mutator *mut) {
   heap_unlock(heap);
 }
 
+void gc_safepoint_signal_inhibit(struct gc_mutator *mut) { GC_CRASH(); }
+void gc_safepoint_signal_reallow(struct gc_mutator *mut) { GC_CRASH(); }
+
 static enum gc_trace_kind
 compute_trace_kind(enum gc_allocation_kind kind) {
   if (GC_CONSERVATIVE_TRACE) {

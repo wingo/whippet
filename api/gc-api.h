@@ -301,4 +301,17 @@ static inline void gc_safepoint(struct gc_mutator *mut) {
     gc_safepoint_slow(mut);
 }
 
+GC_API_ void gc_safepoint_signal_inhibit(struct gc_mutator *mut);
+GC_API_ void gc_safepoint_signal_reallow(struct gc_mutator *mut);
+
+static inline void gc_inhibit_preemption(struct gc_mutator *mut) {
+  if (gc_safepoint_mechanism() == GC_SAFEPOINT_MECHANISM_SIGNAL)
+    gc_safepoint_signal_inhibit(mut);
+}
+
+static inline void gc_reallow_preemption(struct gc_mutator *mut) {
+  if (gc_safepoint_mechanism() == GC_SAFEPOINT_MECHANISM_SIGNAL)
+    gc_safepoint_signal_reallow(mut);
+}
+
 #endif // GC_API_H_
