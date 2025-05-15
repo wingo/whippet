@@ -1383,6 +1383,16 @@ static void reactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   heap_unlock(heap);
 }
 
+void gc_deactivate(struct gc_mutator *mut) {
+  GC_ASSERT(mut->active);
+  deactivate_mutator(mutator_heap(mut), mut);
+}
+
+void gc_reactivate(struct gc_mutator *mut) {
+  GC_ASSERT(!mut->active);
+  reactivate_mutator(mutator_heap(mut), mut);
+}
+
 void* gc_deactivate_for_call(struct gc_mutator *mut,
                              void* (*f)(struct gc_mutator*, void*),
                              void *data) {

@@ -668,6 +668,9 @@ static void* call_with_mutator (void *p) {
   return data->proc(data->mutator, data->data);
 }
 
+void gc_deactivate(struct gc_mutator *mut) {};
+void gc_reactivate(struct gc_mutator *mut) {};
+
 void* gc_deactivate_for_call(struct gc_mutator *mut,
                              void* (*f)(struct gc_mutator *, void*),
                              void *data) {

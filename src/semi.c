@@ -763,6 +763,10 @@ struct gc_mutator* gc_init_for_thread(struct gc_stack_addr base,
 void gc_finish_for_thread(struct gc_mutator *space) {
 }
 
+void gc_deactivate(struct gc_mutator *mut) {}
+
+void gc_reactivate(struct gc_mutator *mut) {}
+
 void* gc_deactivate_for_call(struct gc_mutator *mut,
                              void* (*f)(struct gc_mutator *, void*),
                              void *data) {
