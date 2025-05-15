@@ -558,6 +558,11 @@ static void* oom_fn(size_t nbytes) {
   return NULL;
 }
 
+static void warn_fn(char *fmt, GC_word arg) {
+  /* FIXME: Do something better with this.  */
+  fprintf (stderr, fmt, arg);
+}
+
 void gc_heap_set_allocation_failure_handler(struct gc_heap *heap,
                                             void* (*handler)(struct gc_heap*,
                                                              size_t)) {
@@ -616,6 +621,7 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
   snprintf(markers, sizeof(markers), "%d", options->common.parallelism);
   setenv("GC_MARKERS", markers, 1);
   GC_init();
+  GC_set_warn_proc (warn_fn);
   size_t current_heap_size = GC_get_heap_size();
   if (options->common.heap_size > current_heap_size)
     GC_expand_hp(options->common.heap_size - current_heap_size);
