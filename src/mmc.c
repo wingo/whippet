@@ -328,7 +328,8 @@ load_conservative_ref(uintptr_t addr) {
 
 static inline void
 trace_conservative_edges(uintptr_t low, uintptr_t high, int possibly_interior,
-                         struct gc_heap *heap, struct gc_trace_worker *worker) {
+                         struct gc_heap *heap, void *data) {
+  struct gc_trace_worker *worker = data;
   GC_ASSERT(low == align_down(low, sizeof(uintptr_t)));
   GC_ASSERT(high == align_down(high, sizeof(uintptr_t)));
   for (uintptr_t addr = low; addr < high; addr += sizeof(uintptr_t))
@@ -401,6 +402,14 @@ trace_root(struct gc_root root, struct gc_heap *heap,
   case GC_ROOT_KIND_EDGE_BUFFER:
     gc_field_set_visit_edge_buffer(&heap->remembered_set, root.edge_buffer,
                                    trace_remembered_edge, heap, worker);
+    break;
+  case GC_ROOT_KIND_HEAP_CONSERVATIVE_ROOTS:
+    gc_trace_heap_conservative_roots(root.heap->roots, trace_conservative_edges,
+                                     heap, worker);
+    break;
+  case GC_ROOT_KIND_MUTATOR_CONSERVATIVE_ROOTS:
+    gc_trace_mutator_conservative_roots(root.mutator->roots,
+                                        trace_conservative_edges, heap, worker);
     break;
   default:
     GC_CRASH();
@@ -639,9 +648,13 @@ enqueue_mutator_conservative_roots(struct gc_heap *heap) {
     int possibly_interior = gc_mutator_conservative_roots_may_be_interior();
     for (struct gc_mutator *mut = heap->mutators;
          mut;
-         mut = mut->next)
+         mut = mut->next) {
       gc_stack_visit(&mut->stack, enqueue_conservative_roots, heap,
                      &possibly_interior);
+      if (mut->roots)
+        gc_tracer_add_root(&heap->tracer,
+                           gc_root_mutator_conservative_roots(mut));
+    }
     return 1;
   }
   return 0;
@@ -653,6 +666,8 @@ enqueue_global_conservative_roots(struct gc_heap *heap) {
     int possibly_interior = 0;
     gc_platform_visit_global_conservative_roots
       (enqueue_conservative_roots, heap, &possibly_interior);
+    if (heap->roots)
+      gc_tracer_add_root(&heap->tracer, gc_root_heap_conservative_roots(heap));
     return 1;
   }
   return 0;

@@ -228,6 +228,20 @@ static void bdw_mark_edge(struct gc_edge edge, struct gc_heap *heap,
                                             NULL);
 }
 
+static void bdw_mark_range(uintptr_t lo, uintptr_t hi, int possibly_interior,
+                           struct gc_heap *heap, void *visit_data) {
+  struct bdw_mark_state *state = visit_data;
+
+  GC_ASSERT_EQ (lo, align_up (lo, sizeof(void*)));
+  GC_ASSERT_EQ (hi, align_up (hi, sizeof(void*)));
+
+  for (void **walk = (void**)lo, **end = (void**)hi; walk < end; walk++)
+    state->mark_stack_ptr = GC_MARK_AND_PUSH (*walk,
+                                              state->mark_stack_ptr,
+                                              state->mark_stack_limit,
+                                              NULL);
+}
+
 static int heap_gc_kind;
 static int mutator_gc_kind;
 static int ephemeron_gc_kind;
@@ -380,8 +394,10 @@ mark_heap(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
   if (heap != __the_bdw_gc_heap)
     return state.mark_stack_ptr;
 
-  if (heap->roots)
+  if (heap->roots) {
+    gc_trace_heap_conservative_roots(heap->roots, bdw_mark_range, heap, &state);
     gc_trace_heap_roots(heap->roots, bdw_mark_edge, heap, &state);
+  }
 
   gc_visit_finalizer_roots(heap->finalizer_state, bdw_mark_edge, heap, &state);
 
@@ -415,8 +431,11 @@ mark_mutator(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
 
   memset(mut->freelists, 0, sizeof(void*) * GC_INLINE_FREELIST_COUNT);
 
-  if (mut->roots)
+  if (mut->roots) {
+    gc_trace_mutator_conservative_roots(mut->roots, bdw_mark_range,
+                                        mut->heap, &state);
     gc_trace_mutator_roots(mut->roots, bdw_mark_edge, mut->heap, &state);
+  }
 
   state.mark_stack_ptr = GC_MARK_AND_PUSH (mut->next,
                                            state.mark_stack_ptr,

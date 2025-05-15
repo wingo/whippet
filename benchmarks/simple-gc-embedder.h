@@ -92,6 +92,26 @@ static inline void gc_trace_heap_roots(struct gc_heap_roots *roots,
     visit_roots(roots->roots, trace_edge, heap, trace_data);
 }
 
+static inline void
+gc_trace_mutator_conservative_roots(struct gc_mutator_roots *roots,
+                                    void (*trace_range)(uintptr_t start,
+                                                        uintptr_t end,
+                                                        int possibly_interior,
+                                                        struct gc_heap *heap,
+                                                        void *data),
+                                    struct gc_heap *heap,
+                                    void *data) {}
+
+static inline void
+gc_trace_heap_conservative_roots(struct gc_heap_roots *roots,
+                                 void (*trace_range)(uintptr_t start,
+                                                     uintptr_t end,
+                                                     int possibly_interior,
+                                                     struct gc_heap *heap,
+                                                     void *data),
+                                 struct gc_heap *heap,
+                                 void *data) {}
+
 static inline uintptr_t gc_object_forwarded_nonatomic(struct gc_ref ref) {
   uintptr_t tag = *tag_word(ref);
   return (tag & gcobj_not_forwarded_bit) ? 0 : tag;
