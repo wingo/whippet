@@ -763,8 +763,16 @@ struct gc_mutator* gc_init_for_thread(struct gc_stack_addr base,
 void gc_finish_for_thread(struct gc_mutator *space) {
 }
 
-void* gc_call_without_gc(struct gc_mutator *mut, void* (*f)(void*),
-                         void *data) {
+void* gc_deactivate_for_call(struct gc_mutator *mut,
+                             void* (*f)(struct gc_mutator *, void*),
+                             void *data) {
   // Can't be threads, then there won't be collection.
-  return f(data);
+  return f(mut, data);
+}
+
+void* gc_reactivate_for_call(struct gc_mutator *mut,
+                             void* (*f)(struct gc_mutator *mut, void*),
+                             void *data) {
+  // Can't be threads, then there won't be collection.
+  return f(mut, data);
 }

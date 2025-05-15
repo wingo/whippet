@@ -53,8 +53,12 @@ GC_API_ void gc_heap_set_extern_space(struct gc_heap *heap,
 GC_API_ struct gc_mutator* gc_init_for_thread(struct gc_stack_addr base,
                                               struct gc_heap *heap);
 GC_API_ void gc_finish_for_thread(struct gc_mutator *mut);
-GC_API_ void* gc_call_without_gc(struct gc_mutator *mut, void* (*f)(void*),
-                                 void *data) GC_NEVER_INLINE;
+GC_API_ void* gc_deactivate_for_call(struct gc_mutator *mut,
+                                     void* (*f)(struct gc_mutator*, void*),
+                                     void *data) GC_NEVER_INLINE;
+GC_API_ void* gc_reactivate_for_call(struct gc_mutator *mut,
+                                     void* (*f)(struct gc_mutator*, void*),
+                                     void *data) GC_NEVER_INLINE;
 
 GC_API_ void gc_collect(struct gc_mutator *mut,
                         enum gc_collection_kind requested_kind);

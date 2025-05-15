@@ -190,7 +190,7 @@ static void* run_one_test_in_thread(void *arg) {
 }
 
 struct join_data { int status; pthread_t thread; };
-static void *join_thread(void *data) {
+static void *join_thread(struct gc_mutator *unused, void *data) {
   struct join_data *join_data = data;
   void *ret;
   join_data->status = pthread_join(join_data->thread, &ret);
@@ -263,7 +263,7 @@ int main(int argc, char *argv[]) {
   ssize_t outstanding = (size_t)run_one_test(&main_thread);
   for (size_t i = 1; i < nthreads; i++) {
     struct join_data data = { 0, threads[i] };
-    void *ret = gc_call_without_gc(mut, join_thread, &data);
+    void *ret = gc_deactivate_for_call(mut, join_thread, &data);
     if (data.status) {
       errno = data.status;
       perror("Failed to join thread");

@@ -657,10 +657,29 @@ void gc_finish_for_thread(struct gc_mutator *mut) {
   GC_unregister_my_thread();
 }
 
-void* gc_call_without_gc(struct gc_mutator *mut,
-                         void* (*f)(void*),
-                         void *data) {
-  return GC_do_blocking(f, data);
+struct call_with_mutator_data {
+  void* (*proc) (struct gc_mutator*, void*);
+  struct gc_mutator *mutator;
+  void *data;
+};
+
+static void* call_with_mutator (void *p) {
+  struct call_with_mutator_data *data = p;
+  return data->proc(data->mutator, data->data);
+}
+
+void* gc_deactivate_for_call(struct gc_mutator *mut,
+                             void* (*f)(struct gc_mutator *, void*),
+                             void *data) {
+  struct call_with_mutator_data d = { f, mut, data };
+  return GC_do_blocking(call_with_mutator, &d);
+}
+
+void* gc_reactivate_for_call(struct gc_mutator *mut,
+                             void* (*f)(struct gc_mutator *, void*),
+                             void *data) {
+  struct call_with_mutator_data d = { f, mut, data };
+  return GC_call_with_gc_active(call_with_mutator, &d);
 }
 
 void gc_mutator_set_roots(struct gc_mutator *mut,

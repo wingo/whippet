@@ -96,6 +96,7 @@ struct gc_mutator {
   void *event_listener_data;
   struct gc_mutator *next;
   struct gc_mutator *prev;
+  int active;
 };
 
 struct gc_trace_worker_data {
@@ -501,6 +502,7 @@ static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   while (mutators_are_stopping(heap))
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
   mut->next = mut->prev = NULL;
+  mut->active = 1;
   struct gc_mutator *tail = heap->mutators;
   if (tail) {
     mut->next = tail;
@@ -520,6 +522,7 @@ static void remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->heap = NULL;
   heap_lock(heap);
   heap->mutator_count--;
+  mut->active = 0;
   if (mut->next)
     mut->next->prev = mut->prev;
   if (mut->prev)
@@ -1357,31 +1360,48 @@ void gc_finish_for_thread(struct gc_mutator *mut) {
 
 static void deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mut->next == NULL);
+  GC_ASSERT(mut->active);
   copy_space_allocator_finish(&mut->allocator, heap_allocation_space(heap));
   if (GC_GENERATIONAL)
     gc_field_set_writer_release_buffer(mutator_field_logger(mut));
   heap_lock(heap);
   heap->inactive_mutator_count++;
+  mut->active = 0;
   if (all_mutators_stopped(heap))
     pthread_cond_signal(&heap->collector_cond);
   heap_unlock(heap);
 }
 
 static void reactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
+  GC_ASSERT(!mut->active);
   heap_lock(heap);
   while (mutators_are_stopping(heap))
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
+  mut->active = 1;
   heap->inactive_mutator_count--;
   maybe_increase_max_active_mutator_count(heap);
   heap_unlock(heap);
 }
 
-void* gc_call_without_gc(struct gc_mutator *mut,
-                         void* (*f)(void*),
-                         void *data) {
+void* gc_deactivate_for_call(struct gc_mutator *mut,
+                             void* (*f)(struct gc_mutator*, void*),
+                             void *data) {
   struct gc_heap *heap = mutator_heap(mut);
   deactivate_mutator(heap, mut);
-  void *ret = f(data);
+  void *ret = f(mut, data);
   reactivate_mutator(heap, mut);
+  return ret;
+}
+
+void* gc_reactivate_for_call(struct gc_mutator *mut,
+                             void* (*f)(struct gc_mutator*, void*),
+                             void *data) {
+  struct gc_heap *heap = mutator_heap(mut);
+  int reactivate = !mut->active;
+  if (reactivate)
+    reactivate_mutator(heap, mut);
+  void *ret = f(mut, data);
+  if (reactivate)
+    deactivate_mutator(heap, mut);
   return ret;
 }
