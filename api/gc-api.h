@@ -307,6 +307,7 @@ static inline void gc_safepoint(struct gc_mutator *mut) {
     gc_safepoint_slow(mut);
 }
 
+GC_API_ int gc_safepoint_signal_number(void);
 GC_API_ void gc_safepoint_signal_inhibit(struct gc_mutator *mut);
 GC_API_ void gc_safepoint_signal_reallow(struct gc_mutator *mut);
 

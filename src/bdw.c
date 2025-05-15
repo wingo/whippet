@@ -203,6 +203,9 @@ void gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
 int* gc_safepoint_flag_loc(struct gc_mutator *mut) { GC_CRASH(); }
 void gc_safepoint_slow(struct gc_mutator *mut) { GC_CRASH(); }
 
+int gc_safepoint_signal_number(void) {
+  return GC_get_suspend_signal();
+}
 void gc_safepoint_signal_inhibit(struct gc_mutator *mut) {
   GC_alloc_lock();
 }

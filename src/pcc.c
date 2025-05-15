@@ -1084,6 +1084,7 @@ void gc_safepoint_slow(struct gc_mutator *mut) {
   heap_unlock(heap);
 }
   
+int gc_safepoint_signal_number(void) { GC_CRASH(); }
 void gc_safepoint_signal_inhibit(struct gc_mutator *mut) { GC_CRASH(); }
 void gc_safepoint_signal_reallow(struct gc_mutator *mut) { GC_CRASH(); }
 
