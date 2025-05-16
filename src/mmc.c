@@ -1293,7 +1293,7 @@ gc_finish_for_thread(struct gc_mutator *mut) {
 
 static void
 deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
-  GC_ASSERT(mut->next == NULL);
+  GC_ASSERT(mut->active);
   nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
   if (GC_GENERATIONAL)
     gc_field_set_writer_release_buffer(&mut->logger);
