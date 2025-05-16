@@ -505,7 +505,7 @@ static void on_collection_event(GC_EventType event) {
   }
   case GC_EVENT_MARK_START:
     HEAP_EVENT(mutators_stopped);
-    HEAP_EVENT(prepare_gc, GC_COLLECTION_MAJOR);
+    HEAP_EVENT(prepare_gc, GC_COLLECTION_MAJOR, GC_get_total_bytes());
     break;
   case GC_EVENT_MARK_END:
     HEAP_EVENT(roots_traced);

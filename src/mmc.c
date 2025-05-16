@@ -792,7 +792,7 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   enum gc_collection_kind gc_kind =
     determine_collection_kind(heap, requested_kind);
   int is_minor = gc_kind == GC_COLLECTION_MINOR;
-  HEAP_EVENT(heap, prepare_gc, gc_kind);
+  HEAP_EVENT(heap, prepare_gc, gc_kind, heap->total_allocated_bytes_at_last_gc);
   nofl_space_prepare_gc(nofl_space, gc_kind);
   large_object_space_start_gc(lospace, is_minor);
   gc_extern_space_start_gc(exspace, is_minor);

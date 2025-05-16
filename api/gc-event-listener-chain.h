@@ -36,10 +36,11 @@ static inline void gc_event_listener_chain_mutators_stopped(void *data) {
   chain->tail.mutators_stopped(chain->tail_data);
 }
 static inline void
-gc_event_listener_chain_prepare_gc(void *data, enum gc_collection_kind kind) {
+gc_event_listener_chain_prepare_gc(void *data, enum gc_collection_kind kind,
+                                   uint64_t counter) {
   struct gc_event_listener_chain *chain = data;
-  chain->head.prepare_gc(chain->head_data, kind);
-  chain->tail.prepare_gc(chain->tail_data, kind);
+  chain->head.prepare_gc(chain->head_data, kind, counter);
+  chain->tail.prepare_gc(chain->tail_data, kind, counter);
 }
 static inline void gc_event_listener_chain_roots_traced(void *data) {
   struct gc_event_listener_chain *chain = data;

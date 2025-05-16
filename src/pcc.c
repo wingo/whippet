@@ -905,11 +905,11 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
     heap->is_minor_collection =
 #endif
     GC_GENERATIONAL ? gc_kind == GC_COLLECTION_MINOR : 0;
-  HEAP_EVENT(heap, prepare_gc, gc_kind);
   uint64_t *counter_loc = &heap->total_allocated_bytes_at_last_gc;
   copy_space_add_to_allocation_counter(heap_allocation_space(heap),
                                        counter_loc);
   large_object_space_add_to_allocation_counter(lospace, counter_loc);
+  HEAP_EVENT(heap, prepare_gc, gc_kind, *counter_loc);
   copy_spaces_start_gc(heap, is_minor_gc);
   large_object_space_start_gc(lospace, is_minor_gc);
   gc_extern_space_start_gc(exspace, is_minor_gc);

@@ -395,7 +395,6 @@ static void collect(struct gc_mutator *mut) {
   HEAP_EVENT(heap, requesting_stop);
   HEAP_EVENT(heap, waiting_for_stop);
   HEAP_EVENT(heap, mutators_stopped);
-  HEAP_EVENT(heap, prepare_gc, GC_COLLECTION_COMPACTING);
 
   struct semi_space *semi = heap_semi_space(heap);
   struct large_object_space *large = heap_large_object_space(heap);
@@ -403,6 +402,9 @@ static void collect(struct gc_mutator *mut) {
   uint64_t *counter_loc = &heap->total_allocated_bytes_at_last_gc;
   semi_space_add_to_allocation_counter(semi, counter_loc);
   large_object_space_add_to_allocation_counter(large, counter_loc);
+
+  HEAP_EVENT(heap, prepare_gc, GC_COLLECTION_COMPACTING, *counter_loc);
+
   large_object_space_start_gc(large, 0);
   gc_extern_space_start_gc(heap->extern_space, 0);
   flip(semi);

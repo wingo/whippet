@@ -45,9 +45,10 @@ LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
   whippet, tracepoint, whippet, mutators_stopped, LTTNG_UST_TP_ARGS())
 LTTNG_UST_TRACEPOINT_EVENT(
   whippet, prepare_gc,
-  LTTNG_UST_TP_ARGS(int, gc_kind),
+  LTTNG_UST_TP_ARGS(int, gc_kind, uint64_t, allocation_counter),
   LTTNG_UST_TP_FIELDS(
-    lttng_ust_field_enum(whippet, gc_kind, int, gc_kind, gc_kind)))
+    lttng_ust_field_enum(whippet, gc_kind, int, gc_kind, gc_kind)
+    lttng_ust_field_integer(uint64_t, allocation_counter, allocation_counter)))
 LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(
   whippet, tracepoint, whippet, roots_traced, LTTNG_UST_TP_ARGS())
 LTTNG_UST_TRACEPOINT_EVENT_INSTANCE(

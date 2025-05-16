@@ -26,6 +26,7 @@ struct gc_basic_stats {
   size_t max_heap_size;
   size_t live_data_size;
   size_t max_live_data_size;
+  uint64_t allocation_counter_at_last_gc;
   struct gc_latency pause_times;
 };
 
@@ -68,12 +69,14 @@ static inline void gc_basic_stats_waiting_for_stop(void *data) {}
 static inline void gc_basic_stats_mutators_stopped(void *data) {}
 
 static inline void gc_basic_stats_prepare_gc(void *data,
-                                             enum gc_collection_kind kind) {
+                                             enum gc_collection_kind kind,
+                                             uint64_t allocation_counter) {
   struct gc_basic_stats *stats = data;
   if (kind == GC_COLLECTION_MINOR)
     stats->minor_collection_count++;
   else
     stats->major_collection_count++;
+  stats->allocation_counter_at_last_gc = allocation_counter;
 }
 
 static inline void gc_basic_stats_roots_traced(void *data) {}
