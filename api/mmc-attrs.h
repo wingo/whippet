@@ -42,7 +42,6 @@ static inline uint8_t gc_allocator_alloc_table_begin_pattern(enum gc_allocation_
       case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
         return young | trace_conservatively;
       case GC_ALLOCATION_TAGGED_POINTERLESS:
-        return young | trace_none;
       case GC_ALLOCATION_UNTAGGED_POINTERLESS:
         return young | trace_none;
       default:
