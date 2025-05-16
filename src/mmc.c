@@ -4,9 +4,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#define GC_IMPL 1
+
 #include "gc-api.h"
 
-#define GC_IMPL 1
 #include "gc-internal.h"
 
 #include "background-thread.h"
