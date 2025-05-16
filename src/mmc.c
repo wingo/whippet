@@ -1216,16 +1216,18 @@ gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
   GC_ASSERT_EQ(gc_allocator_allocation_limit_offset(),
                offsetof(struct nofl_allocator, sweep));
   GC_ASSERT_EQ(gc_allocator_alloc_table_alignment(), NOFL_SLAB_SIZE);
-  GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_TAGGED),
-               NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_PRECISELY);
   GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_TAGGED_POINTERLESS),
                NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_NONE);
   if (GC_CONSERVATIVE_TRACE) {
+    GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_TAGGED),
+                 NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_CONSERVATIVELY);
     GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_UNTAGGED_CONSERVATIVE),
                  NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_CONSERVATIVELY);
     GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_UNTAGGED_POINTERLESS),
                  NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_NONE);
   } else {
+    GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_TAGGED),
+                 NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_PRECISELY);
     GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_UNTAGGED_POINTERLESS),
                  NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_NONE |
                  NOFL_METADATA_BYTE_PINNED);
