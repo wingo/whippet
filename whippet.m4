@@ -176,7 +176,7 @@ END
   fi])
 
 AC_DEFUN([WHIPPET_PKG_DEBUG],
- [AC_ARG_WITH(whippet-debug,
+ [AC_ARG_WITH(gc-debug,
     AS_HELP_STRING([--with-gc-debug],
                    [Compile GC library with debugging support (default: no)]),
     [whippet_with_debug=$withval],
