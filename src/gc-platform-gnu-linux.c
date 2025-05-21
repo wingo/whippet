@@ -88,6 +88,8 @@ static int visit_roots(struct dl_phdr_info *info, size_t size, void *data) {
     if (p->p_type == PT_LOAD && (p->p_flags & PF_W)) {
       uintptr_t start = p->p_vaddr + object_addr;
       uintptr_t end = start + p->p_memsz;
+      start = align_up(start, sizeof(void*));
+      end = align_down(end, sizeof(void*));
       DEBUG("found roots for '%s': [%p,%p)\n", object_name,
             (void*)start, (void*)end);
       visit_data->f(start, end, visit_data->heap, visit_data->data);
