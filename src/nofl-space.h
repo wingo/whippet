@@ -298,7 +298,9 @@ nofl_metadata_byte_for_addr(uintptr_t addr) {
 
 static uint8_t*
 nofl_metadata_byte_for_object(struct gc_ref ref) {
-  return nofl_metadata_byte_for_addr(gc_ref_value(ref));
+  uint8_t *ret = nofl_metadata_byte_for_addr(gc_ref_value(ref));
+  GC_ASSERT(*ret & NOFL_METADATA_BYTE_MARK_MASK);
+  return ret;
 }
 
 static uint8_t*
@@ -932,7 +934,7 @@ nofl_finish_sweeping(struct nofl_allocator *alloc,
 
 static inline int
 nofl_is_ephemeron(struct gc_ref ref) {
-  uint8_t meta = *nofl_metadata_byte_for_addr(gc_ref_value(ref));
+  uint8_t meta = *nofl_metadata_byte_for_object(ref);
   uint8_t kind = meta & NOFL_METADATA_BYTE_TRACE_KIND_MASK;
   return kind == NOFL_METADATA_BYTE_TRACE_EPHEMERON;
 }
@@ -940,7 +942,7 @@ nofl_is_ephemeron(struct gc_ref ref) {
 static void
 nofl_space_set_ephemeron_flag(struct gc_ref ref) {
   if (gc_has_conservative_intraheap_edges()) {
-    uint8_t *metadata = nofl_metadata_byte_for_addr(gc_ref_value(ref));
+    uint8_t *metadata = nofl_metadata_byte_for_object(ref);
     uint8_t byte = *metadata & ~NOFL_METADATA_BYTE_TRACE_KIND_MASK;
     *metadata = byte | NOFL_METADATA_BYTE_TRACE_EPHEMERON;
   }
@@ -1558,7 +1560,7 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
       gc_atomic_forward_commit(&fwd, new_ref);
       // Now update extent metadata, and indicate to the caller that
       // the object's fields need to be traced.
-      uint8_t *new_metadata = nofl_metadata_byte_for_object(new_ref);
+      uint8_t *new_metadata = nofl_metadata_byte_for_addr(gc_ref_value(new_ref));
       memcpy(new_metadata + 1, metadata + 1, object_granules - 1);
       if (GC_GENERATIONAL)
         byte = clear_logged_bits_in_evacuated_object(byte, new_metadata,
@@ -1719,6 +1721,7 @@ nofl_space_mark_conservative_ref(struct nofl_space *space,
     addr = block_base + (loc - loc_base) * NOFL_GRANULE_SIZE;
   }
 
+  GC_ASSERT(*loc & NOFL_METADATA_BYTE_MARK_MASK);
   nofl_space_set_nonempty_mark(space, loc, byte, gc_ref(addr));
 
   return gc_ref(addr);
