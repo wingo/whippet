@@ -422,7 +422,7 @@ static inline int do_trace(struct gc_heap *heap, struct gc_edge edge,
   if (large_object_space_contains_with_lock(heap_large_object_space(heap), ref))
     return large_object_space_mark(heap_large_object_space(heap), ref);
   else
-    return gc_extern_space_visit(heap_extern_space(heap), edge, ref);
+    return gc_extern_space_visit(heap_extern_space(heap), ref);
 }
 
 static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge,
