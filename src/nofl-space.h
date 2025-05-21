@@ -1618,6 +1618,19 @@ nofl_space_evacuate_or_mark_object(struct nofl_space *space,
 }
 
 static inline int
+nofl_space_mark_object(struct nofl_space *space, struct gc_ref ref,
+                       struct nofl_allocator *evacuate) {
+  uint8_t *metadata = nofl_metadata_byte_for_object(ref);
+  uint8_t byte = *metadata;
+  if (nofl_metadata_byte_has_mark(byte, space->current_mark))
+    return 0;
+
+  GC_ASSERT(!nofl_space_should_evacuate(space, byte, ref));
+
+  return nofl_space_set_nonempty_mark(space, metadata, byte, ref);
+}
+
+static inline int
 nofl_space_forward_if_evacuated(struct nofl_space *space,
                                 struct gc_edge edge,
                                 struct gc_ref ref) {

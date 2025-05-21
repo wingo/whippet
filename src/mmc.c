@@ -166,6 +166,34 @@ trace_edge(struct gc_heap *heap, struct gc_edge edge,
   return is_new;
 }
 
+static inline int
+do_trace_pinned(struct gc_heap *heap, struct gc_ref ref,
+                struct gc_trace_worker_data *data) {
+  if (GC_LIKELY(nofl_space_contains(heap_nofl_space(heap), ref)))
+    return nofl_space_mark_object(heap_nofl_space(heap), ref, &data->allocator);
+  else if (large_object_space_contains_with_lock(heap_large_object_space(heap),
+                                                 ref))
+    return large_object_space_mark(heap_large_object_space(heap), ref);
+  else
+    return gc_extern_space_visit(heap_extern_space(heap), ref);
+}
+
+static inline int
+trace_pinned_edge(struct gc_heap *heap, struct gc_ref ref,
+                  struct gc_trace_worker_data *data) {
+  if (gc_ref_is_null(ref) || gc_ref_is_immediate(ref))
+    return 0;
+
+  int is_new = do_trace_pinned(heap, ref, data);
+
+  if (is_new &&
+      GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
+                                       memory_order_relaxed)))
+    gc_resolve_pending_ephemerons(ref, heap);
+
+  return is_new;
+}
+
 int
 gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
   struct gc_ref ref = gc_edge_ref(edge);
@@ -274,6 +302,17 @@ tracer_visit(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
     gc_trace_worker_enqueue(worker, gc_edge_ref(edge));
 }
 
+static inline void
+tracer_visit_pinned_root(struct gc_ref ref, struct gc_heap *heap,
+                         void *trace_data) GC_ALWAYS_INLINE;
+static inline void
+tracer_visit_pinned_root(struct gc_ref ref, struct gc_heap *heap,
+                         void *trace_data) {
+  struct gc_trace_worker *worker = trace_data;
+  if (trace_pinned_edge(heap, ref, gc_trace_worker_data(worker)))
+    gc_trace_worker_enqueue(worker, ref);
+}
+
 static inline int
 trace_remembered_edge(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
   tracer_visit(edge, heap, trace_data);
@@ -331,8 +370,8 @@ static inline void
 trace_conservative_edges(uintptr_t low, uintptr_t high, int possibly_interior,
                          struct gc_heap *heap, void *data) {
   struct gc_trace_worker *worker = data;
-  GC_ASSERT(low == align_down(low, sizeof(uintptr_t)));
-  GC_ASSERT(high == align_down(high, sizeof(uintptr_t)));
+  GC_ASSERT_EQ(low, align_down(low, sizeof(uintptr_t)));
+  GC_ASSERT_EQ(high, align_down(high, sizeof(uintptr_t)));
   for (uintptr_t addr = low; addr < high; addr += sizeof(uintptr_t))
     tracer_trace_conservative_ref(load_conservative_ref(addr), heap, worker,
                                   possibly_interior);
@@ -404,13 +443,17 @@ trace_root(struct gc_root root, struct gc_heap *heap,
     gc_field_set_visit_edge_buffer(&heap->remembered_set, root.edge_buffer,
                                    trace_remembered_edge, heap, worker);
     break;
-  case GC_ROOT_KIND_HEAP_CONSERVATIVE_ROOTS:
-    gc_trace_heap_conservative_roots(root.heap->roots, trace_conservative_edges,
-                                     heap, worker);
+  case GC_ROOT_KIND_HEAP_PINNED_ROOTS:
+    gc_trace_heap_pinned_roots(root.heap->roots,
+                               tracer_visit_pinned_root,
+                               trace_conservative_edges,
+                               heap, worker);
     break;
-  case GC_ROOT_KIND_MUTATOR_CONSERVATIVE_ROOTS:
-    gc_trace_mutator_conservative_roots(root.mutator->roots,
-                                        trace_conservative_edges, heap, worker);
+  case GC_ROOT_KIND_MUTATOR_PINNED_ROOTS:
+    gc_trace_mutator_pinned_roots(root.mutator->roots,
+                                  tracer_visit_pinned_root,
+                                  trace_conservative_edges,
+                                  heap, worker);
     break;
   default:
     GC_CRASH();
@@ -671,7 +714,7 @@ enqueue_mutator_conservative_roots(struct gc_heap *heap) {
                      &possibly_interior);
       if (mut->roots)
         gc_tracer_add_root(&heap->tracer,
-                           gc_root_mutator_conservative_roots(mut));
+                           gc_root_mutator_pinned_roots(mut));
     }
     return 1;
   }
@@ -685,7 +728,7 @@ enqueue_global_conservative_roots(struct gc_heap *heap) {
     gc_platform_visit_global_conservative_roots
       (enqueue_conservative_roots, heap, &possibly_interior);
     if (heap->roots)
-      gc_tracer_add_root(&heap->tracer, gc_root_heap_conservative_roots(heap));
+      gc_tracer_add_root(&heap->tracer, gc_root_heap_pinned_roots(heap));
     return 1;
   }
   return 0;

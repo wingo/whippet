@@ -50,23 +50,29 @@ GC_EMBEDDER_API inline void gc_trace_heap_roots(struct gc_heap_roots *roots,
                                                 void *trace_data);
 
 GC_EMBEDDER_API inline void
-gc_trace_mutator_conservative_roots(struct gc_mutator_roots *roots,
-                                    void (*trace_range)(uintptr_t start,
-                                                        uintptr_t end,
-                                                        int possibly_interior,
-                                                        struct gc_heap *heap,
-                                                        void *data),
-                                    struct gc_heap *heap,
-                                    void *data);
+gc_trace_mutator_pinned_roots(struct gc_mutator_roots *roots,
+                              void (*trace_pinned)(struct gc_ref ref,
+                                                   struct gc_heap *heap,
+                                                   void *data),
+                              void (*trace_ambiguous)(uintptr_t start,
+                                                      uintptr_t end,
+                                                      int possibly_interior,
+                                                      struct gc_heap *heap,
+                                                      void *data),
+                              struct gc_heap *heap,
+                              void *data);
 GC_EMBEDDER_API inline void
-gc_trace_heap_conservative_roots(struct gc_heap_roots *roots,
-                                 void (*trace_range)(uintptr_t start,
-                                                     uintptr_t end,
-                                                     int possibly_interior,
-                                                     struct gc_heap *heap,
-                                                     void *data),
-                                 struct gc_heap *heap,
-                                 void *data);
+gc_trace_heap_pinned_roots(struct gc_heap_roots *roots,
+                           void (*trace_pinned)(struct gc_ref ref,
+                                                struct gc_heap *heap,
+                                                void *data),
+                           void (*trace_ambiguous)(uintptr_t start,
+                                                   uintptr_t end,
+                                                   int possibly_interior,
+                                                   struct gc_heap *heap,
+                                                   void *data),
+                           struct gc_heap *heap,
+                           void *data);
 
 GC_EMBEDDER_API inline uintptr_t gc_object_forwarded_nonatomic(struct gc_ref ref);
 GC_EMBEDDER_API inline void gc_object_forward_nonatomic(struct gc_ref ref,
