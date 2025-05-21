@@ -88,8 +88,6 @@ static inline void gc_update_alloc_table(struct gc_ref obj, size_t size,
       alloc[0] = begin_pattern | end_pattern;
     } else {
       alloc[0] = begin_pattern;
-      if (granules > 2)
-        memset(alloc + 1, 0, granules - 2);
       alloc[granules - 1] = end_pattern;
     }
   } else {
