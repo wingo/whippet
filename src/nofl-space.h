@@ -1067,14 +1067,15 @@ nofl_space_estimate_live_bytes_after_gc(struct nofl_space *space,
     nofl_block_count(&space->to_sweep) * NOFL_BLOCK_SIZE * (1 - last_yield);
 
   DEBUG("--- nofl estimate before adjustment: %zu\n", bytes);
-/*
+
   // Assume that if we have pending unavailable bytes after GC that there is a
-  // large object waiting to be allocated, and that probably it survives this GC
-  // cycle.
-  bytes += atomic_load_explicit(&space->pending_unavailable_bytes,
-                                memory_order_acquire);
+  // large object waiting to be allocated, so it is practically in the live set.
+  ssize_t pending = atomic_load_explicit(&space->pending_unavailable_bytes,
+                                         memory_order_acquire);
+  if (pending > 0)
+    bytes += pending;
   DEBUG("--- nofl estimate after adjustment: %zu\n", bytes);
-*/
+
   return bytes;
 }
 
