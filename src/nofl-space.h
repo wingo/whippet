@@ -1928,7 +1928,7 @@ nofl_space_init(struct nofl_space *space, size_t size, int atomic,
   space->extents = extents_allocate(10);
   nofl_space_add_slabs(space, slabs, nslabs);
   pthread_mutex_init(&space->lock, NULL);
-  space->evacuation_minimum_reserve = 0.02;
+  space->evacuation_minimum_reserve = GC_CONSERVATIVE_TRACE ? 0.0 : 0.02;
   space->evacuation_reserve = space->evacuation_minimum_reserve;
   space->promotion_threshold = promotion_threshold;
   struct gc_lock lock = nofl_space_lock(space);
