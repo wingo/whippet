@@ -843,49 +843,86 @@ nofl_allocator_acquire_block_to_sweep(struct nofl_allocator *alloc,
 }
 
 static size_t
-nofl_allocator_next_hole(struct nofl_allocator *alloc,
-                         struct nofl_space *space) {
-  nofl_allocator_finish_hole(alloc);
+nofl_allocator_next_hole_in_block_of_size(struct nofl_allocator *alloc,
+                                          struct nofl_space *space,
+                                          size_t min_granules) {
+  if (!nofl_allocator_has_block(alloc))
+    return 0;
 
-  // Sweep current block for a hole.
-  if (nofl_allocator_has_block(alloc)) {
+  while (1) {
+    nofl_allocator_finish_hole(alloc);
     size_t granules =
       nofl_allocator_next_hole_in_block(alloc, space->survivor_mark);
-    if (granules)
-      return granules;
-    else
+    if (granules == 0) {
       nofl_allocator_release_full_block(alloc, space);
-    GC_ASSERT(!nofl_allocator_has_block(alloc));
-  }
-
-  while (nofl_allocator_acquire_block_to_sweep(alloc, space)) {
-    // This block was marked in the last GC and needs sweeping.
-    // As we sweep we'll want to record how many bytes were live
-    // at the last collection.  As we allocate we'll record how
-    // many granules were wasted because of fragmentation.
-    alloc->block.summary->hole_count = 0;
-    alloc->block.summary->hole_granules = 0;
-    alloc->block.summary->holes_with_fragmentation = 0;
-    alloc->block.summary->fragmentation_granules = 0;
-    size_t granules =
-      nofl_allocator_next_hole_in_block(alloc, space->survivor_mark);
-    if (granules)
+      return 0;
+    }
+    else if (min_granules <= granules)
       return granules;
-    nofl_allocator_release_full_block(alloc, space);
   }
+}
 
+static size_t
+nofl_blocks_to_sweep_for_size(size_t granules) {
+  if (!granules)
+    return -1;
+
+  size_t max_granules = NOFL_GRANULES_PER_BLOCK;
+  GC_ASSERT(granules <= max_granules);
+  return __builtin_clzll(granules) - __builtin_clzll(max_granules);
+}
+
+static size_t
+nofl_allocator_next_hole(struct nofl_allocator *alloc,
+                         struct nofl_space *space,
+                         size_t min_granules) {
+  // Sweep current block for a hole.
   {
-    size_t granules = nofl_allocator_acquire_partly_full_block(alloc, space);
+    size_t granules =
+      nofl_allocator_next_hole_in_block_of_size(alloc, space, min_granules);
     if (granules)
       return granules;
   }
 
-  // We are done sweeping for blocks.  Now take from the empties list.
-  if (nofl_allocator_acquire_empty_block(alloc, space))
-    return NOFL_GRANULES_PER_BLOCK;
+  // Current block
+  size_t blocks_to_sweep = nofl_blocks_to_sweep_for_size(min_granules);
+  while (1) {
+    size_t blocks_swept = 0;
+    for (;
+         blocks_swept < blocks_to_sweep
+           && nofl_allocator_acquire_block_to_sweep(alloc, space);
+         blocks_swept++) {
+      // This block was marked in the last GC and needs sweeping.
+      // As we sweep we'll want to record how many bytes were live
+      // at the last collection.  As we allocate we'll record how
+      // many granules were wasted because of fragmentation.
+      alloc->block.summary->hole_count = 0;
+      alloc->block.summary->hole_granules = 0;
+      alloc->block.summary->holes_with_fragmentation = 0;
+      alloc->block.summary->fragmentation_granules = 0;
+      size_t granules =
+        nofl_allocator_next_hole_in_block_of_size(alloc, space, min_granules);
+      if (granules)
+        return granules;
+    }
 
-  // Couldn't acquire another block; return 0 to cause collection.
-  return 0;
+    while (1) {
+      size_t granules = nofl_allocator_acquire_partly_full_block(alloc, space);
+      if (!granules)
+        break;
+      if (min_granules <= granules)
+        return granules;
+      nofl_allocator_release_full_block(alloc, space);
+    }
+
+    // We are done sweeping for blocks.  Now take from the empties list.
+    if (nofl_allocator_acquire_empty_block(alloc, space))
+      return NOFL_GRANULES_PER_BLOCK;
+
+    // Couldn't acquire another block; return 0 to cause collection.
+    if (blocks_swept == 0)
+      return 0;
+  }
 }
 
 static struct gc_ref
@@ -897,14 +934,8 @@ nofl_allocate(struct nofl_allocator *alloc, struct nofl_space *space,
 
   if (alloc->alloc + size > alloc->sweep) {
     size_t granules = size >> NOFL_GRANULE_SIZE_LOG_2;
-    while (1) {
-      size_t hole = nofl_allocator_next_hole(alloc, space);
-      if (hole >= granules) {
-        break;
-      }
-      if (!hole)
-        return gc_ref_null();
-    }
+    if (!nofl_allocator_next_hole(alloc, space, granules))
+      return gc_ref_null();
   }
 
   struct gc_ref ret = gc_ref(alloc->alloc);
@@ -937,7 +968,7 @@ nofl_evacuation_allocate(struct nofl_allocator* alloc, struct nofl_space *space,
 static void
 nofl_finish_sweeping(struct nofl_allocator *alloc,
                      struct nofl_space *space) {
-  while (nofl_allocator_next_hole(alloc, space)) {}
+  while (nofl_allocator_next_hole(alloc, space, 0)) {}
 }
 
 static inline int
