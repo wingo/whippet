@@ -520,6 +520,14 @@ nofl_pop_unavailable_block(struct nofl_space *space,
   return nofl_block_null();
 }
 
+static size_t
+nofl_empty_block_count(struct nofl_space *space) {
+  struct gc_lock lock = nofl_space_lock(space);
+  size_t ret = nofl_block_count(&space->empty.list);
+  gc_lock_release(&lock);
+  return ret;
+}
+
 static void
 nofl_push_empty_block(struct nofl_space *space,
                       struct nofl_block_ref block,
@@ -1807,7 +1815,7 @@ nofl_space_add_slabs(struct nofl_space *space, struct nofl_slab *slabs,
     space->slabs[space->nslabs++] = slabs++;
 }
 
-static int
+static size_t
 nofl_space_shrink(struct nofl_space *space, size_t bytes) {
   ssize_t pending = nofl_space_request_release_memory(space, bytes);
   struct gc_lock lock = nofl_space_lock(space);
@@ -1847,7 +1855,7 @@ nofl_space_shrink(struct nofl_space *space, size_t bytes) {
 
   // It still may be the case we need to page out more blocks.  Only evacuation
   // can help us then!
-  return pending <= 0;
+  return pending <= 0 ? 0 : pending;
 }
       
 static void

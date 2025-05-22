@@ -575,20 +575,24 @@ compute_progress(struct gc_heap *heap, uintptr_t allocation_since_last_gc) {
 }
 
 static void
-grow_heap_for_large_allocation_if_necessary(struct gc_heap *heap,
-                                            enum gc_collection_kind gc_kind,
-                                            int progress)
+grow_heap_if_necessary(struct gc_heap *heap,
+                       enum gc_collection_kind gc_kind,
+                       int progress)
 {
-  if (progress || heap->sizer.policy == GC_HEAP_SIZE_FIXED)
+  if (heap->sizer.policy == GC_HEAP_SIZE_FIXED)
     return;
 
   struct nofl_space *nofl = heap_nofl_space(heap);
-  if (nofl_space_shrink (nofl, 0))
-    return;
+  size_t pending = nofl_space_shrink(nofl, 0);
 
-  ssize_t pending = nofl_space_request_release_memory(nofl, 0);
-  GC_ASSERT (pending > 0);
-  resize_heap(heap, heap->size + pending);
+  size_t needed_headroom =
+    GC_CONSERVATIVE_TRACE
+    ? nofl_active_block_count (nofl) * NOFL_BLOCK_SIZE / 16
+    : 0;
+  size_t headroom = nofl_empty_block_count(nofl) * NOFL_BLOCK_SIZE;
+
+  if (headroom < needed_headroom + pending)
+    resize_heap(heap, heap->size - headroom + needed_headroom + pending);
 }
 
 static int
@@ -893,7 +897,7 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   DEBUG("--- total live bytes estimate: %zu\n", live_bytes_estimate);
   gc_heap_sizer_on_gc(heap->sizer, heap->size, live_bytes_estimate, pause_ns,
                       resize_heap);
-  grow_heap_for_large_allocation_if_necessary(heap, gc_kind, progress);
+  grow_heap_if_necessary(heap, gc_kind, progress);
   heap->size_at_last_gc = heap->size;
   HEAP_EVENT(heap, restarting_mutators);
   allow_mutators_to_continue(heap);
@@ -992,7 +996,7 @@ allocate_large(struct gc_mutator *mut, size_t size,
   nofl_space_request_release_memory(nofl_space,
                                     npages << lospace->page_size_log2);
 
-  while (!nofl_space_shrink(nofl_space, 0)) {
+  while (nofl_space_shrink(nofl_space, 0)) {
     if (!trigger_collection(mut, GC_COLLECTION_COMPACTING))
       return heap->allocation_failure(heap, size);
   }
