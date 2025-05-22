@@ -1840,7 +1840,7 @@ nofl_space_shrink(struct nofl_space *space, size_t bytes) {
     size_t active = nofl_active_block_count(space);
     size_t target = space->evacuation_minimum_reserve * active;
     ssize_t avail = nofl_block_count(&space->evacuation_targets);
-    while (avail > target && pending > 0) {
+    while (avail-- > target && pending > 0) {
       struct nofl_block_ref block =
         nofl_block_list_pop(&space->evacuation_targets);
       GC_ASSERT(!nofl_block_is_null(block));
