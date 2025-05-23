@@ -278,7 +278,8 @@ int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
   } else if (large_object_space_contains_with_lock(heap_large_object_space(heap), ref)) {
     return large_object_space_is_marked(heap_large_object_space(heap), ref);
   }
-  GC_CRASH();
+  // Assume it is in the extern space.
+  return 1;
 }
 
 static void trace(struct gc_edge edge, struct gc_heap *heap, void *visit_data) {
