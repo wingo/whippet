@@ -22,7 +22,7 @@ struct root_worklist {
   struct gc_root *buf;
 };
 
-void
+static void
 root_worklist_alloc(struct root_worklist *q) {
   q->buf = realloc(q->buf, q->size * sizeof(struct gc_root));
   if (!q->buf) {
