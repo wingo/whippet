@@ -586,9 +586,11 @@ grow_heap_if_necessary(struct gc_heap *heap,
   struct nofl_space *nofl = heap_nofl_space(heap);
   size_t pending = nofl_space_shrink(nofl, 0);
 
+  // If we cannot defragment and are making no progress but have a
+  // growable heap, expand by 25% to add some headroom.
   size_t needed_headroom =
     GC_CONSERVATIVE_TRACE
-    ? nofl_active_block_count (nofl) * NOFL_BLOCK_SIZE / 16
+    ? (progress ? 0 : nofl_active_block_count (nofl) * NOFL_BLOCK_SIZE / 4)
     : 0;
   size_t headroom = nofl_empty_block_count(nofl) * NOFL_BLOCK_SIZE;
 
