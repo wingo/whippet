@@ -1741,40 +1741,36 @@ nofl_space_mark_conservative_ref(struct nofl_space *space,
   uint8_t *loc = nofl_metadata_byte_for_addr(addr);
   uint8_t byte = atomic_load_explicit(loc, memory_order_relaxed);
 
-  // Already marked object?  Nothing to do.
-  if (nofl_metadata_byte_has_mark(byte, space->current_mark))
-    return gc_ref_null();
-
-  // Addr is the not start of an unmarked object?  Search backwards if
-  // we have interior pointers, otherwise not an object.
-  if (!nofl_metadata_byte_is_young_or_has_mark(byte, space->survivor_mark)) {
+  // Not pointing to the start of an object?  Scan backwards if the ref
+  // is possibly interior, otherwise bail.
+  if ((byte & NOFL_METADATA_BYTE_MARK_MASK) == 0) {
     if (!possibly_interior)
       return gc_ref_null();
 
     uintptr_t block_base = align_down(addr, NOFL_BLOCK_SIZE);
     uint8_t *loc_base = nofl_metadata_byte_for_addr(block_base);
-    do {
-      // Searched past block?  Not an object.
-      if (loc-- == loc_base)
-        return gc_ref_null();
+    uint8_t mask = NOFL_METADATA_BYTE_MARK_MASK | NOFL_METADATA_BYTE_END;
+    loc = scan_backwards_for_byte_with_bits(loc, loc_base, mask);
 
-      byte = atomic_load_explicit(loc, memory_order_relaxed);
+    if (!loc)
+      return gc_ref_null();
 
-      // Ran into the end of some other allocation?  Not an object, then.
-      if (byte & NOFL_METADATA_BYTE_END)
-        return gc_ref_null();
-      // Object already marked?  Nothing to do.
-      if (nofl_metadata_byte_has_mark(byte, space->current_mark))
-        return gc_ref_null();
-
-      // Continue until we find object start.
-    } while (!nofl_metadata_byte_is_young_or_has_mark(byte, space->survivor_mark));
-
+    byte = atomic_load_explicit(loc, memory_order_relaxed);
+    GC_ASSERT(byte & mask);
+    // Ran into the end of some other allocation?  Not an object, then.
+    if (byte & NOFL_METADATA_BYTE_END)
+      return gc_ref_null();
     // Found object start, and object is unmarked; adjust addr.
     addr = block_base + (loc - loc_base) * NOFL_GRANULE_SIZE;
   }
 
-  GC_ASSERT(*loc & NOFL_METADATA_BYTE_MARK_MASK);
+  // Object already marked?  Nothing to do.
+  if (nofl_metadata_byte_has_mark(byte, space->current_mark))
+    return gc_ref_null();
+
+  GC_ASSERT(nofl_metadata_byte_is_young_or_has_mark(byte,
+                                                    space->survivor_mark));
+
   nofl_space_set_nonempty_mark(space, loc, byte, gc_ref(addr));
 
   return gc_ref(addr);

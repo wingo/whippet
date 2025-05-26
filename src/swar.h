@@ -53,6 +53,31 @@ scan_for_byte_with_bits(uint8_t *ptr, size_t limit, uint8_t mask) {
   return limit;
 }
 
+static inline uint8_t*
+scan_backwards_for_byte_with_bits(uint8_t *ptr, uint8_t *base, uint8_t mask) {
+  GC_ASSERT_EQ (((uintptr_t)base) & 7, 0);
+
+  size_t unaligned = ((uintptr_t) ptr) & 7;
+  if (unaligned) {
+    uint64_t bytes =
+      load_eight_aligned_bytes(ptr - unaligned) << ((8 - unaligned) * 8);
+    uint64_t match = match_bytes_against_bits(bytes, mask);
+    if (match)
+      return ptr - 1 - __builtin_clzll(match) / 8;
+    ptr -= unaligned;
+  }
+
+  for (; ptr > base; ptr -= 8) {
+    GC_ASSERT(ptr >= base + 8);
+    uint64_t bytes = load_eight_aligned_bytes(ptr - 8);
+    uint64_t match = match_bytes_against_bits(bytes, mask);
+    if (match)
+      return ptr - 1 - __builtin_clzll(match) / 8;
+  }
+
+  return NULL;
+}
+
 static inline uint64_t
 match_bytes_against_tag(uint64_t bytes, uint8_t mask, uint8_t tag) {
   // Precondition: tag within mask.
