@@ -324,6 +324,9 @@ trace_remembered_edge(struct gc_edge edge, struct gc_heap *heap, void *trace_dat
 
 static inline struct gc_ref
 do_trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
+                          int possibly_interior) GC_ALWAYS_INLINE;
+static inline struct gc_ref
+do_trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
                           int possibly_interior) {
   if (!gc_conservative_ref_might_be_a_heap_object(ref, possibly_interior))
     return gc_ref_null();
@@ -339,6 +342,9 @@ do_trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
 
 static inline struct gc_ref
 trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
+                       int possibly_interior) GC_ALWAYS_INLINE;
+static inline struct gc_ref
+trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
                        int possibly_interior) {
   struct gc_ref ret = do_trace_conservative_ref(heap, ref, possibly_interior);
   if (!gc_ref_is_null(ret)) {
@@ -350,6 +356,11 @@ trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
   return ret;
 }
 
+static inline void
+tracer_trace_conservative_ref(struct gc_conservative_ref ref,
+                              struct gc_heap *heap,
+                              struct gc_trace_worker *worker,
+                              int possibly_interior) GC_ALWAYS_INLINE;
 static inline void
 tracer_trace_conservative_ref(struct gc_conservative_ref ref,
                               struct gc_heap *heap,
@@ -370,6 +381,9 @@ load_conservative_ref(uintptr_t addr) {
 
 static inline void
 trace_conservative_edges(uintptr_t low, uintptr_t high, int possibly_interior,
+                         struct gc_heap *heap, void *data) GC_ALWAYS_INLINE;
+static inline void
+trace_conservative_edges(uintptr_t low, uintptr_t high, int possibly_interior,
                          struct gc_heap *heap, void *data) {
   struct gc_trace_worker *worker = data;
   GC_ASSERT_EQ(low, align_down(low, sizeof(uintptr_t)));
@@ -379,6 +393,10 @@ trace_conservative_edges(uintptr_t low, uintptr_t high, int possibly_interior,
                                   possibly_interior);
 }
 
+static void
+trace_conservative_edges_wrapper(uintptr_t low, uintptr_t high,
+                                 int possibly_interior,
+                                 struct gc_heap *heap, void *data) GC_NEVER_INLINE;
 static void
 trace_conservative_edges_wrapper(uintptr_t low, uintptr_t high,
                                  int possibly_interior,
