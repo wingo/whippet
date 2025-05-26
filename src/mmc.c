@@ -379,6 +379,16 @@ trace_conservative_edges(uintptr_t low, uintptr_t high, int possibly_interior,
                                   possibly_interior);
 }
 
+static void
+trace_conservative_edges_wrapper(uintptr_t low, uintptr_t high,
+                                 int possibly_interior,
+                                 struct gc_heap *heap, void *data) {
+  if (possibly_interior)
+    trace_conservative_edges(low, high, 1, heap, data);
+  else
+    trace_conservative_edges(low, high, 0, heap, data);
+}
+
 static inline struct gc_trace_plan
 trace_plan(struct gc_heap *heap, struct gc_ref ref) {
   if (GC_LIKELY(nofl_space_contains(heap_nofl_space(heap), ref))) {
@@ -448,13 +458,13 @@ trace_root(struct gc_root root, struct gc_heap *heap,
   case GC_ROOT_KIND_HEAP_PINNED_ROOTS:
     gc_trace_heap_pinned_roots(root.heap->roots,
                                tracer_visit_pinned_root,
-                               trace_conservative_edges,
+                               trace_conservative_edges_wrapper,
                                heap, worker);
     break;
   case GC_ROOT_KIND_MUTATOR_PINNED_ROOTS:
     gc_trace_mutator_pinned_roots(root.mutator->roots,
                                   tracer_visit_pinned_root,
-                                  trace_conservative_edges,
+                                  trace_conservative_edges_wrapper,
                                   heap, worker);
     break;
   default:
