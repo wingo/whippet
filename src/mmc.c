@@ -55,6 +55,7 @@ struct gc_heap {
   struct gc_heap_roots *roots;
   struct gc_mutator *mutators;
   long count;
+  long count_at_last_growth;
   struct gc_tracer tracer;
   double fragmentation_low_threshold;
   double fragmentation_high_threshold;
@@ -532,7 +533,10 @@ resize_heap(struct gc_heap *heap, size_t new_size) {
   if (new_size < heap->size)
     nofl_space_shrink(heap_nofl_space(heap), heap->size - new_size);
   else
-    nofl_space_expand(heap_nofl_space(heap), new_size - heap->size);
+    {
+      heap->count_at_last_growth = heap->count;
+      nofl_space_expand(heap_nofl_space(heap), new_size - heap->size);
+    }
 
   heap->size = new_size;
   HEAP_EVENT(heap, heap_resized, new_size);
@@ -908,9 +912,46 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
 }
 
 static int
+maybe_grow_heap (struct gc_heap *heap, size_t for_allocation)
+{
+  if (!for_allocation)
+    return 0;
+  if (heap->sizer.policy == GC_HEAP_SIZE_FIXED)
+    return 0;
+
+  pthread_mutex_lock(&heap->lock);
+  if (heap->count_at_last_growth == heap->count)
+    {
+      pthread_mutex_unlock(&heap->lock);
+      return 0;
+    }
+
+  uint64_t progress = 0;
+  nofl_space_add_to_allocation_counter(heap_nofl_space(heap), &progress);
+  large_object_space_add_to_allocation_counter(heap_large_object_space(heap),
+                                               &progress);
+  double yield_at_last_gc = heap_last_gc_yield (heap);
+  uint64_t expected_progress = heap->size_at_last_gc * yield_at_last_gc;
+  if (progress < expected_progress / 2)
+    {
+      resize_heap(heap, heap->size + expected_progress / 2);
+      pthread_mutex_unlock(&heap->lock);
+      return 1;
+    }
+
+  pthread_mutex_unlock(&heap->lock);
+  return 0;
+}
+
+static int
 trigger_collection(struct gc_mutator *mut,
-                   enum gc_collection_kind requested_kind) {
+                   enum gc_collection_kind requested_kind,
+                   size_t for_allocation) {
   struct gc_heap *heap = mutator_heap(mut);
+
+  if (maybe_grow_heap (heap, for_allocation))
+    return 1;
+
   int prev_kind = -1;
   gc_stack_capture_hot(&mut->stack);
   nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
@@ -928,7 +969,7 @@ trigger_collection(struct gc_mutator *mut,
 
 void
 gc_collect(struct gc_mutator *mut, enum gc_collection_kind kind) {
-  trigger_collection(mut, kind);
+  trigger_collection(mut, kind, 0);
 }
 
 int
@@ -1000,7 +1041,7 @@ allocate_large(struct gc_mutator *mut, size_t size,
                                     npages << lospace->page_size_log2);
 
   while (nofl_space_shrink(nofl_space, 0)) {
-    if (!trigger_collection(mut, GC_COLLECTION_COMPACTING))
+    if (!trigger_collection(mut, GC_COLLECTION_COMPACTING, size))
       return heap->allocation_failure(heap, size);
   }
   atomic_fetch_add(&heap->large_object_pages, npages);
@@ -1013,11 +1054,6 @@ allocate_large(struct gc_mutator *mut, size_t size,
   }
 
   return ret;
-}
-
-static void
-collect_for_small_allocation(void *mut) {
-  trigger_collection(mut, GC_COLLECTION_ANY);
 }
 
 void*
@@ -1034,7 +1070,7 @@ gc_allocate_slow(struct gc_mutator *mut, size_t size,
                                       size, kind);
     if (!gc_ref_is_null(ret))
       return gc_ref_heap_object(ret);
-    if (trigger_collection(mut, GC_COLLECTION_ANY))
+    if (trigger_collection(mut, GC_COLLECTION_ANY, size))
       continue;
     return heap->allocation_failure(heap, size);
   }
