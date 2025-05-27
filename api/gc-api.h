@@ -6,6 +6,7 @@
 #include "gc-assert.h"
 #include "gc-attrs.h"
 #include "gc-collection-kind.h"
+#include "gc-conservative-ref.h"
 #include "gc-edge.h"
 #include "gc-event-listener.h"
 #include "gc-inline.h"
@@ -283,6 +284,9 @@ static inline void gc_write_barrier(struct gc_mutator *mut, struct gc_ref obj,
     gc_write_barrier_slow(mut, obj, obj_size, edge, new_val);
 }
 
+GC_API_ struct gc_ref gc_resolve_conservative_ref(struct gc_heap *heap,
+                                                  struct gc_conservative_ref ref,
+                                                  int possibly_interior);
 GC_API_ void gc_pin_object(struct gc_mutator *mut, struct gc_ref obj);
 
 GC_API_ void gc_safepoint_slow(struct gc_mutator *mut) GC_NEVER_INLINE;

@@ -1112,6 +1112,23 @@ gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
   // Otherwise if it's a large or external object, it won't move.
 }
 
+struct gc_ref
+gc_resolve_conservative_ref(struct gc_heap *heap,
+                            struct gc_conservative_ref ref,
+                            int possibly_interior)
+{
+  if (!gc_conservative_ref_might_be_a_heap_object(ref, possibly_interior))
+    return gc_ref_null();
+
+  struct nofl_space *nofl_space = heap_nofl_space(heap);
+  if (GC_LIKELY(nofl_space_contains_conservative_ref(nofl_space, ref)))
+    return nofl_space_resolve_conservative_ref(nofl_space, ref, possibly_interior);
+
+  struct large_object_space *lospace = heap_large_object_space(heap);
+  return large_object_space_resolve_conservative_ref(lospace, ref,
+                                                     possibly_interior);
+}
+
 int
 gc_object_is_old_generation_slow(struct gc_mutator *mut, struct gc_ref obj) {
   if (!GC_GENERATIONAL)

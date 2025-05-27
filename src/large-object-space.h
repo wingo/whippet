@@ -385,10 +385,10 @@ large_object_space_add_to_allocation_counter(struct large_object_space *space,
   *counter += pages << space->page_size_log2;
 }
 
-static inline struct gc_ref
-large_object_space_mark_conservative_ref(struct large_object_space *space,
-                                         struct gc_conservative_ref ref,
-                                         int possibly_interior) {
+static inline struct large_object_node*
+large_object_space_lookup_conservative_ref(struct large_object_space *space,
+                                           struct gc_conservative_ref ref,
+                                           int possibly_interior) {
   uintptr_t addr = gc_conservative_ref_value(ref);
 
   if (!possibly_interior) {
@@ -396,7 +396,7 @@ large_object_space_mark_conservative_ref(struct large_object_space *space,
     // Otherwise strip the displacement to obtain the true base address.
     uintptr_t displacement = addr & (space->page_size - 1);
     if (!gc_is_valid_conservative_ref_displacement(displacement))
-      return gc_ref_null();
+      return NULL;
     addr -= displacement;
   }
 
@@ -408,6 +408,29 @@ large_object_space_mark_conservative_ref(struct large_object_space *space,
   } else {
     node = large_object_space_lookup(space, gc_ref(addr));
   }
+
+  return node;
+}
+
+static inline struct gc_ref
+large_object_space_resolve_conservative_ref(struct large_object_space *space,
+                                            struct gc_conservative_ref ref,
+                                            int possibly_interior) {
+  struct large_object_node *node =
+    large_object_space_lookup_conservative_ref(space, ref, possibly_interior);
+
+  if (node && node->value.is_live)
+    return gc_ref(node->key.addr);
+
+  return gc_ref_null();
+}
+
+static inline struct gc_ref
+large_object_space_mark_conservative_ref(struct large_object_space *space,
+                                         struct gc_conservative_ref ref,
+                                         int possibly_interior) {
+  struct large_object_node *node =
+    large_object_space_lookup_conservative_ref(space, ref, possibly_interior);
 
   if (node && node->value.is_live &&
       large_object_space_mark(space, gc_ref(node->key.addr)))

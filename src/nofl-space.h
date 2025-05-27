@@ -1714,11 +1714,18 @@ nofl_space_forward_or_mark_if_traced(struct nofl_space *space,
   return nofl_space_forward_if_evacuated(space, edge, ref);
 }
 
-static inline struct gc_ref
-nofl_space_mark_conservative_ref(struct nofl_space *space,
-                                 struct gc_conservative_ref ref,
-                                 int possibly_interior) {
+struct nofl_resolved_conservative_ref {
+  uintptr_t addr;
+  uint8_t *metadata;
+  uint8_t byte;
+};
+
+static inline struct nofl_resolved_conservative_ref
+nofl_space_resolve_conservative_ref_with_metadata(struct nofl_space *space,
+                                                  struct gc_conservative_ref ref,
+                                                  int possibly_interior) {
   uintptr_t addr = gc_conservative_ref_value(ref);
+  struct nofl_resolved_conservative_ref not_an_object = { 0, };
 
   if (possibly_interior) {
     addr = align_down(addr, NOFL_GRANULE_SIZE);
@@ -1726,17 +1733,17 @@ nofl_space_mark_conservative_ref(struct nofl_space *space,
     // Addr not an aligned granule?  Not an object.
     uintptr_t displacement = addr & (NOFL_GRANULE_SIZE - 1);
     if (!gc_is_valid_conservative_ref_displacement(displacement))
-      return gc_ref_null();
+      return not_an_object;
     addr -= displacement;
   }
 
   // Addr in meta block?  Not an object.
   if ((addr & (NOFL_SLAB_SIZE - 1)) < NOFL_META_BLOCKS_PER_SLAB * NOFL_BLOCK_SIZE)
-    return gc_ref_null();
+    return not_an_object;
 
   // Addr in block that has been paged out?  Not an object.
   if (nofl_block_has_flag(nofl_block_for_addr(addr), NOFL_BLOCK_UNAVAILABLE))
-    return gc_ref_null();
+    return not_an_object;
 
   uint8_t *loc = nofl_metadata_byte_for_addr(addr);
   uint8_t byte = atomic_load_explicit(loc, memory_order_relaxed);
@@ -1745,7 +1752,7 @@ nofl_space_mark_conservative_ref(struct nofl_space *space,
   // is possibly interior, otherwise bail.
   if ((byte & NOFL_METADATA_BYTE_MARK_MASK) == 0) {
     if (!possibly_interior)
-      return gc_ref_null();
+      return not_an_object;
 
     uintptr_t block_base = align_down(addr, NOFL_BLOCK_SIZE);
     uint8_t *loc_base = nofl_metadata_byte_for_addr(block_base);
@@ -1753,27 +1760,54 @@ nofl_space_mark_conservative_ref(struct nofl_space *space,
     loc = scan_backwards_for_byte_with_bits(loc, loc_base, mask);
 
     if (!loc)
-      return gc_ref_null();
+      return not_an_object;
 
     byte = atomic_load_explicit(loc, memory_order_relaxed);
     GC_ASSERT(byte & mask);
     // Ran into the end of some other allocation?  Not an object, then.
     if (byte & NOFL_METADATA_BYTE_END)
-      return gc_ref_null();
+      return not_an_object;
     // Found object start, and object is unmarked; adjust addr.
     addr = block_base + (loc - loc_base) * NOFL_GRANULE_SIZE;
   }
 
-  // Object already marked?  Nothing to do.
-  if (nofl_metadata_byte_has_mark(byte, space->current_mark))
+  return (struct nofl_resolved_conservative_ref) {addr, loc, byte};
+}
+
+static inline struct gc_ref
+nofl_space_resolve_conservative_ref(struct nofl_space *space,
+                                    struct gc_conservative_ref ref,
+                                    int possibly_interior) {
+  struct nofl_resolved_conservative_ref resolved =
+    nofl_space_resolve_conservative_ref_with_metadata(space, ref,
+                                                      possibly_interior);
+
+  // Possibly null.
+  return gc_ref(resolved.addr);
+}
+
+static inline struct gc_ref
+nofl_space_mark_conservative_ref(struct nofl_space *space,
+                                 struct gc_conservative_ref ref,
+                                 int possibly_interior) {
+  struct nofl_resolved_conservative_ref resolved =
+    nofl_space_resolve_conservative_ref_with_metadata(space, ref,
+                                                      possibly_interior);
+
+  if (!resolved.addr)
     return gc_ref_null();
 
-  GC_ASSERT(nofl_metadata_byte_is_young_or_has_mark(byte,
+  // Object already marked?  Nothing to do.
+  if (nofl_metadata_byte_has_mark(resolved.byte, space->current_mark))
+    return gc_ref_null();
+
+  GC_ASSERT(nofl_metadata_byte_is_young_or_has_mark(resolved.byte,
                                                     space->survivor_mark));
 
-  nofl_space_set_nonempty_mark(space, loc, byte, gc_ref(addr));
+  nofl_space_set_nonempty_mark(space, resolved.metadata, resolved.byte,
+                               gc_ref(resolved.addr));
 
-  return gc_ref(addr);
+  return gc_ref(resolved.addr);
 }
 
 static inline size_t

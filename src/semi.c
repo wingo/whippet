@@ -551,6 +551,12 @@ void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
   GC_CRASH();
 }
 
+struct gc_ref gc_resolve_conservative_ref(struct gc_heap *heap,
+                                          struct gc_conservative_ref ref,
+                                          int possibly_interior) {
+  GC_CRASH();
+}
+
 struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {
   return gc_allocate(mut, gc_ephemeron_size(), GC_ALLOCATION_TAGGED);
 }

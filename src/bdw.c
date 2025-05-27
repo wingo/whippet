@@ -8,6 +8,7 @@
 #include "gc-align.h"
 #include "gc-api.h"
 #include "gc-ephemeron.h"
+#include "gc-trace.h"
 #include "gc-tracepoint.h"
 
 #include "gc-internal.h"
@@ -166,6 +167,24 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size,
 
 void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
   // Nothing to do.
+}
+
+struct gc_ref gc_resolve_conservative_ref(struct gc_heap *heap,
+                                          struct gc_conservative_ref ref,
+                                          int possibly_interior) {
+  if (!gc_conservative_ref_might_be_a_heap_object(ref, possibly_interior))
+    return gc_ref_null();
+
+  uintptr_t start = align_down(gc_conservative_ref_value(ref),
+                               GC_INLINE_GRANULE_BYTES);
+  uintptr_t base = (uintptr_t)GC_base((void*)start);
+
+  if (!base)
+    return gc_ref_null();
+  if (possibly_interior || start == base)
+    return gc_ref(base);
+  else
+    return gc_ref_null();
 }
 
 void gc_collect(struct gc_mutator *mut,

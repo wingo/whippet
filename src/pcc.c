@@ -1037,6 +1037,12 @@ void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
   GC_CRASH();
 }
 
+struct gc_ref gc_resolve_conservative_ref(struct gc_heap *heap,
+                                          struct gc_conservative_ref ref,
+                                          int possibly_interior) {
+  GC_CRASH();
+}
+
 int gc_object_is_old_generation_slow(struct gc_mutator *mut,
                                      struct gc_ref obj) {
   if (!GC_GENERATIONAL)
