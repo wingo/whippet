@@ -46,6 +46,7 @@
 
 #include "assert.h"
 #include "gc-api.h"
+#include "gc-barrier.h"
 #include "gc-basic-stats.h"
 #include "mt-gcbench-types.h"
 #include "simple-roots-api.h"

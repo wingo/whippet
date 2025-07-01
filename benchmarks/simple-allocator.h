@@ -3,6 +3,7 @@
 
 #include "simple-tagging-scheme.h"
 #include "gc-api.h"
+#include "gc-allocate.h"
 
 static inline void*
 gc_allocate_with_kind(struct gc_mutator *mut, enum alloc_kind kind, size_t bytes) {

@@ -46,10 +46,12 @@ noinst_LTLIBRARIES += libwhippet.la
 
 libwhippet_la_SOURCES = \
   %D%/api/bdw-attrs.h \
+  %D%/api/gc-allocate.h \
   %D%/api/gc-allocation-kind.h \
   %D%/api/gc-api.h \
   %D%/api/gc-assert.h \
   %D%/api/gc-attrs.h \
+  %D%/api/gc-barrier.h \
   %D%/api/gc-basic-stats.h \
   %D%/api/gc-collection-kind.h \
   %D%/api/gc-config.h \
@@ -67,6 +69,7 @@ libwhippet_la_SOURCES = \
   %D%/api/gc-null-event-listener.h \
   %D%/api/gc-options.h \
   %D%/api/gc-ref.h \
+  %D%/api/gc-safepoint.h \
   %D%/api/gc-stack-addr.h \
   %D%/api/gc-tracepoint.h \
   %D%/api/gc-visibility.h \

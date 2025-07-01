@@ -9,6 +9,9 @@
 #include "gc-ephemeron-internal.h"
 #include "gc-finalizer-internal.h"
 #include "gc-options-internal.h"
+#include "gc-allocate.h"
+#include "gc-barrier.h"
+#include "gc-safepoint.h"
 
 uint64_t gc_heap_total_bytes_allocated(struct gc_heap *heap);
 void gc_mutator_adjust_heap_size(struct gc_mutator *mut, uint64_t new_size);
