@@ -68,62 +68,9 @@ GC_API_ void gc_collect(struct gc_mutator *mut,
 
 GC_API_ int gc_heap_contains(struct gc_heap *heap, struct gc_ref ref);
 
-static inline void gc_update_alloc_table(struct gc_ref obj, size_t size,
-                                         enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
-
-GC_API_ void* gc_allocate_slow(struct gc_mutator *mut, size_t bytes,
-                               enum gc_allocation_kind kind) GC_NEVER_INLINE;
-
-static inline void*
-gc_allocate_small_fast_bump_pointer(struct gc_mutator *mut, size_t size,
-                                    enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
-
-static inline void* gc_allocate_small_fast_freelist(struct gc_mutator *mut,
-                                                    size_t size,
-                                                    enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
-
-static inline void* gc_allocate_small_fast(struct gc_mutator *mut, size_t size,
-                                           enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
-
-static inline void* gc_allocate_fast(struct gc_mutator *mut, size_t size,
-                                     enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
-
-static inline void* gc_allocate(struct gc_mutator *mut, size_t size,
-                                enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
-
-GC_API_ int gc_object_is_old_generation_slow(struct gc_mutator *mut,
-                                             struct gc_ref obj) GC_NEVER_INLINE;
-
-static inline int gc_object_is_old_generation(struct gc_mutator *mut,
-                                              struct gc_ref obj,
-                                              size_t obj_size) GC_ALWAYS_INLINE;
-
-GC_API_ void gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
-                                   size_t obj_size, struct gc_edge edge,
-                                   struct gc_ref new_val) GC_NEVER_INLINE;
-
-static inline int gc_write_barrier_fast(struct gc_mutator *mut, struct gc_ref obj,
-                                        size_t obj_size, struct gc_edge edge,
-                                        struct gc_ref new_val) GC_ALWAYS_INLINE;
-
-static inline void gc_write_barrier(struct gc_mutator *mut, struct gc_ref obj,
-                                    size_t obj_size, struct gc_edge edge,
-                                    struct gc_ref new_val) GC_ALWAYS_INLINE;
-
 GC_API_ struct gc_ref gc_resolve_conservative_ref(struct gc_heap *heap,
                                                   struct gc_conservative_ref ref,
                                                   int possibly_interior);
 GC_API_ void gc_pin_object(struct gc_mutator *mut, struct gc_ref obj);
-
-GC_API_ void gc_safepoint_slow(struct gc_mutator *mut) GC_NEVER_INLINE;
-GC_API_ int* gc_safepoint_flag_loc(struct gc_mutator *mut);
-static inline void gc_safepoint(struct gc_mutator *mut) GC_ALWAYS_INLINE;
-
-GC_API_ int gc_safepoint_signal_number(void);
-GC_API_ void gc_safepoint_signal_inhibit(struct gc_mutator *mut);
-GC_API_ void gc_safepoint_signal_reallow(struct gc_mutator *mut);
-
-static inline void gc_inhibit_preemption(struct gc_mutator *mut) GC_ALWAYS_INLINE;
-static inline void gc_reallow_preemption(struct gc_mutator *mut) GC_ALWAYS_INLINE;
 
 #endif // GC_API_H_

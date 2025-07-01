@@ -3,6 +3,25 @@
 
 #include "gc-api.h"
 
+GC_API_ int gc_object_is_old_generation_slow(struct gc_mutator *mut,
+                                             struct gc_ref obj) GC_NEVER_INLINE;
+
+static inline int gc_object_is_old_generation(struct gc_mutator *mut,
+                                              struct gc_ref obj,
+                                              size_t obj_size) GC_ALWAYS_INLINE;
+
+GC_API_ void gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
+                                   size_t obj_size, struct gc_edge edge,
+                                   struct gc_ref new_val) GC_NEVER_INLINE;
+
+static inline int gc_write_barrier_fast(struct gc_mutator *mut, struct gc_ref obj,
+                                        size_t obj_size, struct gc_edge edge,
+                                        struct gc_ref new_val) GC_ALWAYS_INLINE;
+
+static inline void gc_write_barrier(struct gc_mutator *mut, struct gc_ref obj,
+                                    size_t obj_size, struct gc_edge edge,
+                                    struct gc_ref new_val) GC_ALWAYS_INLINE;
+
 static inline int gc_object_is_old_generation(struct gc_mutator *mut,
                                               struct gc_ref obj,
                                               size_t obj_size) {

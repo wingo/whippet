@@ -7,6 +7,29 @@ struct gc_heap;
 struct gc_mutator;
 
 static inline void gc_update_alloc_table(struct gc_ref obj, size_t size,
+                                         enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
+
+GC_API_ void* gc_allocate_slow(struct gc_mutator *mut, size_t bytes,
+                               enum gc_allocation_kind kind) GC_NEVER_INLINE;
+
+static inline void*
+gc_allocate_small_fast_bump_pointer(struct gc_mutator *mut, size_t size,
+                                    enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
+
+static inline void* gc_allocate_small_fast_freelist(struct gc_mutator *mut,
+                                                    size_t size,
+                                                    enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
+
+static inline void* gc_allocate_small_fast(struct gc_mutator *mut, size_t size,
+                                           enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
+
+static inline void* gc_allocate_fast(struct gc_mutator *mut, size_t size,
+                                     enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
+
+static inline void* gc_allocate(struct gc_mutator *mut, size_t size,
+                                enum gc_allocation_kind kind) GC_ALWAYS_INLINE;
+
+static inline void gc_update_alloc_table(struct gc_ref obj, size_t size,
                                          enum gc_allocation_kind kind) {
   size_t alignment = gc_allocator_alloc_table_alignment();
   if (!alignment) return;
