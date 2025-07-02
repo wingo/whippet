@@ -12,13 +12,12 @@ static inline size_t gc_finalizer_priority_count(void) { return 2; }
 
 static inline int
 gc_is_valid_conservative_ref_displacement(uintptr_t displacement) {
-#if GC_CONSERVATIVE_ROOTS || GC_CONSERVATIVE_TRACE
-  // Here is where you would allow tagged heap object references.
-  return displacement == 0;
-#else
+  if (GC_CONSERVATIVE_ROOTS || GC_CONSERVATIVE_TRACE)
+    // Here is where you would allow tagged heap object references.
+    return displacement == 0;
+
   // Shouldn't get here.
   GC_CRASH();
-#endif
 }
 
 // No external objects in simple benchmarks.
@@ -40,10 +39,6 @@ static inline void gc_trace_object(struct gc_ref ref,
                                    struct gc_heap *heap,
                                    void *trace_data,
                                    size_t *size) {
-#if GC_CONSERVATIVE_TRACE
-  // Shouldn't get here.
-  GC_CRASH();
-#else
   switch (tag_live_alloc_kind(*tag_word(ref))) {
 #define SCAN_OBJECT(name, Name, NAME)                                   \
     case ALLOC_KIND_##NAME:                                             \
@@ -58,7 +53,6 @@ static inline void gc_trace_object(struct gc_ref ref,
   default:
     GC_CRASH();
   }
-#endif
 }
 
 static inline void visit_roots(struct handle *roots,
