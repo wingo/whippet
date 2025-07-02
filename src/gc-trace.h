@@ -31,8 +31,7 @@ static inline int gc_has_conservative_roots(void) {
 enum gc_trace_kind {
   GC_TRACE_PRECISELY,
   GC_TRACE_NONE,
-  GC_TRACE_CONSERVATIVELY,
-  GC_TRACE_EPHEMERON,
+  GC_TRACE_CONSERVATIVELY
 };
 
 struct gc_trace_plan {

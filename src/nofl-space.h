@@ -250,7 +250,7 @@ enum nofl_metadata_byte {
   NOFL_METADATA_BYTE_TRACE_PRECISELY = 0,
   NOFL_METADATA_BYTE_TRACE_NONE = 8,
   NOFL_METADATA_BYTE_TRACE_CONSERVATIVELY = 16,
-  NOFL_METADATA_BYTE_TRACE_EPHEMERON = 24,
+  NOFL_METADATA_BYTE_TRACE_UNUSED = 24,
   NOFL_METADATA_BYTE_TRACE_KIND_MASK = 0|8|16|24,
   NOFL_METADATA_BYTE_PINNED = 16,
   NOFL_METADATA_BYTE_END = 32,
@@ -969,15 +969,6 @@ static void
 nofl_finish_sweeping(struct nofl_allocator *alloc,
                      struct nofl_space *space) {
   while (nofl_allocator_next_hole(alloc, space, 0)) {}
-}
-
-static void
-nofl_space_set_ephemeron_flag(struct gc_ref ref) {
-  if (gc_has_conservative_intraheap_edges()) {
-    uint8_t *metadata = nofl_metadata_byte_for_object(ref);
-    uint8_t byte = *metadata & ~NOFL_METADATA_BYTE_TRACE_KIND_MASK;
-    *metadata = byte | NOFL_METADATA_BYTE_TRACE_EPHEMERON;
-  }
 }
 
 struct gc_trace_worker;
@@ -1821,8 +1812,6 @@ nofl_metadata_byte_trace_kind(uint8_t byte)
 #if GC_CONSERVATIVE_TRACE
   case NOFL_METADATA_BYTE_TRACE_CONSERVATIVELY:
     return GC_TRACE_CONSERVATIVELY;
-  case NOFL_METADATA_BYTE_TRACE_EPHEMERON:
-    return GC_TRACE_EPHEMERON;
 #endif
     default:
       GC_CRASH();
@@ -1842,8 +1831,6 @@ nofl_space_object_trace_plan(struct nofl_space *space, struct gc_ref ref) {
       size_t granules = nofl_space_live_object_granules(loc);
       return (struct gc_trace_plan){ kind, granules * NOFL_GRANULE_SIZE };
     }
-    case GC_TRACE_EPHEMERON:
-      return (struct gc_trace_plan){ kind, };
 #endif
     default:
       GC_CRASH();

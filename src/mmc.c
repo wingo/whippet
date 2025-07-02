@@ -435,10 +435,6 @@ trace_one(struct gc_ref ref, struct gc_heap *heap,
                                heap, worker);
       break;
     }
-    case GC_TRACE_EPHEMERON:
-      gc_trace_ephemeron(gc_ref_heap_object(ref), tracer_visit, heap,
-                         worker);
-      break;
     default:
       GC_CRASH();
   }
@@ -1154,11 +1150,7 @@ gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
   
 struct gc_ephemeron*
 gc_allocate_ephemeron(struct gc_mutator *mut) {
-  struct gc_ref ret =
-    gc_ref_from_heap_object(gc_allocate(mut, gc_ephemeron_size(),
-                                        GC_ALLOCATION_TAGGED));
-  nofl_space_set_ephemeron_flag(ret);
-  return gc_ref_heap_object(ret);
+  return gc_allocate (mut, gc_ephemeron_size(), GC_ALLOCATION_TAGGED);
 }
 
 void
