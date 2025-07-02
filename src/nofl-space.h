@@ -1351,7 +1351,7 @@ static inline enum gc_trace_kind
 nofl_metadata_byte_trace_kind(struct nofl_space *space, uint8_t byte)
 {
   uint8_t mask = NOFL_METADATA_BYTE_TRACE_KIND_MASK;
-  if (nofl_space_heap_has_ambiguous_edges (space))
+  if (!nofl_space_heap_has_ambiguous_edges (space))
     mask &= ~NOFL_METADATA_BYTE_TRACE_CONSERVATIVELY;
 
   switch (byte & mask) {
