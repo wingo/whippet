@@ -971,13 +971,6 @@ nofl_finish_sweeping(struct nofl_allocator *alloc,
   while (nofl_allocator_next_hole(alloc, space, 0)) {}
 }
 
-static inline int
-nofl_is_ephemeron(struct gc_ref ref) {
-  uint8_t meta = *nofl_metadata_byte_for_object(ref);
-  uint8_t kind = meta & NOFL_METADATA_BYTE_TRACE_KIND_MASK;
-  return kind == NOFL_METADATA_BYTE_TRACE_EPHEMERON;
-}
-
 static void
 nofl_space_set_ephemeron_flag(struct gc_ref ref) {
   if (gc_has_conservative_intraheap_edges()) {
