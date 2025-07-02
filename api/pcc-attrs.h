@@ -89,4 +89,8 @@ static inline int gc_can_pin_objects(void) {
   return 0;
 }
 
+static inline int gc_can_move_objects(void) {
+  return 1;
+}
+
 #endif // PCC_ATTRS_H

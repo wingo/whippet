@@ -65,6 +65,7 @@ enum gc_cooperative_safepoint_kind {
 static inline enum gc_cooperative_safepoint_kind gc_cooperative_safepoint_kind(void) GC_ALWAYS_INLINE;
 
 static inline int gc_can_pin_objects(void) GC_ALWAYS_INLINE;
+static inline int gc_can_move_objects(void) GC_ALWAYS_INLINE;
 
 #ifndef GC_IMPL
 #ifdef GC_ATTRS

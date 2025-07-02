@@ -117,4 +117,8 @@ static inline int gc_can_pin_objects(void) {
   return 1;
 }
 
+static inline int gc_can_move_objects(void) {
+  return GC_CONSERVATIVE_TRACE ? 0 : 1;
+}
+
 #endif // MMC_ATTRS_H
