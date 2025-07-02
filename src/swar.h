@@ -26,6 +26,16 @@ load_eight_aligned_bytes(uint8_t *ptr) {
   return word;
 }
 
+static inline void
+store_eight_aligned_bytes(uint8_t *ptr, uint64_t word) {
+  GC_ASSERT(((uintptr_t)ptr & 7) == 0);
+#ifdef WORDS_BIGENDIAN
+  word = __builtin_bswap64(word);
+#endif
+  uint8_t * __attribute__((aligned(8))) aligned_ptr = ptr;
+  memcpy(aligned_ptr, &word, 8);
+}
+
 static inline uint64_t
 match_bytes_against_bits(uint64_t bytes, uint8_t mask) {
   return bytes & broadcast_byte(mask);

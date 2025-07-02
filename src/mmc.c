@@ -708,7 +708,7 @@ determine_collection_kind(struct gc_heap *heap,
     gc_kind = GC_COLLECTION_MINOR;
   }
 
-  if (gc_has_conservative_intraheap_edges() &&
+  if (nofl_space_heap_has_ambiguous_edges (nofl_space) &&
       gc_kind == GC_COLLECTION_COMPACTING) {
     DEBUG("welp.  conservative heap scanning, no evacuation for you\n");
     gc_kind = GC_COLLECTION_MAJOR;
@@ -1074,11 +1074,15 @@ void*
 gc_allocate_slow(struct gc_mutator *mut, size_t size,
                  enum gc_allocation_kind kind) {
   GC_ASSERT(size > 0); // allocating 0 bytes would be silly
+  struct gc_heap *heap = mutator_heap(mut);
+
+  if (GC_UNLIKELY (!GC_CONSERVATIVE_TRACE
+                   && kind == GC_ALLOCATION_UNTAGGED_CONSERVATIVE))
+    nofl_space_set_heap_has_ambiguous_edges (heap_nofl_space (heap));
 
   if (size > gc_allocator_large_threshold())
     return allocate_large(mut, size, compute_trace_kind(kind));
 
-  struct gc_heap *heap = mutator_heap(mut);
   while (1) {
     struct gc_ref ret = nofl_allocate(&mut->allocator, heap_nofl_space(heap),
                                       size, kind);

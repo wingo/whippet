@@ -180,12 +180,10 @@ large_object_space_object_trace_plan(struct large_object_space *space,
       return (struct gc_trace_plan){ GC_TRACE_PRECISELY, };
     case GC_TRACE_NONE:
       return (struct gc_trace_plan){ GC_TRACE_NONE, };
-#if GC_CONSERVATIVE_TRACE
     case GC_TRACE_CONSERVATIVELY: {
       return (struct gc_trace_plan){ GC_TRACE_CONSERVATIVELY, node->key.size };
     }
     // No large ephemerons.
-#endif
     default:
       GC_CRASH();
   }
