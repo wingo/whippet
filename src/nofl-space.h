@@ -1414,7 +1414,18 @@ nofl_space_verify_sweepable_blocks(struct nofl_space *space,
 
         meta += granules;
         addr += granules * NOFL_GRANULE_SIZE;
+      } else if (byte & NOFL_METADATA_BYTE_MARK_MASK) {
+        size_t granules = 1;
+        while (addr + granules * NOFL_GRANULE_SIZE < limit
+               && !(meta[granules - 1] & NOFL_METADATA_BYTE_END)) {
+          granules++;
+          GC_ASSERT_EQ(meta[granules - 1] & NOFL_METADATA_BYTE_MARK_MASK, 0);
+        }
+        GC_ASSERT(meta[granules - 1] & NOFL_METADATA_BYTE_END);
+        meta += granules;
+        addr += granules * NOFL_GRANULE_SIZE;
       } else {
+        GC_ASSERT_EQ(byte & NOFL_METADATA_BYTE_END, 0);
         meta++;
         addr += NOFL_GRANULE_SIZE;
       }
@@ -1500,6 +1511,7 @@ nofl_space_verify_before_restart(struct nofl_space *space) {
   nofl_space_verify_swept_blocks(space, &space->full);
   nofl_space_verify_swept_blocks(space, &space->old);
   nofl_space_verify_empty_blocks(space, &space->empty.list, 1);
+  nofl_space_verify_empty_blocks(space, &space->evacuation_targets, 1);
   for (int age = 0; age < NOFL_PAGE_OUT_QUEUE_SIZE; age++)
     nofl_space_verify_empty_blocks(space, &space->paged_out[age].list, 0);
   // GC_ASSERT(space->last_collection_was_minor || !nofl_block_count(&space->old));
@@ -1752,6 +1764,9 @@ nofl_space_evacuate_or_mark_object(struct nofl_space *space,
   uint8_t byte = *metadata;
   if (nofl_metadata_byte_has_mark(byte, space->current_mark))
     return 0;
+
+  // It should at least have a young mark.
+  GC_ASSERT(byte & NOFL_METADATA_BYTE_MARK_MASK);
 
   if (nofl_space_should_evacuate(space, byte, old_ref))
     return nofl_space_evacuate(space, metadata, byte, edge, old_ref,
