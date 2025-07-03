@@ -984,7 +984,7 @@ static void
 nofl_clear_pinned_bits_in_block(struct nofl_block_ref block) {
   uint8_t *meta = nofl_metadata_byte_for_addr(block.addr);
   uint64_t mask = broadcast_byte (NOFL_METADATA_BYTE_PINNED);
-  for (size_t i = 0; i < NOFL_GRANULES_PER_BLOCK; i++, meta += 8) {
+  for (size_t i = 0; i < NOFL_GRANULES_PER_BLOCK; i += 8, meta += 8) {
     uint64_t vals = load_eight_aligned_bytes(meta);
     if (vals & mask)
       store_eight_aligned_bytes(meta, vals & ~mask);
