@@ -1375,6 +1375,13 @@ nofl_metadata_byte_trace_kind(struct nofl_space *space, uint8_t byte)
 }
 
 static void
+nofl_assert_not_forwarded(struct gc_ref ref)
+{
+  struct gc_atomic_forward fwd = gc_atomic_forward_begin(ref);
+  GC_ASSERT_EQ(fwd.state, GC_FORWARDING_STATE_NOT_FORWARDED);
+}
+
+static void
 nofl_space_verify_sweepable_blocks(struct nofl_space *space,
                                    struct nofl_block_list *list)
 {
@@ -1396,11 +1403,13 @@ nofl_space_verify_sweepable_blocks(struct nofl_space *space,
           granules++;
         GC_ASSERT(meta[granules - 1] & NOFL_METADATA_BYTE_END);
 
-        if (nofl_metadata_byte_trace_kind (space, byte) == GC_TRACE_PRECISELY) {
+        if (nofl_metadata_byte_trace_kind(space, byte) == GC_TRACE_PRECISELY) {
           size_t trace_bytes;
           gc_trace_object(obj, NULL, NULL, NULL, &trace_bytes);
           size_t trace_granules = nofl_size_to_granules(trace_bytes);
           GC_ASSERT_EQ(granules, trace_granules);
+
+          nofl_assert_not_forwarded(obj);
         }
 
         meta += granules;
@@ -1436,11 +1445,13 @@ nofl_space_verify_swept_blocks(struct nofl_space *space,
           granules++;
         GC_ASSERT(meta[granules - 1] & NOFL_METADATA_BYTE_END);
 
-        if (nofl_metadata_byte_trace_kind (space, byte) == GC_TRACE_PRECISELY) {
+        if (nofl_metadata_byte_trace_kind(space, byte) == GC_TRACE_PRECISELY) {
           size_t trace_bytes;
           gc_trace_object(obj, NULL, NULL, NULL, &trace_bytes);
           size_t trace_granules = nofl_size_to_granules(trace_bytes);
           GC_ASSERT_EQ(granules, trace_granules);
+
+          nofl_assert_not_forwarded(obj);
         }
 
         meta += granules;
