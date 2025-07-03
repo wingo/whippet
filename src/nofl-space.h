@@ -1045,6 +1045,7 @@ nofl_space_set_heap_has_ambiguous_edges (struct nofl_space *space)
     // conservatively-traced.  Ideally we would have another bit here.  For now,
     // race to clear all pinned bits.
     nofl_space_clear_all_pinned_bits (space);
+    space->evacuation_minimum_reserve = space->evacuation_reserve = 0.0;
   }
 }
 
