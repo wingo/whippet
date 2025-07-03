@@ -759,7 +759,7 @@ enqueue_mutator_conservative_roots(struct gc_heap *heap) {
 static int
 enqueue_global_conservative_roots(struct gc_heap *heap) {
   if (gc_has_global_conservative_roots()) {
-    int possibly_interior = 0;
+    int possibly_interior = 1;
     gc_platform_visit_global_conservative_roots
       (enqueue_conservative_roots, heap, &possibly_interior);
     if (heap->roots)
