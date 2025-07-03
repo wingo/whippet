@@ -617,7 +617,7 @@ grow_heap_if_necessary(struct gc_heap *heap,
   // If we cannot defragment and are making no progress but have a
   // growable heap, expand by 25% to add some headroom.
   size_t needed_headroom =
-    GC_CONSERVATIVE_TRACE
+    nofl_space_heap_has_ambiguous_edges (nofl)
     ? (progress ? 0 : nofl_active_block_count (nofl) * NOFL_BLOCK_SIZE / 4)
     : 0;
   size_t headroom = nofl_empty_block_count(nofl) * NOFL_BLOCK_SIZE;
@@ -1031,8 +1031,6 @@ compute_trace_kind(enum gc_allocation_kind kind) {
   case GC_ALLOCATION_TAGGED:
     return GC_TRACE_PRECISELY;
   case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
-    if (!GC_CONSERVATIVE_TRACE)
-      GC_CRASH ();
     return GC_TRACE_CONSERVATIVELY;
   case GC_ALLOCATION_TAGGED_POINTERLESS:
   case GC_ALLOCATION_UNTAGGED_POINTERLESS:
@@ -1359,7 +1357,7 @@ gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
     GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_UNTAGGED_CONSERVATIVE),
                  NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_CONSERVATIVELY);
   GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_UNTAGGED_POINTERLESS),
-               NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_NONE);
+               NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_NONE | NOFL_METADATA_BYTE_PINNED);
   GC_ASSERT_EQ(gc_allocator_alloc_table_end_pattern(), NOFL_METADATA_BYTE_END);
   if (GC_GENERATIONAL) {
     GC_ASSERT_EQ(gc_write_barrier_field_table_alignment(), NOFL_SLAB_SIZE);

@@ -35,6 +35,7 @@ static inline uint8_t gc_allocator_alloc_table_begin_pattern(enum gc_allocation_
   uint8_t trace_precisely = 0;
   uint8_t trace_none = 8;
   uint8_t trace_conservatively = 16;
+  uint8_t pinned = 16;
   switch (kind) {
   case GC_ALLOCATION_TAGGED:
     return young | trace_precisely;
@@ -43,8 +44,9 @@ static inline uint8_t gc_allocator_alloc_table_begin_pattern(enum gc_allocation_
       GC_CRASH ();
     return young | trace_conservatively;
   case GC_ALLOCATION_TAGGED_POINTERLESS:
-  case GC_ALLOCATION_UNTAGGED_POINTERLESS:
     return young | trace_none;
+  case GC_ALLOCATION_UNTAGGED_POINTERLESS:
+    return young | trace_none | pinned;
   default:
     GC_CRASH();
   }

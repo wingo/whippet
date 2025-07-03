@@ -1357,12 +1357,19 @@ nofl_metadata_byte_trace_kind(struct nofl_space *space, uint8_t byte)
   switch (byte & mask) {
   case NOFL_METADATA_BYTE_TRACE_PRECISELY:
     return GC_TRACE_PRECISELY;
-  case NOFL_METADATA_BYTE_TRACE_NONE:
-    return GC_TRACE_NONE;
   case NOFL_METADATA_BYTE_TRACE_CONSERVATIVELY:
     return GC_TRACE_CONSERVATIVELY;
+  case NOFL_METADATA_BYTE_TRACE_NONE:
+    return GC_TRACE_NONE;
   default:
-    GC_CRASH();
+    /* Untagged pointerless objects are allocated with the PINNED bit,
+       because we can't relocate them, because we don't have a tag word
+       to hold the forwarding state.  Fortunately, this bit pattern is
+       different from NOFL_METADATA_BYTE_TRACE_CONSERVATIVELY; we can
+       just leave it as-is.  */
+    GC_ASSERT_EQ (byte & mask,
+                  NOFL_METADATA_BYTE_TRACE_NONE | NOFL_METADATA_BYTE_PINNED);
+    return GC_TRACE_NONE;
   }
 }
 
