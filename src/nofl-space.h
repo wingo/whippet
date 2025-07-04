@@ -914,6 +914,7 @@ nofl_allocator_next_hole(struct nofl_allocator *alloc,
         break;
       if (min_granules <= granules)
         return granules;
+      nofl_allocator_finish_hole(alloc);
       nofl_allocator_release_full_block(alloc, space);
     }
 
