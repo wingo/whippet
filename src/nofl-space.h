@@ -1765,9 +1765,6 @@ nofl_space_evacuate_or_mark_object(struct nofl_space *space,
   if (nofl_metadata_byte_has_mark(byte, space->current_mark))
     return 0;
 
-  // It should at least have a young mark.
-  GC_ASSERT(byte & NOFL_METADATA_BYTE_MARK_MASK);
-
   if (nofl_space_should_evacuate(space, byte, old_ref))
     return nofl_space_evacuate(space, metadata, byte, edge, old_ref,
                                evacuate);
