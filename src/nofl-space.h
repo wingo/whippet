@@ -1617,31 +1617,23 @@ nofl_space_should_evacuate(struct nofl_space *space, uint8_t metadata_byte,
 }
 
 static inline int
-nofl_space_set_mark_relaxed(struct nofl_space *space, uint8_t *metadata,
-                            uint8_t byte) {
+nofl_space_set_mark(struct nofl_space *space, uint8_t *metadata,
+                    uint8_t byte) {
   uint8_t mask = NOFL_METADATA_BYTE_MARK_MASK;
-  atomic_store_explicit(metadata,
-                        (byte & ~mask) | space->current_mark,
-                        memory_order_relaxed);
-  return 1;
-}
-
-static inline int
-nofl_space_set_mark(struct nofl_space *space, uint8_t *metadata, uint8_t byte) {
-  uint8_t mask = NOFL_METADATA_BYTE_MARK_MASK;
-  atomic_store_explicit(metadata,
-                        (byte & ~mask) | space->current_mark,
-                        memory_order_release);
-  return 1;
+  byte = (byte & ~mask) | space->current_mark;
+  uint8_t prev = atomic_exchange_explicit(metadata, byte, memory_order_relaxed);
+  return byte != prev;
 }
 
 static inline int
 nofl_space_set_nonempty_mark(struct nofl_space *space, uint8_t *metadata,
                              uint8_t byte, struct gc_ref ref) {
   // FIXME: Check that relaxed atomics are actually worth it.
-  nofl_space_set_mark_relaxed(space, metadata, byte);
-  nofl_block_set_mark(gc_ref_value(ref));
-  return 1;
+  if (nofl_space_set_mark(space, metadata, byte)) {
+    nofl_block_set_mark(gc_ref_value(ref));
+    return 1;
+  }
+  return 0;
 }
 
 static inline void
@@ -1775,7 +1767,7 @@ nofl_space_evacuate_or_mark_object(struct nofl_space *space,
                                    struct gc_ref old_ref,
                                    struct nofl_allocator *evacuate) {
   uint8_t *metadata = nofl_metadata_byte_for_object(old_ref);
-  uint8_t byte = *metadata;
+  uint8_t byte = atomic_load_explicit(metadata, memory_order_acquire);
   if (nofl_metadata_byte_has_mark(byte, space->current_mark))
     return 0;
 
@@ -1790,7 +1782,7 @@ static inline int
 nofl_space_mark_object(struct nofl_space *space, struct gc_ref ref,
                        struct nofl_allocator *evacuate) {
   uint8_t *metadata = nofl_metadata_byte_for_object(ref);
-  uint8_t byte = *metadata;
+  uint8_t byte = atomic_load_explicit(metadata, memory_order_acquire);
   if (nofl_metadata_byte_has_mark(byte, space->current_mark))
     return 0;
 
@@ -1833,7 +1825,7 @@ nofl_space_forward_or_mark_if_traced(struct nofl_space *space,
                                      struct gc_edge edge,
                                      struct gc_ref ref) {
   uint8_t *metadata = nofl_metadata_byte_for_object(ref);
-  uint8_t byte = *metadata;
+  uint8_t byte = atomic_load_explicit(metadata, memory_order_acquire);
   if (nofl_metadata_byte_has_mark(byte, space->current_mark))
     return 1;
 
