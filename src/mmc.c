@@ -622,6 +622,9 @@ grow_heap_if_necessary(struct gc_heap *heap,
     : 0;
   size_t headroom = nofl_empty_block_count(nofl) * NOFL_BLOCK_SIZE;
 
+  headroom += nofl_space_evacuation_reserve_bytes(nofl);
+  needed_headroom += nofl_space_evacuation_minimum_reserve_bytes(nofl);
+
   if (headroom < needed_headroom + pending)
     resize_heap(heap, heap->size - headroom + needed_headroom + pending);
 }

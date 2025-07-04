@@ -561,11 +561,16 @@ nofl_active_block_count(struct nofl_space *space) {
   return total - unavailable;
 }
 
+static size_t
+nofl_evacuation_block_count(struct nofl_space *space) {
+  return nofl_block_count(&space->evacuation_targets);
+}
+
 static int
 nofl_maybe_push_evacuation_target(struct nofl_space *space,
                                   struct nofl_block_ref block,
                                   double reserve) {
-  size_t targets = nofl_block_count(&space->evacuation_targets);
+  size_t targets = nofl_evacuation_block_count(space);
   size_t active = nofl_active_block_count(space);
   if (targets >= ceil(active * reserve))
     return 0;
@@ -1182,7 +1187,14 @@ nofl_space_estimate_live_bytes_after_gc(struct nofl_space *space,
 
 static size_t
 nofl_space_evacuation_reserve_bytes(struct nofl_space *space) {
-  return nofl_block_count(&space->evacuation_targets) * NOFL_BLOCK_SIZE;
+  return nofl_evacuation_block_count(space) * NOFL_BLOCK_SIZE;
+}
+
+static size_t
+nofl_space_evacuation_minimum_reserve_bytes(struct nofl_space *space) {
+  return
+    ceil(space->evacuation_minimum_reserve * nofl_active_block_count(space))
+    * NOFL_BLOCK_SIZE;
 }
 
 static size_t
@@ -1321,7 +1333,7 @@ nofl_space_finish_evacuation(struct nofl_space *space,
   space->evacuating = 0;
   size_t active = nofl_active_block_count(space);
   size_t reserve = ceil(space->evacuation_minimum_reserve * active);
-  GC_ASSERT(nofl_block_count(&space->evacuation_targets) == 0);
+  GC_ASSERT(nofl_evacuation_block_count(space) == 0);
   while (reserve--) {
     struct nofl_block_ref block = nofl_pop_empty_block_with_lock(space, lock);
     if (nofl_block_is_null(block)) break;
@@ -1533,7 +1545,7 @@ nofl_space_finish_gc(struct nofl_space *space,
     // for allocation by the mutator.
     size_t active = nofl_active_block_count(space);
     size_t target = ceil(space->evacuation_minimum_reserve * active);
-    size_t reserve = nofl_block_count(&space->evacuation_targets);
+    size_t reserve = nofl_evacuation_block_count(space);
     while (reserve-- > target)
       nofl_push_empty_block(space,
                             nofl_block_list_pop(&space->evacuation_targets),
@@ -1995,7 +2007,7 @@ nofl_space_shrink(struct nofl_space *space, size_t bytes) {
   if (pending > 0) {
     size_t active = nofl_active_block_count(space);
     size_t target = ceil(space->evacuation_minimum_reserve * active);
-    ssize_t avail = nofl_block_count(&space->evacuation_targets);
+    ssize_t avail = nofl_evacuation_block_count(space);
     while (avail-- > target && pending > 0) {
       struct nofl_block_ref block =
         nofl_block_list_pop(&space->evacuation_targets);
