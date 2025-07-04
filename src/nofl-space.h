@@ -1,6 +1,7 @@
 #ifndef NOFL_SPACE_H
 #define NOFL_SPACE_H
 
+#include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -566,7 +567,7 @@ nofl_maybe_push_evacuation_target(struct nofl_space *space,
                                   double reserve) {
   size_t targets = nofl_block_count(&space->evacuation_targets);
   size_t active = nofl_active_block_count(space);
-  if (targets >= active * reserve)
+  if (targets >= ceil(active * reserve))
     return 0;
 
   nofl_block_list_push(&space->evacuation_targets, block);
@@ -1318,7 +1319,7 @@ nofl_space_finish_evacuation(struct nofl_space *space,
   GC_ASSERT(space->evacuating);
   space->evacuating = 0;
   size_t active = nofl_active_block_count(space);
-  size_t reserve = space->evacuation_minimum_reserve * active;
+  size_t reserve = ceil(space->evacuation_minimum_reserve * active);
   GC_ASSERT(nofl_block_count(&space->evacuation_targets) == 0);
   while (reserve--) {
     struct nofl_block_ref block = nofl_pop_empty_block_with_lock(space, lock);
@@ -1530,7 +1531,7 @@ nofl_space_finish_gc(struct nofl_space *space,
     // to the evacuation reserve, return those blocks to the empty set
     // for allocation by the mutator.
     size_t active = nofl_active_block_count(space);
-    size_t target = space->evacuation_minimum_reserve * active;
+    size_t target = ceil(space->evacuation_minimum_reserve * active);
     size_t reserve = nofl_block_count(&space->evacuation_targets);
     while (reserve-- > target)
       nofl_push_empty_block(space,
@@ -1992,7 +1993,7 @@ nofl_space_shrink(struct nofl_space *space, size_t bytes) {
   // to the heap lock.
   if (pending > 0) {
     size_t active = nofl_active_block_count(space);
-    size_t target = space->evacuation_minimum_reserve * active;
+    size_t target = ceil(space->evacuation_minimum_reserve * active);
     ssize_t avail = nofl_block_count(&space->evacuation_targets);
     while (avail-- > target && pending > 0) {
       struct nofl_block_ref block =
