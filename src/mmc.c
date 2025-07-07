@@ -470,12 +470,14 @@ trace_root(struct gc_root root, struct gc_heap *heap,
                                    trace_remembered_edge, heap, worker);
     break;
   case GC_ROOT_KIND_HEAP_PINNED_ROOTS:
+    GC_ASSERT(!heap_nofl_space(heap)->evacuating);
     gc_trace_heap_pinned_roots(root.heap->roots,
                                tracer_visit_pinned_root,
                                trace_conservative_edges_wrapper,
                                heap, worker);
     break;
   case GC_ROOT_KIND_MUTATOR_PINNED_ROOTS:
+    GC_ASSERT(!heap_nofl_space(heap)->evacuating);
     gc_trace_mutator_pinned_roots(root.mutator->roots,
                                   tracer_visit_pinned_root,
                                   trace_conservative_edges_wrapper,
