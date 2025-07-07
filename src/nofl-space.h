@@ -1630,6 +1630,8 @@ nofl_space_set_nonempty_mark(struct nofl_space *space, uint8_t *metadata,
                              uint8_t byte, struct gc_ref ref) {
   // FIXME: Check that relaxed atomics are actually worth it.
   if (nofl_space_set_mark(space, metadata, byte)) {
+    GC_ASSERT(nofl_metadata_byte_is_young_or_has_mark(byte,
+                                                      space->survivor_mark));
     nofl_block_set_mark(gc_ref_value(ref));
     return 1;
   }
