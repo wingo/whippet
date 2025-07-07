@@ -1927,10 +1927,11 @@ nofl_space_mark_conservative_ref(struct nofl_space *space,
   GC_ASSERT(nofl_metadata_byte_is_young_or_has_mark(resolved.byte,
                                                     space->survivor_mark));
 
-  nofl_space_set_nonempty_mark(space, resolved.metadata, resolved.byte,
-                               gc_ref(resolved.addr));
+  if (nofl_space_set_nonempty_mark(space, resolved.metadata, resolved.byte,
+                                   gc_ref(resolved.addr)))
+    return gc_ref(resolved.addr);
 
-  return gc_ref(resolved.addr);
+  return gc_ref_null();
 }
 
 static inline size_t
