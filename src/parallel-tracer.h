@@ -185,6 +185,19 @@ tracer_share(struct gc_trace_worker *worker) {
 }
 
 static inline void
+tracer_share_all(struct gc_trace_worker *worker) {
+  LOG("tracer #%zu: found %zu roots\n", worker->id,
+      local_worklist_size (&worker->local));
+  while (!local_worklist_empty (&worker->local)) {
+    struct gc_ref *objv;
+    size_t count =
+      local_worklist_pop_many(&worker->local, &objv, LOCAL_WORKLIST_SIZE);
+    shared_worklist_push_many(&worker->shared, objv, count);
+  }
+  // No unparking; this is used at the end of a roots-only trace.
+}
+
+static inline void
 gc_trace_worker_enqueue(struct gc_trace_worker *worker, struct gc_ref ref) {
   ASSERT(gc_ref_is_heap_object(ref));
   if (local_worklist_full(&worker->local))
@@ -332,6 +345,7 @@ trace_with_data(struct gc_tracer *tracer,
     // result of marking roots isn't ours to deal with.  However we do need to
     // synchronize with remote workers to ensure they have completed their
     // work items.
+    tracer_share_all(worker);
     if (worker->id == 0) {
       for (size_t i = 1; i < tracer->worker_count; i++)
         pthread_mutex_lock(&tracer->workers[i].lock);
