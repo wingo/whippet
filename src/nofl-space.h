@@ -211,30 +211,30 @@ struct nofl_allocator {
 //
 // When an object becomes dead after a GC, it will still have a mark set
 // -- maybe the young mark, or maybe a survivor mark.  The sweeper has
-// to clear these marks before the next collection.  If we add
-// concurrent marking, we will also be marking "live" objects, updating
-// their mark bits.  So there are three and possibly four object states
-// concurrently observable:  young, dead, survivor, and marked.  (We
-// don't currently have concurrent marking, though.)  We store this
-// state in the low 3 bits of the byte.  After each major collection,
-// the dead, survivor, and marked states rotate.
+// to clear these marks before the next collection.  The same goes for
+// "forwarded" marks left in the metadata of evacuated objects.  If we
+// add concurrent marking, we will also be marking "live" objects,
+// updating their mark bits.  So there are three and possibly four
+// object states concurrently observable:  young, dead, survivor, and
+// marked.  (We don't currently have concurrent marking, though.)  We
+// store this state in the low 3 bits of the byte.  After each major
+// collection, the dead, survivor, and marked states rotate.
 //
 // It can be useful to support "raw" allocations, most often
 // pointerless, but for compatibility with BDW-GC, sometimes
 // conservatively-traced tagless data.  We reserve one or two bits for
 // the "kind" of the allocation: either a normal object traceable via
 // `gc_trace_object`, a pointerless untagged allocation that doesn't
-// need tracing, an allocation that should be traced conservatively, or
-// an ephemeron.  The latter two states are only used when conservative
-// tracing is enabled.
+// need tracing, an allocation that should be traced conservatively.
+// The latter state is only used when conservative tracing is enabled.
 //
 // An object can be pinned, preventing it from being evacuated during
 // collection.  Pinning does not keep the object alive; if it is
 // otherwise unreachable, it will be collected.  To pin an object, a
 // running mutator can set the pinned bit, using atomic
-// compare-and-swap.  This bit overlaps the "trace conservatively" and
-// "ephemeron" trace kinds, but that's OK because we don't use the
-// pinned bit in those cases, as all objects are implicitly pinned.
+// compare-and-swap.  This bit overlaps the "trace conservatively" trace
+// kind, but that's OK because we don't use the pinned bit in those
+// cases, as all objects are implicitly pinned.
 //
 // For generational collectors, the nofl space supports a field-logging
 // write barrier.  The two logging bits correspond to the two words in a
@@ -248,6 +248,9 @@ enum nofl_metadata_byte {
   NOFL_METADATA_BYTE_MARK_0 = 2,
   NOFL_METADATA_BYTE_MARK_1 = 3,
   NOFL_METADATA_BYTE_MARK_2 = 4,
+  NOFL_METADATA_BYTE_BUSY = 5,
+  NOFL_METADATA_BYTE_FORWARDED = 6,
+  NOFL_METADATA_BYTE_UNUSED = 7,
   NOFL_METADATA_BYTE_MARK_MASK = 7,
   NOFL_METADATA_BYTE_TRACE_PRECISELY = 0,
   NOFL_METADATA_BYTE_TRACE_NONE = 8,
@@ -1391,8 +1394,9 @@ nofl_metadata_byte_trace_kind(struct nofl_space *space, uint8_t byte)
 static void
 nofl_assert_not_forwarded(struct gc_ref ref)
 {
-  struct gc_atomic_forward fwd = gc_atomic_forward_begin(ref);
-  GC_ASSERT_EQ(fwd.state, GC_FORWARDING_STATE_NOT_FORWARDED);
+  uint8_t *metadata = nofl_metadata_byte_for_object(ref);
+  uint8_t byte = atomic_load_explicit(metadata, memory_order_relaxed);
+  GC_ASSERT(!nofl_metadata_byte_has_mark(byte, NOFL_METADATA_BYTE_FORWARDED));
 }
 
 static void
@@ -1683,84 +1687,71 @@ clear_logged_bits_in_evacuated_object(uint8_t head, uint8_t *metadata,
   return head & ~mask;
 }
 
+
 static inline int
 nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
                     struct gc_edge edge,
                     struct gc_ref old_ref,
                     struct nofl_allocator *evacuate) {
-  struct gc_atomic_forward fwd = gc_atomic_forward_begin(old_ref);
+  uint8_t mark = byte & NOFL_METADATA_BYTE_MARK_MASK;
+  uint8_t busy_byte = (byte - mark) | NOFL_METADATA_BYTE_BUSY;
+  uint8_t forwarded_byte = (byte - mark) | NOFL_METADATA_BYTE_FORWARDED;
+  uint8_t marked_byte = (byte - mark) | space->current_mark;
 
-  if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
-    gc_atomic_forward_acquire(&fwd);
+  int claimed =
+    nofl_metadata_byte_is_young_or_has_mark(byte, space->survivor_mark)
+    && atomic_compare_exchange_strong(metadata, &byte, busy_byte);
 
-  switch (fwd.state) {
-  case GC_FORWARDING_STATE_NOT_FORWARDED:
-  default:
-    // Impossible.
-    GC_CRASH();
-  case GC_FORWARDING_STATE_ACQUIRED: {
-    // We claimed the object successfully.
-
-    // First check again if someone else tried to evacuate this object and ended
-    // up marking in place instead.
-    byte = atomic_load_explicit(metadata, memory_order_acquire);
-    if (nofl_metadata_byte_has_mark(byte, space->current_mark)) {
-      // Indeed, already marked in place.
-      gc_atomic_forward_abort(&fwd);
-      return 0;
-    }
-
-    // Otherwise, we try to evacuate.
+  if (claimed) {
+    // It's up to us to shade the object.
     size_t object_granules = nofl_space_live_object_granules(metadata);
     struct gc_ref new_ref = nofl_evacuation_allocate(evacuate, space,
                                                      object_granules);
-    if (!gc_ref_is_null(new_ref)) {
+    if (gc_ref_is_null(new_ref)) {
+      // Well shucks; allocation failed.  Mark in place and then release the
+      // object.
+      atomic_store_explicit(metadata, marked_byte, memory_order_release);
+      nofl_block_set_mark(gc_ref_value(old_ref));
+    } else {
       // Whee, it works!  Copy object contents before committing, as we don't
       // know what part of the object (if any) will be overwritten by the
       // commit.
       memcpy(gc_ref_heap_object(new_ref), gc_ref_heap_object(old_ref),
              object_granules * NOFL_GRANULE_SIZE);
-      gc_atomic_forward_commit(&fwd, new_ref);
+      gc_object_forward_nonatomic(old_ref, new_ref);
+      atomic_store_explicit(metadata, forwarded_byte, memory_order_release);
+
       // Now update extent metadata, and indicate to the caller that
       // the object's fields need to be traced.
       uint8_t *new_metadata = nofl_metadata_byte_for_addr(gc_ref_value(new_ref));
       memcpy(new_metadata + 1, metadata + 1, object_granules - 1);
+      byte = marked_byte;
       if (GC_GENERATIONAL)
         byte = clear_logged_bits_in_evacuated_object(byte, new_metadata,
                                                      object_granules);
+      *new_metadata = byte;
+      nofl_block_set_mark(gc_ref_value(new_ref));
       gc_edge_update(edge, new_ref);
-      return nofl_space_set_nonempty_mark(space, new_metadata, byte,
-                                          new_ref);
-    } else {
-      // Well shucks; allocation failed.  Mark in place and then release the
-      // object.
-      nofl_space_set_mark(space, metadata, byte);
-      nofl_block_set_mark(gc_ref_value(old_ref));
-      gc_atomic_forward_abort(&fwd);
-      return 1;
     }
-    break;
+    // Either way, since we claimed the object, we shaded it grey.
+    return 1;
   }
-  case GC_FORWARDING_STATE_BUSY:
-    // Someone else claimed this object first.  Spin until new address
-    // known, or evacuation aborts.
-    for (size_t spin_count = 0;; spin_count++) {
-      if (gc_atomic_forward_retry_busy(&fwd))
-        break;
-      yield_for_spin(spin_count);
-    }
-    if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
-      // Remove evacuation aborted; remote will mark and enqueue.
-      return 0;
-    ASSERT(fwd.state == GC_FORWARDING_STATE_FORWARDED);
-    // Fall through.
-  case GC_FORWARDING_STATE_FORWARDED:
-    // The object has been evacuated already.  Update the edge;
-    // whoever forwarded the object will make sure it's eventually
-    // traced.
-    gc_edge_update(edge, gc_ref(gc_atomic_forward_address(&fwd)));
-    return 0;
+
+  // If we failed to claim the object, someone else shaded it grey (or
+  // is in the process of doing so).  Wait for that to complete, if
+  // needed, then update our edge if the object was forwarded.
+  for (size_t spin_count = 0; byte == busy_byte; spin_count++) {
+    yield_for_spin(spin_count);
+    byte = atomic_load_explicit(metadata, memory_order_acquire);
   }
+
+  if (byte == forwarded_byte) {
+    struct gc_ref new_ref = gc_ref(gc_object_forwarded_nonatomic(old_ref));
+    GC_ASSERT(!gc_ref_is_null(new_ref));
+    gc_edge_update(edge, new_ref);
+  }
+
+  return 0;
 }
 
 static inline int
@@ -1793,48 +1784,27 @@ nofl_space_mark_object(struct nofl_space *space, struct gc_ref ref,
   return nofl_space_set_nonempty_mark(space, metadata, byte, ref);
 }
 
-static inline int
-nofl_space_forward_if_evacuated(struct nofl_space *space,
-                                struct gc_edge edge,
-                                struct gc_ref ref) {
-  struct gc_atomic_forward fwd = gc_atomic_forward_begin(ref);
-  switch (fwd.state) {
-  case GC_FORWARDING_STATE_NOT_FORWARDED:
-    return 0;
-  case GC_FORWARDING_STATE_BUSY:
-    // Someone else claimed this object first.  Spin until new address
-    // known, or evacuation aborts.
-    for (size_t spin_count = 0;; spin_count++) {
-      if (gc_atomic_forward_retry_busy(&fwd))
-        break;
-      yield_for_spin(spin_count);
-    }
-    if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
-      // Remote evacuation aborted; remote will mark and enqueue.
-      return 1;
-    ASSERT(fwd.state == GC_FORWARDING_STATE_FORWARDED);
-    // Fall through.
-  case GC_FORWARDING_STATE_FORWARDED:
-    gc_edge_update(edge, gc_ref(gc_atomic_forward_address(&fwd)));
-    return 1;
-  default:
-    GC_CRASH();
-  }
-}
-
 static int
 nofl_space_forward_or_mark_if_traced(struct nofl_space *space,
                                      struct gc_edge edge,
                                      struct gc_ref ref) {
   uint8_t *metadata = nofl_metadata_byte_for_object(ref);
   uint8_t byte = atomic_load_explicit(metadata, memory_order_acquire);
-  if (nofl_metadata_byte_has_mark(byte, space->current_mark))
+  uint8_t mark = byte & NOFL_METADATA_BYTE_MARK_MASK;
+  uint8_t busy_byte = (byte - mark) | NOFL_METADATA_BYTE_BUSY;
+  uint8_t forwarded_byte = (byte - mark) | NOFL_METADATA_BYTE_FORWARDED;
+
+  for (size_t spin_count = 0; byte == busy_byte; spin_count++) {
+    yield_for_spin(spin_count);
+    byte = atomic_load_explicit(metadata, memory_order_acquire);
+  }
+
+  if (byte == forwarded_byte) {
+    gc_edge_update(edge, gc_ref(gc_object_forwarded_nonatomic(ref)));
     return 1;
+  }
 
-  if (!nofl_space_should_evacuate(space, byte, ref))
-    return 0;
-
-  return nofl_space_forward_if_evacuated(space, edge, ref);
+  return nofl_metadata_byte_has_mark(byte, space->current_mark);
 }
 
 struct nofl_resolved_conservative_ref {
