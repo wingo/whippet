@@ -267,6 +267,8 @@ remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   MUTATOR_EVENT(mut, mutator_removed);
   mut->heap = NULL;
   heap_lock(heap);
+  if (!mut->active)
+    heap->inactive_mutator_count--;
   heap->mutator_count--;
   mut->active = 0;
   if (mut->next)
