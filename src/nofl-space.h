@@ -38,6 +38,8 @@ STATIC_ASSERT_EQ(NOFL_GRANULE_SIZE, 1 << NOFL_GRANULE_SIZE_LOG_2);
 STATIC_ASSERT_EQ(NOFL_MEDIUM_OBJECT_THRESHOLD,
                  NOFL_MEDIUM_OBJECT_GRANULE_THRESHOLD * NOFL_GRANULE_SIZE);
 
+#include "nofl-holeset.h"
+
 #define NOFL_SLAB_SIZE (4 * 1024 * 1024)
 #define NOFL_BLOCK_SIZE (64 * 1024)
 #define NOFL_METADATA_BYTES_PER_BLOCK (NOFL_BLOCK_SIZE / NOFL_GRANULE_SIZE)
@@ -166,6 +168,7 @@ struct nofl_space {
   struct nofl_block_list promoted;
   struct nofl_block_list old;
   struct nofl_block_list evacuation_targets;
+  struct nofl_holeset holes;
   pthread_mutex_t lock;
   double evacuation_minimum_reserve;
   double evacuation_reserve;
@@ -183,6 +186,7 @@ struct nofl_allocator {
   uintptr_t alloc;
   uintptr_t sweep;
   struct nofl_block_ref block;
+  struct nofl_holeset holes;
 };
 
 #if GC_CONSERVATIVE_TRACE && GC_CONCURRENT_TRACE
@@ -610,6 +614,7 @@ static void
 nofl_allocator_reset(struct nofl_allocator *alloc) {
   alloc->alloc = alloc->sweep = 0;
   alloc->block = nofl_block_null();
+  nofl_holeset_clear(&alloc->holes);
 }
 
 static int
@@ -738,6 +743,7 @@ static void
 nofl_allocator_finish_hole(struct nofl_allocator *alloc) {
   size_t granules = (alloc->sweep - alloc->alloc) / NOFL_GRANULE_SIZE;
   if (granules) {
+    nofl_holeset_push_local(&alloc->holes, alloc->alloc, granules);
     alloc->block.summary->holes_with_fragmentation++;
     alloc->block.summary->fragmentation_granules += granules;
     alloc->alloc = alloc->sweep;
@@ -839,6 +845,7 @@ static void
 nofl_allocator_finish(struct nofl_allocator *alloc, struct nofl_space *space) {
   if (nofl_allocator_has_block(alloc))
     nofl_allocator_release_block(alloc, space);
+  nofl_holeset_release(&alloc->holes, &space->holes, &space->lock);
 }
 
 static int
@@ -936,6 +943,49 @@ nofl_allocator_next_hole(struct nofl_allocator *alloc,
   }
 }
 
+static inline struct gc_ref
+nofl_allocate_bump_pointer(struct nofl_allocator *alloc, size_t size,
+                           enum gc_allocation_kind kind) {
+  GC_ASSERT(size <= alloc->sweep - alloc->alloc);
+  struct gc_ref ret = gc_ref(alloc->alloc);
+  alloc->alloc += size;
+  gc_update_alloc_table(ret, size, kind);
+  return ret;
+}
+
+static struct gc_ref
+nofl_allocate_second_chance(struct nofl_allocator *alloc,
+                            struct nofl_space *space, size_t granules) {
+  struct gc_ref local = nofl_holeset_try_pop(&alloc->holes, granules);
+  if (!gc_ref_is_null(local))
+    return local;
+  if (nofl_holeset_acquire(&alloc->holes, &space->holes, &space->lock,
+                           granules))
+    return nofl_holeset_try_pop(&alloc->holes, granules);
+  return gc_ref_null();
+}
+
+static struct gc_ref
+nofl_allocate_slow(struct nofl_allocator *alloc, struct nofl_space *space,
+                   size_t size, enum gc_allocation_kind kind) {
+  size_t granules = size >> NOFL_GRANULE_SIZE_LOG_2;
+
+  if (nofl_allocator_next_hole_in_block_of_size(alloc, space, granules))
+    return nofl_allocate_bump_pointer(alloc, size, kind);
+
+  struct gc_ref second_chance =
+    nofl_allocate_second_chance(alloc, space, granules);
+  if (!gc_ref_is_null(second_chance)) {
+    gc_update_alloc_table(second_chance, size, kind);
+    return second_chance;
+  }
+
+  if (nofl_allocator_next_hole(alloc, space, granules))
+    return nofl_allocate_bump_pointer(alloc, size, kind);
+
+  return gc_ref_null();
+}
+
 static struct gc_ref
 nofl_allocate(struct nofl_allocator *alloc, struct nofl_space *space,
               size_t size, enum gc_allocation_kind kind) {
@@ -943,16 +993,10 @@ nofl_allocate(struct nofl_allocator *alloc, struct nofl_space *space,
   GC_ASSERT(size <= gc_allocator_large_threshold());
   size = align_up(size, NOFL_GRANULE_SIZE);
 
-  if (alloc->alloc + size > alloc->sweep) {
-    size_t granules = size >> NOFL_GRANULE_SIZE_LOG_2;
-    if (!nofl_allocator_next_hole(alloc, space, granules))
-      return gc_ref_null();
-  }
+  if (alloc->alloc + size <= alloc->sweep)
+    return nofl_allocate_bump_pointer(alloc, size, kind);
 
-  struct gc_ref ret = gc_ref(alloc->alloc);
-  alloc->alloc += size;
-  gc_update_alloc_table(ret, size, kind);
-  return ret;
+  return nofl_allocate_slow(alloc, space, size, kind);
 }
 
 static struct gc_ref
@@ -1538,6 +1582,7 @@ nofl_space_verify_before_restart(struct nofl_space *space) {
 static void
 nofl_space_finish_gc(struct nofl_space *space,
                      enum gc_collection_kind gc_kind) {
+  nofl_holeset_clear(&space->holes);
   space->last_collection_was_minor = (gc_kind == GC_COLLECTION_MINOR);
   struct gc_lock lock = nofl_space_lock(space);
   if (space->evacuating)
