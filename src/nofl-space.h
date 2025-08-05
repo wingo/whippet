@@ -180,6 +180,7 @@ struct nofl_space {
   uintptr_t survivor_granules_at_last_collection; // atomically
   uintptr_t allocated_granules_since_last_collection; // atomically
   uintptr_t fragmentation_granules_since_last_collection; // atomically
+  uintptr_t second_chance_granules_since_last_collection; // atomically
 };
 
 struct nofl_allocator {
@@ -984,6 +985,8 @@ nofl_allocate_slow(struct nofl_allocator *alloc, struct nofl_space *space,
     nofl_allocate_second_chance(alloc, space, granules);
   if (!gc_ref_is_null(second_chance)) {
     gc_update_alloc_table(second_chance, size, kind);
+    atomic_fetch_add(&space->second_chance_granules_since_last_collection,
+                     granules);
     return second_chance;
   }
 
@@ -1192,6 +1195,7 @@ nofl_space_reset_statistics(struct nofl_space *space) {
   space->survivor_granules_at_last_collection = 0;
   space->allocated_granules_since_last_collection = 0;
   space->fragmentation_granules_since_last_collection = 0;
+  space->second_chance_granules_since_last_collection = 0;
 }
 
 static size_t
@@ -1204,9 +1208,14 @@ nofl_space_live_size_at_last_collection(struct nofl_space *space) {
 static void
 nofl_space_add_to_allocation_counter(struct nofl_space *space,
                                      uint64_t *counter) {
-  *counter +=
+  uint64_t allocated =
     atomic_load_explicit(&space->allocated_granules_since_last_collection,
-                         memory_order_relaxed) * NOFL_GRANULE_SIZE;
+                         memory_order_relaxed);
+  uint64_t second_chance =
+    atomic_load_explicit(&space->second_chance_granules_since_last_collection,
+                         memory_order_relaxed);
+
+  *counter += (allocated + second_chance) * NOFL_GRANULE_SIZE;
 }
   
 static size_t
