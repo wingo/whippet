@@ -947,7 +947,7 @@ maybe_grow_heap (struct gc_heap *heap, size_t for_allocation)
 {
   if (!for_allocation)
     return 0;
-  if (heap->sizer.policy == GC_HEAP_SIZE_FIXED)
+  if (heap->sizer.policy != GC_HEAP_SIZE_GROWABLE)
     return 0;
 
   pthread_mutex_lock(&heap->lock);
@@ -962,10 +962,13 @@ maybe_grow_heap (struct gc_heap *heap, size_t for_allocation)
   large_object_space_add_to_allocation_counter(heap_large_object_space(heap),
                                                &progress);
   double yield_at_last_gc = heap_last_gc_yield (heap);
-  uint64_t expected_progress = heap->size_at_last_gc * yield_at_last_gc;
-  if (progress < expected_progress / 2)
+  uint64_t live_at_last_gc = heap->size_at_last_gc * (1.0 - yield_at_last_gc);
+  uint64_t expected_progress =
+    live_at_last_gc * (heap->sizer.growable->multiplier - 1.0);
+  uint64_t minimum_progress = expected_progress / 2;
+  if (progress < minimum_progress)
     {
-      resize_heap(heap, heap->size + expected_progress / 2);
+      resize_heap(heap, heap->size + minimum_progress);
       pthread_mutex_unlock(&heap->lock);
       return 1;
     }
