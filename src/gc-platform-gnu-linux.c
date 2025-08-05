@@ -182,6 +182,18 @@ gc_platform_release_reservation(struct gc_reservation reservation) {
 
 void*
 gc_platform_acquire_memory(size_t size, size_t alignment) {
+  if (alignment == 0) {
+    GC_ASSERT_EQ(size, align_down(size, getpagesize()));
+    // Use just one syscall instead of two.
+    void *mem = mmap(NULL, size, PROT_READ|PROT_WRITE,
+                     MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (mem == MAP_FAILED) {
+      perror("failed to reserve address space");
+      GC_CRASH();
+    }
+    return mem;
+  }
+
   struct gc_reservation reservation =
     gc_platform_reserve_memory(size, alignment);
   return gc_platform_acquire_memory_from_reservation(reservation, 0, size);
