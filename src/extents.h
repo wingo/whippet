@@ -17,7 +17,7 @@ struct extents {
   struct extent_range ranges[];
 };
 
-static inline int
+static inline uintptr_t
 extents_contain_addr(struct extents *extents, uintptr_t addr) {
   size_t lo = 0;
   size_t hi = extents->size;
@@ -27,7 +27,7 @@ extents_contain_addr(struct extents *extents, uintptr_t addr) {
     if (addr < range.lo_addr) {
       hi = mid;
     } else if (addr < range.hi_addr) {
-      return 1;
+      return range.lo_addr;
     } else {
       lo = mid + 1;
     }
@@ -69,6 +69,7 @@ extents_insert(struct extents *old, size_t idx, struct extent_range range) {
 
 static struct extents*
 extents_adjoin(struct extents *extents, void *lo_addr, size_t size) {
+  GC_ASSERT(range.lo_addr);
   size_t i;
   struct extent_range range = { (uintptr_t)lo_addr, (uintptr_t)lo_addr + size };
   for (i = 0; i < extents->size; i++) {
@@ -85,4 +86,32 @@ extents_adjoin(struct extents *extents, void *lo_addr, size_t size) {
   return extents_insert(extents, i, range);
 }
   
+static inline struct extents*
+extents_clear(struct extents *extents) {
+  extents->size = 0;
+  return extents;
+}
+
+static inline struct extents*
+extents_prepare(struct extents *extents, size_t size)
+{
+  if (size <= extents->size)
+    return extents_clear(extents);
+
+  size_t capacity = extents->size * 2;
+  if (capacity < size)
+    capacity = size;
+  free(extents);
+  return extents_allocate(capacity);
+}
+
+static inline void
+extents_append(struct extents *extents, void *lo_addr, size_t size) {
+  size_t idx = extents->size++;
+  GC_ASSERT(extents->size <= extents->capacity);
+  struct extent_range range = { (uintptr_t)lo_addr, (uintptr_t)lo_addr + size };
+  GC_ASSERT(idx == 0 || extents->ranges[idx - 1].hi_addr <= range.lo_addr);
+  extents->ranges[idx] = range;
+}
+
 #endif // EXTENTS_H

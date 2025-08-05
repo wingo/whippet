@@ -177,6 +177,9 @@ static void address_map_destroy(struct address_map *map) {
 static void address_map_clear(struct address_map *map) {
   hash_map_clear(&map->hash_map);
 }
+static size_t address_map_size(struct address_map *map) {
+  return map->hash_map.n_items;
+}
   
 static void address_map_add(struct address_map *map, uintptr_t addr, uintptr_t v) {
   hash_map_insert(&map->hash_map, hash_address(addr), v);

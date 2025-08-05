@@ -111,6 +111,10 @@ struct large_object_space {
   // possibly in other spaces.
   struct address_set remembered_edges;
 
+  // Sorted array of object extents; used during GC to identify
+  // conservative refs.
+  struct extents *extents;
+
   size_t page_size;
   size_t page_size_log2;
   size_t total_pages;
@@ -157,11 +161,31 @@ large_object_space_object_containing_edge(struct large_object_space *space,
 }
 
 static void
+large_object_append_extent(struct large_object_node *node,
+                           struct extents *extents) {
+  if (node->left) large_object_append_extent(node->left, extents);
+  extents_append(extents, (void*)node->key.addr, node->key.size);
+  if (node->right) large_object_append_extent(node->right, extents);
+}
+
+static void
+large_object_space_prepare_extents(struct large_object_space *space) {
+  pthread_mutex_lock(&space->object_tree_lock);
+  space->extents = extents_prepare(space->extents,
+                                   address_map_size(&space->object_map));
+  if (space->object_tree.root)
+    large_object_append_extent(space->object_tree.root, space->extents);
+  pthread_mutex_unlock(&space->object_tree_lock);
+}
+
+static void
 large_object_space_start_gc(struct large_object_space *space, int is_minor_gc) {
   // Take the space lock to prevent
   // large_object_space_process_quarantine from concurrently mutating
   // the object map.
   pthread_mutex_lock(&space->lock);
+  if (gc_has_mutator_conservative_roots())
+    large_object_space_prepare_extents(space);
   if (!is_minor_gc) {
     space->marked ^= LARGE_OBJECT_MARK_TOGGLE_BIT;
     space->live_pages_at_last_collection = 0;
@@ -356,6 +380,8 @@ large_object_space_process_quarantine(void *data) {
 static void
 large_object_space_finish_gc(struct large_object_space *space,
                              int is_minor_gc) {
+  if (gc_has_mutator_conservative_roots())
+    extents_clear(space->extents);
   if (GC_GENERATIONAL) {
     address_map_for_each(is_minor_gc ? &space->nursery : &space->object_map,
                          large_object_space_sweep_one,
@@ -398,13 +424,26 @@ large_object_space_lookup_conservative_ref(struct large_object_space *space,
     addr -= displacement;
   }
 
-  struct large_object_node *node;
+  if (space->extents->size) {
+    // We are in a collection; avoid locks.
+    uintptr_t start = extents_contain_addr(space->extents, addr);
+    if (!start)
+      return NULL;
+    if (possibly_interior)
+      addr = start;
+    else if (addr != start)
+      return NULL;
+  }
+
+  struct large_object_node *node =
+    large_object_space_lookup(space, gc_ref(addr));
+  if (node)
+    return node;
+
   if (possibly_interior) {
     pthread_mutex_lock(&space->object_tree_lock);
     node = large_object_tree_lookup(&space->object_tree, addr);
     pthread_mutex_unlock(&space->object_tree_lock);
-  } else {
-    node = large_object_space_lookup(space, gc_ref(addr));
   }
 
   return node;
@@ -532,6 +571,9 @@ large_object_space_init(struct large_object_space *space,
   large_object_freelist_init(&space->quarantine);
 
   address_set_init(&space->remembered_edges);
+
+  if (gc_has_mutator_conservative_roots())
+    space->extents = extents_allocate(64);
 
   if (thread)
     gc_background_thread_add_task(thread, GC_BACKGROUND_TASK_START,
