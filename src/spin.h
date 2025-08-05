@@ -9,10 +9,10 @@ static inline void yield_for_spin(size_t spin_count) {
     __builtin_ia32_pause();
   else if (spin_count < 20)
     sched_yield();
-  else if (spin_count < 40)
-    usleep(0);
   else
-    usleep(1);
+    // initially 0 usec, then 2 usec after 32 spins, 4 usec after 64 spins, 6
+    // usec after 128 spins, and so on.
+    usleep((__builtin_clzll(20) - __builtin_clzll(spin_count)) << 1);
 }  
 
 #endif // SPIN_H
