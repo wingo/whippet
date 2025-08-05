@@ -10,7 +10,6 @@
 #include "debug.h"
 #include "gc-inline.h"
 #include "gc-tracepoint.h"
-#include "local-worklist.h"
 #include "root-worklist.h"
 #include "shared-worklist.h"
 #include "spin.h"
@@ -40,7 +39,6 @@ struct gc_trace_worker {
   enum trace_worker_state state;
   pthread_mutex_t lock;
   struct shared_worklist shared;
-  struct local_worklist local;
   struct gc_trace_worker_data *data;
 };
 
@@ -74,7 +72,6 @@ trace_worker_init(struct gc_trace_worker *worker, struct gc_heap *heap,
   worker->state = TRACE_WORKER_STOPPED;
   pthread_mutex_init(&worker->lock, NULL);
   worker->data = NULL;
-  local_worklist_init(&worker->local);
   return shared_worklist_init(&worker->shared);
 }
 
@@ -171,38 +168,9 @@ tracer_maybe_unpark_workers(struct gc_tracer *tracer) {
 }
 
 static inline void
-tracer_share(struct gc_trace_worker *worker) {
-  LOG("tracer #%zu: sharing\n", worker->id);
-  GC_TRACEPOINT(trace_share);
-  size_t to_share = LOCAL_WORKLIST_SHARE_AMOUNT;
-  while (to_share) {
-    struct gc_ref *objv;
-    size_t count = local_worklist_pop_many(&worker->local, &objv, to_share);
-    shared_worklist_push_many(&worker->shared, objv, count);
-    to_share -= count;
-  }
-  tracer_maybe_unpark_workers(worker->tracer);
-}
-
-static inline void
-tracer_share_all(struct gc_trace_worker *worker) {
-  LOG("tracer #%zu: found %zu roots\n", worker->id,
-      local_worklist_size (&worker->local));
-  while (!local_worklist_empty (&worker->local)) {
-    struct gc_ref *objv;
-    size_t count =
-      local_worklist_pop_many(&worker->local, &objv, LOCAL_WORKLIST_SIZE);
-    shared_worklist_push_many(&worker->shared, objv, count);
-  }
-  // No unparking; this is used at the end of a roots-only trace.
-}
-
-static inline void
 gc_trace_worker_enqueue(struct gc_trace_worker *worker, struct gc_ref ref) {
   ASSERT(gc_ref_is_heap_object(ref));
-  if (local_worklist_full(&worker->local))
-    tracer_share(worker);
-  local_worklist_push(&worker->local, ref);
+  shared_worklist_push(&worker->shared, ref);
 }
 
 static struct gc_ref
@@ -288,6 +256,7 @@ trace_worker_should_continue(struct gc_trace_worker *worker, size_t spin_count) 
     pthread_mutex_unlock(&tracer->workers[--locked].lock);
 
   LOG("checking for termination: failed to lock, spinning #%zu\n", spin_count);
+  tracer_unpark_all_workers(tracer);
   yield_for_spin(spin_count);
   return 1;
 }
@@ -295,16 +264,6 @@ trace_worker_should_continue(struct gc_trace_worker *worker, size_t spin_count) 
 static struct gc_ref
 trace_worker_steal(struct gc_trace_worker *worker) {
   struct gc_tracer *tracer = worker->tracer;
-
-  // It could be that the worker's local trace queue has simply
-  // overflowed.  In that case avoid contention by trying to pop
-  // something from the worker's own queue.
-  {
-    LOG("tracer #%zu: trying to pop worker's own deque\n", worker->id);
-    struct gc_ref obj = shared_worklist_try_pop(&worker->shared);
-    if (!gc_ref_is_null(obj))
-      return obj;
-  }
 
   GC_TRACEPOINT(trace_steal);
   LOG("tracer #%zu: trying to steal\n", worker->id);
@@ -345,7 +304,6 @@ trace_with_data(struct gc_tracer *tracer,
     // result of marking roots isn't ours to deal with.  However we do need to
     // synchronize with remote workers to ensure they have completed their
     // work items.
-    tracer_share_all(worker);
     if (worker->id == 0) {
       for (size_t i = 1; i < tracer->worker_count; i++)
         pthread_mutex_lock(&tracer->workers[i].lock);
@@ -357,16 +315,17 @@ trace_with_data(struct gc_tracer *tracer,
     size_t spin_count = 0;
     do {
       while (1) {
-        struct gc_ref ref;
-        if (!local_worklist_empty(&worker->local)) {
-          ref = local_worklist_pop(&worker->local);
-        } else {
+        struct gc_ref ref = shared_worklist_try_pop(&worker->shared);
+        if (gc_ref_is_null(ref)) {
           ref = trace_worker_steal(worker);
           if (gc_ref_is_null(ref))
             break;
         }
         trace_one(ref, heap, worker);
         n++;
+        if (worker->id == 0 && n % 128 == 0
+            && shared_worklist_can_steal(&worker->shared))
+          tracer_maybe_unpark_workers(tracer);
       }
     } while (trace_worker_should_continue(worker, spin_count++));
     GC_TRACEPOINT(trace_objects_end);
@@ -388,26 +347,7 @@ trace_worker_trace(struct gc_trace_worker *worker) {
 
 static inline int
 gc_tracer_should_parallelize(struct gc_tracer *tracer) {
-  if (root_worklist_size(&tracer->roots) > 1)
-    return 1;
-
-  if (tracer->trace_roots_only)
-    return 0;
-
-  size_t nonempty_worklists = 0;
-  ssize_t parallel_threshold =
-    LOCAL_WORKLIST_SIZE - LOCAL_WORKLIST_SHARE_AMOUNT;
-  for (size_t i = 0; i < tracer->worker_count; i++) {
-    ssize_t size = shared_worklist_size(&tracer->workers[i].shared);
-    if (!size)
-      continue;
-    nonempty_worklists++;
-    if (nonempty_worklists > 1)
-      return 1;
-    if (size >= parallel_threshold)
-      return 1;
-  }
-  return 0;
+  return 1;
 }
 
 static inline void
