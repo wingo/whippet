@@ -115,6 +115,7 @@ nofl_holeset_try_pop(struct nofl_holeset *holes, size_t granules) {
   } else {
     struct nofl_hole_with_size *hole_with_size = ret;
     hole_granules = hole_with_size->granules;
+    GC_ASSERT(hole_granules);
     hole_with_size->granules = 0;
   }
 

@@ -133,7 +133,7 @@ gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
                                struct gc_heap *heap,
                                struct gc_trace_worker *worker) {
   struct gc_trace_worker_data data;
-  nofl_allocator_reset(&data.allocator);
+  nofl_allocator_init(&data.allocator);
   f(tracer, heap, worker, &data);
   nofl_allocator_finish(&data.allocator, heap_nofl_space(heap));
 }
@@ -240,7 +240,7 @@ add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->heap = heap;
   mut->event_listener_data =
     heap->event_listener.mutator_added(heap->event_listener_data);
-  nofl_allocator_reset(&mut->allocator);
+  nofl_allocator_init(&mut->allocator);
   gc_field_set_writer_init(&mut->logger, &heap->remembered_set);
   heap_lock(heap);
   // We have no roots.  If there is a GC currently in progress, we have

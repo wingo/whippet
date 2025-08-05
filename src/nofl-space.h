@@ -614,6 +614,11 @@ static void
 nofl_allocator_reset(struct nofl_allocator *alloc) {
   alloc->alloc = alloc->sweep = 0;
   alloc->block = nofl_block_null();
+}
+
+static void
+nofl_allocator_init(struct nofl_allocator *alloc) {
+  nofl_allocator_reset(alloc);
   nofl_holeset_clear(&alloc->holes);
 }
 
@@ -739,11 +744,12 @@ nofl_allocator_acquire_evacuation_target(struct nofl_allocator* alloc,
   return nofl_allocator_acquire_empty_block(alloc, space);
 }
 
-static void
-nofl_allocator_finish_hole(struct nofl_allocator *alloc) {
+static inline void
+nofl_allocator_finish_hole(struct nofl_allocator *alloc, int collect_holes) {
   size_t granules = (alloc->sweep - alloc->alloc) / NOFL_GRANULE_SIZE;
   if (granules) {
-    nofl_holeset_push_local(&alloc->holes, alloc->alloc, granules);
+    if (collect_holes)
+      nofl_holeset_push_local(&alloc->holes, alloc->alloc, granules);
     alloc->block.summary->holes_with_fragmentation++;
     alloc->block.summary->fragmentation_granules += granules;
     alloc->alloc = alloc->sweep;
@@ -819,9 +825,10 @@ nofl_allocator_next_hole_in_block(struct nofl_allocator *alloc,
 
 static void
 nofl_allocator_finish_sweeping_in_block(struct nofl_allocator *alloc,
-                                        uint8_t survivor_mark) {
+                                        uint8_t survivor_mark,
+                                        int collect_holes) {
   do {
-    nofl_allocator_finish_hole(alloc);
+    nofl_allocator_finish_hole(alloc, collect_holes);
   } while (nofl_allocator_next_hole_in_block(alloc, survivor_mark));
 }
 
@@ -836,7 +843,7 @@ nofl_allocator_release_block(struct nofl_allocator *alloc,
   } else if (space->evacuating) {
     nofl_allocator_release_full_evacuation_target(alloc, space);
   } else {
-    nofl_allocator_finish_sweeping_in_block(alloc, space->survivor_mark);
+    nofl_allocator_finish_sweeping_in_block(alloc, space->survivor_mark, 1);
     nofl_allocator_release_full_block(alloc, space);
   }
 }
@@ -867,7 +874,7 @@ nofl_allocator_next_hole_in_block_of_size(struct nofl_allocator *alloc,
     return 0;
 
   while (1) {
-    nofl_allocator_finish_hole(alloc);
+    nofl_allocator_finish_hole(alloc, min_granules != 0);
     size_t granules =
       nofl_allocator_next_hole_in_block(alloc, space->survivor_mark);
     if (granules == 0) {
@@ -929,7 +936,7 @@ nofl_allocator_next_hole(struct nofl_allocator *alloc,
         break;
       if (min_granules <= granules)
         return granules;
-      nofl_allocator_finish_hole(alloc);
+      nofl_allocator_finish_hole(alloc, 1);
       nofl_allocator_release_full_block(alloc, space);
     }
 
@@ -1397,7 +1404,7 @@ nofl_space_promote_blocks(struct nofl_space *space) {
     block.summary->holes_with_fragmentation = 0;
     block.summary->fragmentation_granules = 0;
     struct nofl_allocator alloc = { block.addr, block.addr, block };
-    nofl_allocator_finish_sweeping_in_block(&alloc, space->current_mark);
+    nofl_allocator_finish_sweeping_in_block(&alloc, space->current_mark, 0);
     atomic_fetch_add(&space->old_generation_granules,
                      NOFL_GRANULES_PER_BLOCK - block.summary->hole_granules);
     nofl_block_list_push(&space->old, block);
