@@ -69,7 +69,7 @@ extents_insert(struct extents *old, size_t idx, struct extent_range range) {
 
 static struct extents*
 extents_adjoin(struct extents *extents, void *lo_addr, size_t size) {
-  GC_ASSERT(range.lo_addr);
+  GC_ASSERT(lo_addr);
   size_t i;
   struct extent_range range = { (uintptr_t)lo_addr, (uintptr_t)lo_addr + size };
   for (i = 0; i < extents->size; i++) {
