@@ -327,7 +327,7 @@ copy_space_reacquire_memory(struct copy_space *space, size_t bytes) {
 
 static inline int
 copy_space_contains_address(struct copy_space *space, uintptr_t addr) {
-  return extents_contain_addr(space->extents, addr);
+  return extents_contain_addr(space->extents, addr) != 0;
 }
 
 static inline int

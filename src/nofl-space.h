@@ -1115,7 +1115,7 @@ nofl_space_set_heap_has_ambiguous_edges (struct nofl_space *space)
 
 static inline int
 nofl_space_contains_address(struct nofl_space *space, uintptr_t addr) {
-  return extents_contain_addr(space->extents, addr);
+  return extents_contain_addr(space->extents, addr) != 0;
 }
 
 static inline int
