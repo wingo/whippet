@@ -693,8 +693,7 @@ copy_space_forward_nonatomic(struct copy_space *space, struct gc_edge edge,
     gc_edge_update(edge, gc_ref(forwarded));
     return COPY_SPACE_FORWARD_UPDATED;
   } else {
-    size_t size;
-    gc_trace_object(old_ref, NULL, NULL, NULL, &size);
+    size_t size = gc_trace_object(old_ref, NULL, NULL, NULL);
     struct gc_ref new_ref = copy_space_allocate(alloc, space, size);
     if (gc_ref_is_null(new_ref))
       return COPY_SPACE_FORWARD_FAILED;

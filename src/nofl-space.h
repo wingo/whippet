@@ -1487,8 +1487,7 @@ nofl_space_verify_sweepable_blocks(struct nofl_space *space,
         GC_ASSERT(meta[granules - 1] & NOFL_METADATA_BYTE_END);
 
         if (nofl_metadata_byte_trace_kind(space, byte) == GC_TRACE_PRECISELY) {
-          size_t trace_bytes;
-          gc_trace_object(obj, NULL, NULL, NULL, &trace_bytes);
+          size_t trace_bytes = gc_trace_object(obj, NULL, NULL, NULL);
           size_t trace_granules = nofl_size_to_granules(trace_bytes);
           GC_ASSERT_EQ(granules, trace_granules);
 
@@ -1540,8 +1539,7 @@ nofl_space_verify_swept_blocks(struct nofl_space *space,
         GC_ASSERT(meta[granules - 1] & NOFL_METADATA_BYTE_END);
 
         if (nofl_metadata_byte_trace_kind(space, byte) == GC_TRACE_PRECISELY) {
-          size_t trace_bytes;
-          gc_trace_object(obj, NULL, NULL, NULL, &trace_bytes);
+          size_t trace_bytes = gc_trace_object(obj, NULL, NULL, NULL);
           size_t trace_granules = nofl_size_to_granules(trace_bytes);
           GC_ASSERT_EQ(granules, trace_granules);
 

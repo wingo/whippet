@@ -32,22 +32,19 @@ static inline void gc_extern_space_finish_gc(struct gc_extern_space *space,
                                              int is_minor_gc) {
 }
 
-static inline void gc_trace_object(struct gc_ref ref,
-                                   void (*trace_edge)(struct gc_edge edge,
-                                                      struct gc_heap *heap,
-                                                      void *trace_data),
-                                   struct gc_heap *heap,
-                                   void *trace_data,
-                                   size_t *size) {
+static inline size_t gc_trace_object(struct gc_ref ref,
+                                     void (*trace_edge)(struct gc_edge edge,
+                                                        struct gc_heap *heap,
+                                                        void *trace_data),
+                                     struct gc_heap *heap,
+                                     void *trace_data) {
   switch (tag_live_alloc_kind(*tag_word(ref))) {
 #define SCAN_OBJECT(name, Name, NAME)                                   \
     case ALLOC_KIND_##NAME:                                             \
       if (trace_edge)                                                   \
         visit_##name##_fields(gc_ref_heap_object(ref), trace_edge,      \
                               heap, trace_data);                        \
-      if (size)                                                         \
-        *size = name##_size(gc_ref_heap_object(ref));                   \
-      break;
+      return name##_size(gc_ref_heap_object(ref));
     FOR_EACH_HEAP_OBJECT_KIND(SCAN_OBJECT)
 #undef SCAN_OBJECT
   default:

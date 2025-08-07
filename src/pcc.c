@@ -596,7 +596,7 @@ static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
   }
 #endif
 
-  gc_trace_object(ref, tracer_visit, heap, worker, NULL);
+  gc_trace_object(ref, tracer_visit, heap, worker);
 }
 
 static inline void trace_root(struct gc_root root, struct gc_heap *heap,

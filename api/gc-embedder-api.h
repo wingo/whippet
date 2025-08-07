@@ -28,13 +28,12 @@ GC_EMBEDDER_API inline void gc_extern_space_start_gc(struct gc_extern_space *spa
 GC_EMBEDDER_API inline void gc_extern_space_finish_gc(struct gc_extern_space *space,
                                                       int is_minor_gc);
 
-GC_EMBEDDER_API inline void gc_trace_object(struct gc_ref ref,
-                                            void (*visit)(struct gc_edge edge,
-                                                          struct gc_heap *heap,
-                                                          void *visit_data),
-                                            struct gc_heap *heap,
-                                            void *trace_data,
-                                            size_t *size) GC_ALWAYS_INLINE;
+GC_EMBEDDER_API inline size_t gc_trace_object(struct gc_ref ref,
+                                              void (*visit)(struct gc_edge edge,
+                                                            struct gc_heap *heap,
+                                                            void *visit_data),
+                                              struct gc_heap *heap,
+                                              void *trace_data) GC_ALWAYS_INLINE;
 
 GC_EMBEDDER_API inline void gc_trace_mutator_roots(struct gc_mutator_roots *roots,
                                                    void (*trace_edge)(struct gc_edge edge,

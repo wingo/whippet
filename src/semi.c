@@ -181,8 +181,7 @@ static void flip(struct semi_space *space) {
 
 static struct gc_ref copy(struct gc_heap *heap, struct semi_space *space,
                           struct gc_ref ref) {
-  size_t size;
-  gc_trace_object(ref, NULL, NULL, NULL, &size);
+  size_t size = gc_trace_object(ref, NULL, NULL, NULL);
   struct gc_ref new_ref = gc_ref(space->hp);
   memcpy(gc_ref_heap_object(new_ref), gc_ref_heap_object(ref), size);
   gc_object_forward_nonatomic(ref, new_ref);
@@ -195,8 +194,7 @@ static struct gc_ref copy(struct gc_heap *heap, struct semi_space *space,
 }
 
 static uintptr_t scan(struct gc_heap *heap, struct gc_ref grey) {
-  size_t size;
-  gc_trace_object(grey, trace, heap, NULL, &size);
+  size_t size = gc_trace_object(grey, trace, heap, NULL);
   return gc_ref_value(grey) + align_up(size, GC_ALIGNMENT);
 }
 
@@ -218,7 +216,7 @@ static void visit_large_object_space(struct gc_heap *heap,
     if (GC_UNLIKELY(heap->check_pending_ephemerons))
       gc_resolve_pending_ephemerons(ref, heap);
 
-    gc_trace_object(ref, trace, heap, NULL, NULL);
+    gc_trace_object(ref, trace, heap, NULL);
   }
 }
 
@@ -241,7 +239,7 @@ static void visit_external_object(struct gc_heap *heap,
     if (GC_UNLIKELY(heap->check_pending_ephemerons))
       gc_resolve_pending_ephemerons(ref, heap);
 
-    gc_trace_object(ref, trace, heap, NULL, NULL);
+    gc_trace_object(ref, trace, heap, NULL);
   }
 }
 

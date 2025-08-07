@@ -425,7 +425,7 @@ trace_one(struct gc_ref ref, struct gc_heap *heap,
   struct gc_trace_plan plan = trace_plan(heap, ref);
   switch (plan.kind) {
     case GC_TRACE_PRECISELY:
-      gc_trace_object(ref, tracer_visit, heap, worker, NULL);
+      gc_trace_object(ref, tracer_visit, heap, worker);
       break;
     case GC_TRACE_NONE:
       break;
