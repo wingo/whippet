@@ -19,12 +19,12 @@
 #define FOR_EACH_SIZE_GC_OPTION(M)                                      \
   M(HEAP_SIZE, heap_size, "heap-size",                                  \
     size, size, 6 * 1024 * 1024, 0, -1)                                 \
+  M(HEAP_DOUBLE_THRESHOLD, heap_double_threshold, "heap-double-threshold", \
+    size, size, 60 * 1024 * 1024, 1, -1)                                \
   M(MAXIMUM_HEAP_SIZE, maximum_heap_size, "maximum-heap-size",          \
     size, size, 0, 0, -1)
 
 #define FOR_EACH_DOUBLE_GC_OPTION(M)                                    \
-  M(HEAP_SIZE_MULTIPLIER, heap_size_multiplier, "heap-size-multiplier", \
-    double, double, 1.75, 1.0, 1e6)                                     \
   M(HEAP_EXPANSIVENESS, heap_expansiveness, "heap-expansiveness",       \
     double, double, 1.0, 0.0, 50.0)
 

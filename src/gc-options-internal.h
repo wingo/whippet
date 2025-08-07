@@ -11,7 +11,7 @@ struct gc_common_options {
   enum gc_heap_size_policy heap_size_policy;
   size_t heap_size;
   size_t maximum_heap_size;
-  double heap_size_multiplier;
+  double heap_double_threshold;
   double heap_expansiveness;
   int parallelism;
 };

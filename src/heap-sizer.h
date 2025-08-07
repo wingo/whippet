@@ -28,7 +28,7 @@ gc_make_heap_sizer(struct gc_heap *heap,
 
     case GC_HEAP_SIZE_GROWABLE:
       ret.growable =
-        gc_make_growable_heap_sizer(heap, options->heap_size_multiplier);
+        gc_make_growable_heap_sizer(heap, options->heap_double_threshold);
       break;
 
     case GC_HEAP_SIZE_ADAPTIVE:
