@@ -1,7 +1,7 @@
 # Whippet Garbage Collector
 
 This repository is for development of Whippet, a new garbage collector
-implementation, eventually for use in [Guile
+implementation, initially targetted for use in [Guile
 Scheme](https://gnu.org/s/guile).
 
 Whippet is an embed-only C library, designed to be copied into a
@@ -23,7 +23,7 @@ See the [documentation](./doc/README.md).
  - Conservative heap tracing (optionally with `mmc`, always with `bdw`)
  - Parallel tracing (except `semi`)
  - Parallel mutators (except `semi`)
- - Inline allocation / write barrier fast paths (supporting JIT)
+ - Inline allocation / write barrier / safepoint fast paths (supporting JIT)
  - One unified API with no-overhead abstraction: switch collectors when
    you like
  - Three policies for sizing heaps: fixed, proportional to live size, and
@@ -44,16 +44,21 @@ See the [documentation](./doc/README.md).
 
 ## Status and roadmap
 
-As of January 2025, Whippet is good to go!  Of course there will surely
-be new features to build as Whippet gets integrated it into language
-run-times, but the basics are there.
+As of August 2025, Whippet is feature-complete, in the sense that it is
+ready to replace [Guile](https://gnu.org/s/guile)'s use of the
+Boehm-Demers-Weiser collector; see the [`wip-whippet` integration
+branch](https://cgit.git.savannah.gnu.org/cgit/guile.git/tree/?h=wip-whippet).
+We hope to incrementally merge this branch of Guile over to the main
+Guile branch over the next months.
 
-The next phase on the roadmap is support for tracing, and
-some performance noodling.
+In the future, Whippet's internal collectors need to add support for
+MacOS and Windows, to fix some usage of the C11 atomics API that clang
+doesn't like, to test on AArch64, and
 
-Once that is done, the big task is integrating Whippet into the [Guile
-Scheme](https://gnu.org/s/guile) language run-time, replacing BDW-GC.
-Fingers crossed!
+There are all kinds of new collector designs that it would be fun to
+experiment with, but we are mostly in a getting-into-production phase at
+the moment.  Feel very free to fork the repo to try out any ideas you
+might have!
 
 ## About the name
 
@@ -65,7 +70,7 @@ property.
 ## License
 
 ```
-Copyright (c) 2022-2024 Andy Wingo
+Copyright (c) 2022-2025 Andy Wingo
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the
