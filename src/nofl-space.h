@@ -843,7 +843,8 @@ nofl_allocator_release_block(struct nofl_allocator *alloc,
   } else if (space->evacuating) {
     nofl_allocator_release_full_evacuation_target(alloc, space);
   } else {
-    nofl_allocator_finish_sweeping_in_block(alloc, space->survivor_mark, 1);
+    nofl_allocator_finish_sweeping_in_block(alloc, space->survivor_mark,
+                                            !space->evacuating);
     nofl_allocator_release_full_block(alloc, space);
   }
 }
@@ -874,7 +875,7 @@ nofl_allocator_next_hole_in_block_of_size(struct nofl_allocator *alloc,
     return 0;
 
   while (1) {
-    nofl_allocator_finish_hole(alloc, min_granules != 0);
+    nofl_allocator_finish_hole(alloc, min_granules && !space->evacuating);
     size_t granules =
       nofl_allocator_next_hole_in_block(alloc, space->survivor_mark);
     if (granules == 0) {
@@ -936,7 +937,7 @@ nofl_allocator_next_hole(struct nofl_allocator *alloc,
         break;
       if (min_granules <= granules)
         return granules;
-      nofl_allocator_finish_hole(alloc, 1);
+      nofl_allocator_finish_hole(alloc, !space->evacuating);
       nofl_allocator_release_full_block(alloc, space);
     }
 
