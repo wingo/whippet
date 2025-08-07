@@ -581,11 +581,14 @@ heap_last_gc_yield(struct gc_heap *heap) {
   return 1.0 - ((double) live_size) / heap->size_at_last_gc;
 }
 
+// Just return fragmentation in the nofl space, it's the only thing that
+// matters for deciding whether or not to decide to compact the nofl
+// space.
 static double
 heap_fragmentation(struct gc_heap *heap) {
   struct nofl_space *nofl_space = heap_nofl_space(heap);
   size_t fragmentation = nofl_space_fragmentation(nofl_space);
-  return ((double)fragmentation) / heap->size;
+  return ((double)fragmentation) / nofl_space_size(nofl_space);
 }
 
 static size_t
