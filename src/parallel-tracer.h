@@ -256,7 +256,6 @@ trace_worker_should_continue(struct gc_trace_worker *worker, size_t spin_count) 
     pthread_mutex_unlock(&tracer->workers[--locked].lock);
 
   LOG("checking for termination: failed to lock, spinning #%zu\n", spin_count);
-  tracer_unpark_all_workers(tracer);
   yield_for_spin(spin_count);
   return 1;
 }
