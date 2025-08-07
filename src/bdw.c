@@ -12,6 +12,7 @@
 #include "gc-tracepoint.h"
 
 #include "gc-internal.h"
+#include "heap-sizer.h"
 
 #include "bdw-attrs.h"
 
@@ -59,6 +60,7 @@ struct gc_heap {
   struct gc_event_listener event_listener;
   struct gc_finalizer_state *finalizer_state;
   gc_finalizer_callback have_finalizers;
+  struct gc_heap_sizer sizer;
   void *event_listener_data;
   void* (*allocation_failure)(struct gc_heap *, size_t);
 };
@@ -126,8 +128,20 @@ allocate_small(void **freelist, size_t idx, enum gc_inline_kind kind) {
   return head;
 }
 
+static size_t gc_pending_heap_size;
+
 void* gc_allocate_slow(struct gc_mutator *mut, size_t size,
                        enum gc_allocation_kind kind) {
+  if (GC_UNLIKELY(gc_pending_heap_size)) {
+    size_t new_heap_size = gc_pending_heap_size;
+    gc_pending_heap_size = 0;
+    size_t current = GC_get_heap_size();
+    if (current < new_heap_size) {
+      GC_expand_hp(new_heap_size - current);
+      HEAP_EVENT(heap_resized, new_heap_size);
+    }
+  }
+
   GC_ASSERT(size != 0);
   if (size <= gc_allocator_large_threshold()) {
     switch (kind) {
@@ -521,9 +535,16 @@ gc_heap_pending_ephemerons(struct gc_heap *heap) {
   return NULL;
 }
 
+static uint64_t gc_start_ns;
+
+static void resize_heap(struct gc_heap *heap, size_t new_heap_size) {
+  gc_pending_heap_size = new_heap_size;
+}
+
 static void on_collection_event(GC_EventType event) {
   switch (event) {
   case GC_EVENT_START: {
+    gc_start_ns = gc_platform_monotonic_nanoseconds();
     HEAP_EVENT(requesting_stop);
     HEAP_EVENT(waiting_for_stop);
     break;
@@ -542,11 +563,18 @@ static void on_collection_event(GC_EventType event) {
     // Sloppily attribute finalizers and eager reclamation to
     // ephemerons.
     HEAP_EVENT(ephemerons_traced);
-    // FIXME: This overestimates the live data size, as blocks that have at
-    // least one live object will be lazily swept, and free space discovered in
-    // those objects will be added to GC_bytes_found, which would need to be
-    // subtracted from this value.
-    HEAP_EVENT(live_data_size, GC_get_heap_size() - GC_get_free_bytes());
+    {
+      size_t heap_size = GC_get_heap_size();
+      // FIXME: This overestimates the live data size, as blocks that have at
+      // least one live object will be lazily swept, and free space discovered in
+      // those objects will be added to GC_bytes_found, which would need to be
+      // subtracted from this value.
+      size_t live_data_size = heap_size - GC_get_free_bytes();
+      uint64_t pause_ns = gc_platform_monotonic_nanoseconds() - gc_start_ns;
+      HEAP_EVENT(live_data_size, live_data_size);
+      gc_heap_sizer_on_gc(__the_bdw_gc_heap->sizer, heap_size, live_data_size,
+                          pause_ns, resize_heap);
+    }
     break;
   case GC_EVENT_END:
     HEAP_EVENT(restarting_mutators);
@@ -616,18 +644,8 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
     case GC_HEAP_SIZE_GROWABLE: {
       if (options->common.maximum_heap_size)
         GC_set_max_heap_size(options->common.maximum_heap_size);
-      // BDW uses a pretty weird heap-sizing heuristic:
-      //
-      // heap-size = live-data * (1 + (2 / GC_free_space_divisor))
-      // heap-size-multiplier = heap-size/live-data = 1 + 2/GC_free_space_divisor
-      // GC_free_space_divisor = 2/(heap-size-multiplier-1)
-      //
-      // (Assumption: your heap is mostly "composite", i.e. not
-      // "atomic".  See bdw's alloc.c:min_bytes_allocd.)
-      double fsd = 2.0/(options->common.heap_size_multiplier - 1);
-      // But, the divisor is an integer.  WTF.  This caps the effective
-      // maximum heap multiplier at 3.  Oh well.
-      GC_set_free_space_divisor(fsd + 0.51);
+      // BDW has other odd heap-sizing heuristics, but we mostly replace them
+      // via our use of the heap sizer.
       break;
     }
     case GC_HEAP_SIZE_ADAPTIVE:
@@ -682,6 +700,10 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
   GC_set_on_heap_resize(on_heap_resize);
   GC_set_oom_fn (oom_fn);
   (*heap)->allocation_failure = allocation_failure;
+
+  (*heap)->sizer = gc_make_heap_sizer(*heap, &options->common,
+                                      gc_allocation_counter, resize_heap,
+                                      NULL);
 
   *mutator = add_mutator(*heap);
 

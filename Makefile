@@ -75,7 +75,7 @@ obj/%.gc-finalizer.o: src/gc-finalizer.c | .deps obj
 GC_STEM_bdw   	   = bdw
 GC_CPPFLAGS_bdw    = -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
 GC_IMPL_CFLAGS_bdw = `pkg-config --cflags bdw-gc`
-GC_LIBS_bdw        = `pkg-config --libs bdw-gc`
+GC_LIBS_bdw        = `pkg-config --libs bdw-gc` -lm
 
 GC_STEM_semi       = semi
 GC_CPPFLAGS_semi   = -DGC_PRECISE_ROOTS=1
