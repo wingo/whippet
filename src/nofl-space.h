@@ -157,7 +157,6 @@ struct nofl_space {
   uint8_t survivor_mark;
   uint8_t evacuating;
   struct extents *extents;
-  size_t heap_size;
   uint8_t last_collection_was_minor;
   uint8_t heap_has_ambiguous_edges;
   struct nofl_block_stack empty;
@@ -1258,6 +1257,11 @@ nofl_space_evacuation_minimum_reserve_bytes(struct nofl_space *space) {
   return
     ceil(space->evacuation_minimum_reserve * nofl_active_block_count(space))
     * NOFL_BLOCK_SIZE;
+}
+
+static size_t
+nofl_space_size(struct nofl_space *space) {
+  return nofl_active_block_count(space) * NOFL_BLOCK_SIZE;
 }
 
 static size_t
