@@ -45,6 +45,26 @@ gc_make_heap_sizer(struct gc_heap *heap,
   return ret;
 }
 
+static size_t
+gc_heap_sizer_target_size(struct gc_heap_sizer sizer,
+                          size_t heap_size, size_t live_bytes) {
+  switch (sizer.policy) {
+    case GC_HEAP_SIZE_FIXED:
+      return heap_size;
+
+    case GC_HEAP_SIZE_GROWABLE:
+      return gc_growable_heap_sizer_target_size(sizer.growable, heap_size,
+                                                live_bytes);
+
+    case GC_HEAP_SIZE_ADAPTIVE:
+      return gc_adaptive_heap_sizer_target_size(sizer.adaptive, heap_size,
+                                                live_bytes);
+
+    default:
+      GC_CRASH();
+  }
+}
+
 static void
 gc_heap_sizer_on_gc(struct gc_heap_sizer sizer, size_t heap_size,
                     size_t live_bytes, size_t pause_ns,

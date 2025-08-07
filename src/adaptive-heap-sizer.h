@@ -89,6 +89,17 @@ gc_adaptive_heap_sizer_set_expansiveness(struct gc_adaptive_heap_sizer *sizer,
   return heap_size;
 }
 
+static size_t
+gc_adaptive_heap_sizer_target_size(struct gc_adaptive_heap_sizer *sizer,
+                                   size_t heap_size,
+                                   size_t live_bytes) {
+  gc_adaptive_heap_sizer_lock(sizer);
+  sizer->live_bytes = live_bytes;
+  uint64_t target_size = gc_adaptive_heap_sizer_calculate_size(sizer);
+  gc_adaptive_heap_sizer_unlock(sizer);
+  return target_size;
+}
+
 static void
 gc_adaptive_heap_sizer_on_gc(struct gc_adaptive_heap_sizer *sizer,
                              size_t live_bytes, uint64_t pause_ns,
