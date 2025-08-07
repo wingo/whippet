@@ -45,10 +45,8 @@ gc_growable_heap_sizer_on_gc(struct gc_growable_heap_sizer *sizer,
   pthread_mutex_lock(&sizer->lock);
   size_t target_size =
     gc_growable_heap_sizer_target_size(sizer, heap_size, live_bytes);
-  if (target_size > heap_size) {
-    fprintf(stderr, "resize (multiplier): %zu -> %zu\n", heap_size, target_size);
+  if (target_size > heap_size)
     set_heap_size(sizer->heap, target_size);
-  }
   pthread_mutex_unlock(&sizer->lock);
 }
 
