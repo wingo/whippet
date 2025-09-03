@@ -6,7 +6,18 @@
 #include "gc-attrs.h"
 
 static inline enum gc_inline_allocator_kind gc_inline_allocator_kind(enum gc_allocation_kind kind) {
-  return GC_INLINE_ALLOCATOR_BUMP_POINTER;
+  switch (kind) {
+  case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
+    if (!GC_CONSERVATIVE_TRACE)
+      return GC_INLINE_ALLOCATOR_NONE;
+    // Fall through.
+  case GC_ALLOCATION_TAGGED:
+  case GC_ALLOCATION_TAGGED_POINTERLESS:
+  case GC_ALLOCATION_UNTAGGED_POINTERLESS:
+    return GC_INLINE_ALLOCATOR_BUMP_POINTER;
+  default:
+    GC_CRASH();
+  }
 }
 static inline size_t gc_allocator_small_granule_size(void) {
   return 16;
@@ -40,8 +51,6 @@ static inline uint8_t gc_allocator_alloc_table_begin_pattern(enum gc_allocation_
   case GC_ALLOCATION_TAGGED:
     return young | trace_precisely;
   case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
-    if (!GC_CONSERVATIVE_TRACE)
-      GC_CRASH ();
     return young | trace_conservatively;
   case GC_ALLOCATION_TAGGED_POINTERLESS:
     return young | trace_none;
