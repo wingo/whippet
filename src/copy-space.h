@@ -178,7 +178,7 @@ copy_space_block_list_push(struct copy_space_block_list *list,
   struct copy_space_block *next = gc_atomic_load(&list->head);
   do {
     block->next = next;
-  } while (!atomic_compare_exchange_weak(&list->head, &next, block));
+  } while (!gc_atomic_cmpxchg_weak(&list->head, &next, block));
 }
 
 static struct copy_space_block*
@@ -188,7 +188,7 @@ copy_space_block_list_pop(struct copy_space_block_list *list) {
   do {
     if (!head)
       return NULL;
-  } while (!atomic_compare_exchange_weak(&list->head, &head, head->next));
+  } while (!gc_atomic_cmpxchg_weak(&list->head, &head, head->next));
   head->next = NULL;
   return head;
 }
@@ -283,18 +283,18 @@ copy_space_page_in_block(struct copy_space *space,
 
 static ssize_t
 copy_space_request_release_memory(struct copy_space *space, size_t bytes) {
-  return atomic_fetch_add(&space->bytes_to_page_out, bytes) + bytes;
+  return gc_atomic_fetch_add(&space->bytes_to_page_out, bytes) + bytes;
 }
 
 static ssize_t
 copy_space_page_out_blocks_until_memory_released(struct copy_space *space) {
-  ssize_t pending = atomic_load(&space->bytes_to_page_out);
+  ssize_t pending = gc_atomic_load(&space->bytes_to_page_out);
   struct gc_lock lock = copy_space_lock(space);
   while (pending > 0) {
     struct copy_space_block *block = copy_space_pop_empty_block(space, &lock);
     if (!block) break;
     copy_space_page_out_block(space, block, &lock);
-    pending = (atomic_fetch_sub(&space->bytes_to_page_out, COPY_SPACE_BLOCK_SIZE)
+    pending = (gc_atomic_fetch_sub(&space->bytes_to_page_out, COPY_SPACE_BLOCK_SIZE)
                - COPY_SPACE_BLOCK_SIZE);
   }
   gc_lock_release(&lock);
@@ -304,14 +304,14 @@ copy_space_page_out_blocks_until_memory_released(struct copy_space *space) {
 static ssize_t
 copy_space_maybe_reacquire_memory(struct copy_space *space, size_t bytes) {
   ssize_t pending =
-    atomic_fetch_sub(&space->bytes_to_page_out, bytes) - bytes;
+    gc_atomic_fetch_sub(&space->bytes_to_page_out, bytes) - bytes;
   struct gc_lock lock = copy_space_lock(space);
   while (pending + COPY_SPACE_BLOCK_SIZE <= 0) {
     struct copy_space_block *block = copy_space_page_in_block(space, &lock);
     if (!block) break;
     copy_space_push_empty_block(space, block, &lock);
-    pending = (atomic_fetch_add(&space->bytes_to_page_out,
-                                COPY_SPACE_BLOCK_SIZE)
+    pending = (gc_atomic_fetch_add(&space->bytes_to_page_out,
+                                   COPY_SPACE_BLOCK_SIZE)
                + COPY_SPACE_BLOCK_SIZE);
   }
   gc_lock_release(&lock);
@@ -414,7 +414,7 @@ copy_space_obtain_empty_block_during_gc(struct copy_space *space,
   GC_ASSERT(!copy_space_pop_empty_block(space, lock));
   struct copy_space_block *block = copy_space_page_in_block(space, lock);
   if (block)
-    atomic_fetch_add(&space->bytes_to_page_out, COPY_SPACE_BLOCK_SIZE);
+    gc_atomic_fetch_add(&space->bytes_to_page_out, COPY_SPACE_BLOCK_SIZE);
   return block;
 }
 
