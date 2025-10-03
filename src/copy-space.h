@@ -14,6 +14,7 @@
 #include "debug.h"
 #include "extents.h"
 #include "gc-align.h"
+#include "gc-atomics.h"
 #include "gc-attrs.h"
 #include "gc-inline.h"
 #include "gc-lock.h"
@@ -174,8 +175,7 @@ copy_space_lock(struct copy_space *space) {
 static void
 copy_space_block_list_push(struct copy_space_block_list *list,
                            struct copy_space_block *block) {
-  struct copy_space_block *next =
-    atomic_load_explicit(&list->head, memory_order_acquire);
+  struct copy_space_block *next = gc_atomic_load(&list->head);
   do {
     block->next = next;
   } while (!atomic_compare_exchange_weak(&list->head, &next, block));
@@ -183,8 +183,7 @@ copy_space_block_list_push(struct copy_space_block_list *list,
 
 static struct copy_space_block*
 copy_space_block_list_pop(struct copy_space_block_list *list) {
-  struct copy_space_block *head =
-    atomic_load_explicit(&list->head, memory_order_acquire);
+  struct copy_space_block *head = gc_atomic_load(&list->head);
   struct copy_space_block *next;
   do {
     if (!head)
@@ -459,11 +458,9 @@ copy_space_allocator_release_full_block(struct copy_space_allocator *alloc,
                                         struct copy_space *space) {
   size_t fragmentation = alloc->limit - alloc->hp;
   size_t allocated = COPY_SPACE_REGION_SIZE - alloc->block->allocated;
-  atomic_fetch_add_explicit(&space->allocated_bytes, allocated,
-                            memory_order_relaxed);
+  gc_atomic_fetch_add_relaxed(&space->allocated_bytes, allocated);
   if (fragmentation)
-    atomic_fetch_add_explicit(&space->fragmentation, fragmentation,
-                              memory_order_relaxed);
+    gc_atomic_fetch_add_relaxed(&space->fragmentation, fragmentation);
   copy_space_push_full_block(space, alloc->block);
   alloc->hp = alloc->limit = 0;
   alloc->block = NULL;
@@ -474,9 +471,8 @@ copy_space_allocator_release_partly_full_block(struct copy_space_allocator *allo
                                                struct copy_space *space) {
   size_t allocated = alloc->hp & (COPY_SPACE_REGION_SIZE - 1);
   if (allocated) {
-    atomic_fetch_add_explicit(&space->allocated_bytes,
-                              allocated - alloc->block->allocated,
-                              memory_order_relaxed);
+    gc_atomic_fetch_add_relaxed(&space->allocated_bytes,
+                                allocated - alloc->block->allocated);
     alloc->block->allocated = allocated;
     struct gc_lock lock = copy_space_lock(space);
     copy_space_push_partly_full_block(space, alloc->block, &lock);
@@ -484,9 +480,8 @@ copy_space_allocator_release_partly_full_block(struct copy_space_allocator *allo
   } else {
     // In this case, hp was bumped all the way to the limit, in which
     // case allocated wraps to 0; the block is full.
-    atomic_fetch_add_explicit(&space->allocated_bytes,
-                              COPY_SPACE_REGION_SIZE - alloc->block->allocated,
-                              memory_order_relaxed);
+    gc_atomic_fetch_add_relaxed(&space->allocated_bytes,
+                                COPY_SPACE_REGION_SIZE - alloc->block->allocated);
     copy_space_push_full_block(space, alloc->block);
   }
   alloc->hp = alloc->limit = 0;
@@ -797,12 +792,10 @@ copy_space_remember_edge(struct copy_space *space, struct gc_edge edge) {
   GC_ASSERT(copy_space_contains_edge(space, edge));
   uint8_t* loc = copy_space_field_logged_byte(edge);
   uint8_t bit = copy_space_field_logged_bit(edge);
-  uint8_t byte = atomic_load_explicit(loc, memory_order_acquire);
+  uint8_t byte = gc_atomic_load(loc);
   do {
     if (byte & bit) return 0;
-  } while (!atomic_compare_exchange_weak_explicit(loc, &byte, byte|bit,
-                                                  memory_order_acq_rel,
-                                                  memory_order_acquire));
+  } while (!gc_atomic_cmpxchg_weak(loc, &byte, byte|bit));
   return 1;
 }
 
@@ -811,12 +804,10 @@ copy_space_forget_edge(struct copy_space *space, struct gc_edge edge) {
   GC_ASSERT(copy_space_contains_edge(space, edge));
   uint8_t* loc = copy_space_field_logged_byte(edge);
   uint8_t bit = copy_space_field_logged_bit(edge);
-  uint8_t byte = atomic_load_explicit(loc, memory_order_acquire);
+  uint8_t byte = gc_atomic_load(loc);
   do {
     if (!(byte & bit)) return 0;
-  } while (!atomic_compare_exchange_weak_explicit(loc, &byte, byte&~bit,
-                                                  memory_order_acq_rel,
-                                                  memory_order_acquire));
+  } while (!gc_atomic_cmpxchg_weak(loc, &byte, byte&~bit));
   return 1;
 }
 

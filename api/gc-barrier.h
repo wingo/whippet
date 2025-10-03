@@ -2,6 +2,7 @@
 #define GC_BARRIER_H_
 
 #include "gc-api.h"
+#include "gc-atomics.h"
 
 GC_API_ int gc_object_is_old_generation_slow(struct gc_mutator *mut,
                                              struct gc_ref obj) GC_NEVER_INLINE;
@@ -34,7 +35,7 @@ static inline int gc_object_is_old_generation(struct gc_mutator *mut,
     size_t granule_size = gc_allocator_small_granule_size();
     uintptr_t granule = (addr & (alignment - 1)) / granule_size;
     uint8_t *byte_loc = (uint8_t*)(base + granule);
-    uint8_t byte = atomic_load_explicit(byte_loc, memory_order_relaxed);
+    uint8_t byte = gc_atomic_load_relaxed(byte_loc);
     uint8_t mask = gc_old_generation_check_alloc_table_tag_mask();
     uint8_t young = gc_old_generation_check_alloc_table_young_tag();
     return (byte & mask) != young;
@@ -78,7 +79,7 @@ static inline int gc_write_barrier_fast(struct gc_mutator *mut, struct gc_ref ob
     uintptr_t log_byte = field / fields_per_byte;
     uint8_t log_bit = first_bit_pattern << (field % fields_per_byte);
     uint8_t *byte_loc = (uint8_t*)(base + table_offset + log_byte);
-    uint8_t byte = atomic_load_explicit(byte_loc, memory_order_relaxed);
+    uint8_t byte = gc_atomic_load_relaxed(byte_loc);
     return !(byte & log_bit);
   }
   case GC_WRITE_BARRIER_SLOW:

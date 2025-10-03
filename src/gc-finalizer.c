@@ -7,6 +7,7 @@
 
 #include "debug.h"
 #include "embedder-api-impl.h"
+#include "gc-atomics.h"
 #include "gc-ephemeron-internal.h" // for gc_visit_ephemeron_key
 #include "gc-finalizer-internal.h"
 
@@ -132,14 +133,14 @@ struct gc_finalizer_state* gc_make_finalizer_state(void) {
 
 static void finalizer_list_push(struct gc_finalizer **loc,
                                 struct gc_finalizer *head) {
-  struct gc_finalizer *tail = atomic_load_explicit(loc, memory_order_acquire);
+  struct gc_finalizer *tail = gc_atomic_load(loc);
   do {
     head->next = tail;
   } while (!atomic_compare_exchange_weak(loc, &tail, head));
 }
 
 static struct gc_finalizer* finalizer_list_pop(struct gc_finalizer **loc) {
-  struct gc_finalizer *head = atomic_load_explicit(loc, memory_order_acquire);
+  struct gc_finalizer *head = gc_atomic_load(loc);
   do {
     if (!head) return NULL;
   } while (!atomic_compare_exchange_weak(loc, &head, head->next));

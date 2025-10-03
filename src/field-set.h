@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 #include "assert.h"
+#include "gc-atomics.h"
 #include "gc-edge.h"
 #include "gc-lock.h"
 #include "tracer.h"
@@ -45,26 +46,20 @@ static void
 gc_edge_buffer_list_push(struct gc_edge_buffer_list *list,
                          struct gc_edge_buffer *buf) {
   GC_ASSERT(!buf->next);
-  struct gc_edge_buffer *next =
-    atomic_load_explicit(&list->head, memory_order_relaxed);
+  struct gc_edge_buffer *next = gc_atomic_load_relaxed(&list->head);
   do {
     buf->next = next;
-  } while (!atomic_compare_exchange_weak_explicit(&list->head, &next, buf,
-                                                  memory_order_acq_rel,
-                                                  memory_order_acquire));
+  } while (!gc_atomic_cmpxchg_weak(&list->head, &next, buf));
 }
 
 static struct gc_edge_buffer*
 gc_edge_buffer_list_pop(struct gc_edge_buffer_list *list) {
-  struct gc_edge_buffer *head =
-    atomic_load_explicit(&list->head, memory_order_acquire);
+  struct gc_edge_buffer *head = gc_atomic_load(&list->head);
   struct gc_edge_buffer *next;
   do {
     if (!head) return NULL;
     next = head->next;
-  } while (!atomic_compare_exchange_weak_explicit(&list->head, &head, next,
-                                                  memory_order_acq_rel,
-                                                  memory_order_acquire));
+  } while (!gc_atomic_cmpxchg_weak(&list->head, &head, next));
   head->next = NULL;
   return head;
 }

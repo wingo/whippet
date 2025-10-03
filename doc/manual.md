@@ -51,9 +51,9 @@ itself.  This is the *embedder API*, and this document describes what
 Whippet requires from a program.
 
 A program should provide a header file implementing the API in
-[`gc-embedder-api.h`](../api/gc-embedder-api.h).  This header should only be
-included when compiling Whippet itself; it is not part of the API that
-Whippet exposes to the program.
+[`gc-embedder-api.h`](../api/gc-embedder-api.h).  This header will only
+be included when compiling Whippet itself; it is not part of the API
+that Whippet exposes to the program.
 
 ### Identifying roots
 
@@ -72,10 +72,9 @@ roots are global roots.)
 ### Tracing objects
 
 The `gc_trace_object` is responsible for calling the `trace_edge`
-visitor function on all outgoing edges in an object.  It also includes a
-`size` out-parameter, for when the collector wants to measure the size
-of an object.  `trace_edge` and `size` may be `NULL`, in which case no
-tracing or size computation should be performed.
+visitor function on all outgoing edges in an object.  It returns the
+size of the object being traced.  `trace_edge` may be `NULL`, in which
+case we just return the size.
 
 ### Tracing ephemerons and finalizers
 

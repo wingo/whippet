@@ -8,6 +8,7 @@
 
 #include "assert.h"
 #include "debug.h"
+#include "gc-atomics.h"
 #include "gc-inline.h"
 #include "gc-tracepoint.h"
 #include "root-worklist.h"
@@ -85,7 +86,7 @@ trace_worker_thread(void *data) {
 
   pthread_mutex_lock(&worker->lock);
   while (1) {
-    long epoch = atomic_load_explicit(&tracer->epoch, memory_order_acquire);
+    long epoch = gc_atomic_load(&tracer->epoch);
     if (trace_epoch != epoch) {
       trace_epoch = epoch;
       trace_worker_trace(worker);
@@ -150,8 +151,7 @@ gc_tracer_add_root(struct gc_tracer *tracer, struct gc_root root) {
 
 static inline void
 tracer_unpark_all_workers(struct gc_tracer *tracer) {
-  long old_epoch =
-    atomic_fetch_add_explicit(&tracer->epoch, 1, memory_order_acq_rel);
+  long old_epoch = gc_atomic_fetch_add(&tracer->epoch, 1);
   long epoch = old_epoch + 1;
   DEBUG("starting trace; %zu workers; epoch=%ld\n", tracer->worker_count,
         epoch);
@@ -161,8 +161,7 @@ tracer_unpark_all_workers(struct gc_tracer *tracer) {
 
 static inline void
 tracer_maybe_unpark_workers(struct gc_tracer *tracer) {
-  size_t active =
-    atomic_load_explicit(&tracer->active_tracers, memory_order_acquire);
+  size_t active = gc_atomic_load(&tracer->active_tracers);
   if (active < tracer->worker_count)
     tracer_unpark_all_workers(tracer);
 }
@@ -227,7 +226,7 @@ trace_worker_should_continue(struct gc_trace_worker *worker, size_t spin_count) 
 
   struct gc_tracer *tracer = worker->tracer;
 
-  if (atomic_load_explicit(&tracer->active_tracers, memory_order_acquire) != 1) {
+  if (gc_atomic_load(&tracer->active_tracers) != 1) {
     LOG("checking for termination: tracers active, spinning #%zu\n", spin_count);
     yield_for_spin(spin_count);
     return 1;
@@ -278,7 +277,7 @@ trace_with_data(struct gc_tracer *tracer,
                 struct gc_heap *heap,
                 struct gc_trace_worker *worker,
                 struct gc_trace_worker_data *data) {
-  atomic_fetch_add_explicit(&tracer->active_tracers, 1, memory_order_acq_rel);
+  gc_atomic_fetch_add(&tracer->active_tracers, 1);
   worker->data = data;
 
   LOG("tracer #%zu: running trace loop\n", worker->id);
@@ -333,7 +332,7 @@ trace_with_data(struct gc_tracer *tracer,
   }
 
   worker->data = NULL;
-  atomic_fetch_sub_explicit(&tracer->active_tracers, 1, memory_order_acq_rel);
+  gc_atomic_fetch_sub(&tracer->active_tracers, 1);
 }
 
 static void

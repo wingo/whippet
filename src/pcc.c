@@ -14,6 +14,7 @@
 #include "debug.h"
 #include "field-set.h"
 #include "gc-align.h"
+#include "gc-atomics.h"
 #include "gc-inline.h"
 #include "gc-platform.h"
 #include "gc-trace.h"
@@ -434,8 +435,7 @@ static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge,
   int is_new = do_trace(heap, edge, ref, data);
 
   if (is_new &&
-      GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
-                                       memory_order_relaxed)))
+      GC_UNLIKELY(gc_atomic_load_relaxed(&heap->check_pending_ephemerons)))
     gc_resolve_pending_ephemerons(ref, heap);
 
   return is_new;
@@ -467,7 +467,7 @@ int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
 }
 
 static int mutators_are_stopping(struct gc_heap *heap) {
-  return atomic_load_explicit(&heap->collecting, memory_order_relaxed);
+  return gc_atomic_load_relaxed(&heap->collecting);
 }
 
 static inline void heap_lock(struct gc_heap *heap) {
@@ -626,14 +626,14 @@ static inline void trace_root(struct gc_root root, struct gc_heap *heap,
 
 static void request_mutators_to_stop(struct gc_heap *heap) {
   GC_ASSERT(!mutators_are_stopping(heap));
-  atomic_store_explicit(&heap->collecting, 1, memory_order_relaxed);
+  gc_atomic_store_relaxed(&heap->collecting, 1);
 }
 
 static void allow_mutators_to_continue(struct gc_heap *heap) {
   GC_ASSERT(mutators_are_stopping(heap));
   GC_ASSERT(all_mutators_stopped(heap));
   heap->paused_mutator_count--;
-  atomic_store_explicit(&heap->collecting, 0, memory_order_relaxed);
+  gc_atomic_store_relaxed(&heap->collecting, 0);
   GC_ASSERT(!mutators_are_stopping(heap));
   pthread_cond_broadcast(&heap->mutator_cond);
 }
@@ -776,13 +776,11 @@ clear_remembered_set(struct gc_heap *heap) {
 }
 
 static void resolve_ephemerons_lazily(struct gc_heap *heap) {
-  atomic_store_explicit(&heap->check_pending_ephemerons, 0,
-                        memory_order_release);
+  gc_atomic_store(&heap->check_pending_ephemerons, 0);
 }
 
 static void resolve_ephemerons_eagerly(struct gc_heap *heap) {
-  atomic_store_explicit(&heap->check_pending_ephemerons, 1,
-                        memory_order_release);
+  gc_atomic_store(&heap->check_pending_ephemerons, 1);
   gc_scan_pending_ephemerons(gc_heap_pending_ephemerons(heap), heap, 0, 1);
 }
 

@@ -2,6 +2,7 @@
 #define GC_SAFEPOINT_H_
 
 #include "gc-api.h"
+#include "gc-atomics.h"
 
 GC_API_ void gc_safepoint_slow(struct gc_mutator *mut) GC_NEVER_INLINE;
 GC_API_ int* gc_safepoint_flag_loc(struct gc_mutator *mut);
@@ -20,8 +21,7 @@ static inline int gc_should_stop_for_safepoint(struct gc_mutator *mut) {
     return 0;
   case GC_COOPERATIVE_SAFEPOINT_MUTATOR_FLAG:
   case GC_COOPERATIVE_SAFEPOINT_HEAP_FLAG: {
-    return atomic_load_explicit(gc_safepoint_flag_loc(mut),
-                                memory_order_relaxed);
+    return gc_atomic_load_relaxed(gc_safepoint_flag_loc(mut));
   }
   default:
     GC_CRASH();

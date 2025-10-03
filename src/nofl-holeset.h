@@ -4,6 +4,7 @@
 #include <math.h>
 #include <pthread.h>
 
+#include "gc-atomics.h"
 #include "gc-attrs.h"
 #include "gc-align.h"
 #include "gc-ref.h"
@@ -158,8 +159,7 @@ nofl_holeset_acquire(struct nofl_holeset *local,
                      size_t granules) {
   size_t min_idx = nofl_holeset_bucket_for_lookup(granules);
   
-  uint64_t sloppy_nonempty =
-    atomic_load_explicit(&remote->nonempty, memory_order_relaxed);
+  uint64_t sloppy_nonempty = gc_atomic_load_relaxed(&remote->nonempty);
   if (!(sloppy_nonempty >> min_idx))
     return 0;
 

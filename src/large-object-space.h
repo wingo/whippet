@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "gc-assert.h"
+#include "gc-atomics.h"
 #include "gc-ref.h"
 #include "gc-conservative-ref.h"
 #include "gc-trace.h"
@@ -221,8 +222,7 @@ large_object_node_mark_loc(struct large_object_node *node) {
 
 static uint8_t
 large_object_node_get_mark(struct large_object_node *node) {
-  return atomic_load_explicit(large_object_node_mark_loc(node),
-                              memory_order_acquire);
+  return gc_atomic_load(large_object_node_mark_loc(node));
 }
 
 static struct large_object_node*
@@ -240,13 +240,11 @@ large_object_space_mark(struct large_object_space *space, struct gc_ref ref) {
   GC_ASSERT(node->value.is_live);
 
   uint8_t *loc = large_object_node_mark_loc(node);
-  uint8_t mark = atomic_load_explicit(loc, memory_order_relaxed);
+  uint8_t mark = gc_atomic_load_relaxed(loc);
   do {
     if (mark == space->marked)
       return 0;
-  } while (!atomic_compare_exchange_weak_explicit(loc, &mark, space->marked,
-                                                  memory_order_acq_rel,
-                                                  memory_order_acquire));
+  } while (!gc_atomic_cmpxchg_weak(loc, &mark, space->marked));
 
   size_t pages = node->key.size >> space->page_size_log2;
   atomic_fetch_add(&space->live_pages_at_last_collection, pages);
@@ -262,8 +260,7 @@ large_object_space_is_marked(struct large_object_space *space,
     return 0;
   GC_ASSERT(node->value.is_live);
 
-  return atomic_load_explicit(large_object_node_mark_loc(node),
-                              memory_order_acquire) == space->marked;
+  return gc_atomic_load(large_object_node_mark_loc(node)) == space->marked;
 }
 
 static int
@@ -347,8 +344,7 @@ large_object_space_sweep_one(uintptr_t addr, uintptr_t node_bits,
   if (!node->value.is_live)
     return;
   GC_ASSERT(node->value.is_live);
-  uint8_t mark = atomic_load_explicit(large_object_node_mark_loc(node),
-                                      memory_order_acquire);
+  uint8_t mark = gc_atomic_load(large_object_node_mark_loc(node));
   if (mark != space->marked)
     large_object_space_add_to_freelist(space, node);
 }

@@ -2,6 +2,7 @@
 
 #include "simple-tagging-scheme.h"
 #include "simple-roots-types.h"
+#include "gc-atomics.h"
 #include "gc-config.h"
 #include "gc-embedder-api.h"
 
@@ -120,7 +121,7 @@ static inline void gc_object_forward_nonatomic(struct gc_ref ref,
 
 static inline struct gc_atomic_forward
 gc_atomic_forward_begin(struct gc_ref ref) {
-  uintptr_t tag = atomic_load_explicit(tag_word(ref), memory_order_acquire);
+  uintptr_t tag = gc_atomic_load(tag_word(ref));
   enum gc_forwarding_state state;
   if (tag == gcobj_busy)
     state = GC_FORWARDING_STATE_BUSY;
@@ -134,8 +135,7 @@ gc_atomic_forward_begin(struct gc_ref ref) {
 static inline int
 gc_atomic_forward_retry_busy(struct gc_atomic_forward *fwd) {
   GC_ASSERT(fwd->state == GC_FORWARDING_STATE_BUSY);
-  uintptr_t tag = atomic_load_explicit(tag_word(fwd->ref),
-                                       memory_order_acquire);
+  uintptr_t tag = gc_atomic_load(tag_word(fwd->ref));
   if (tag == gcobj_busy)
     return 0;
   if (tag & gcobj_not_forwarded_bit) {
@@ -165,7 +165,7 @@ gc_atomic_forward_acquire(struct gc_atomic_forward *fwd) {
 static inline void
 gc_atomic_forward_abort(struct gc_atomic_forward *fwd) {
   GC_ASSERT(fwd->state == GC_FORWARDING_STATE_ACQUIRED);
-  atomic_store_explicit(tag_word(fwd->ref), fwd->data, memory_order_release);
+  gc_atomic_store(tag_word(fwd->ref), fwd->data);
   fwd->state = GC_FORWARDING_STATE_NOT_FORWARDED;
 }
 
@@ -187,8 +187,7 @@ static inline void
 gc_atomic_forward_commit(struct gc_atomic_forward *fwd, struct gc_ref new_ref) {
   GC_ASSERT(fwd->state == GC_FORWARDING_STATE_ACQUIRED);
   *tag_word(new_ref) = fwd->data;
-  atomic_store_explicit(tag_word(fwd->ref), gc_ref_value(new_ref),
-                        memory_order_release);
+  gc_atomic_store(tag_word(fwd->ref), gc_ref_value(new_ref));
   fwd->state = GC_FORWARDING_STATE_FORWARDED;
 }
 

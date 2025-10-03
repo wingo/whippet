@@ -14,6 +14,7 @@
 #include "debug.h"
 #include "field-set.h"
 #include "gc-align.h"
+#include "gc-atomics.h"
 #include "gc-inline.h"
 #include "gc-platform.h"
 #include "gc-stack.h"
@@ -160,8 +161,7 @@ trace_edge(struct gc_heap *heap, struct gc_edge edge,
   int is_new = do_trace(heap, edge, ref, data);
 
   if (is_new &&
-      GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
-                                       memory_order_relaxed)))
+      GC_UNLIKELY(gc_atomic_load_relaxed(&heap->check_pending_ephemerons)))
     gc_resolve_pending_ephemerons(ref, heap);
 
   return is_new;
@@ -188,8 +188,7 @@ trace_pinned_edge(struct gc_heap *heap, struct gc_ref ref,
   int is_new = do_trace_pinned(heap, ref, data);
 
   if (is_new &&
-      GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
-                                       memory_order_relaxed)))
+      GC_UNLIKELY(gc_atomic_load_relaxed(&heap->check_pending_ephemerons)))
     gc_resolve_pending_ephemerons(ref, heap);
 
   return is_new;
@@ -216,7 +215,7 @@ gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
 
 static int
 mutators_are_stopping(struct gc_heap *heap) {
-  return atomic_load_explicit(&heap->collecting, memory_order_relaxed);
+  return gc_atomic_load_relaxed(&heap->collecting);
 }
 
 static inline void
@@ -350,8 +349,7 @@ trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
                        int possibly_interior) {
   struct gc_ref ret = do_trace_conservative_ref(heap, ref, possibly_interior);
   if (!gc_ref_is_null(ret)) {
-    if (GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
-                                         memory_order_relaxed)))
+    if (GC_UNLIKELY(gc_atomic_load_relaxed(&heap->check_pending_ephemerons)))
       gc_resolve_pending_ephemerons(ret, heap);
   }
 
@@ -493,7 +491,7 @@ trace_root(struct gc_root root, struct gc_heap *heap,
 static void
 request_mutators_to_stop(struct gc_heap *heap) {
   GC_ASSERT(!mutators_are_stopping(heap));
-  atomic_store_explicit(&heap->collecting, 1, memory_order_relaxed);
+  gc_atomic_store_relaxed(&heap->collecting, 1);
 }
 
 static void
@@ -501,7 +499,7 @@ allow_mutators_to_continue(struct gc_heap *heap) {
   GC_ASSERT(mutators_are_stopping(heap));
   GC_ASSERT(all_mutators_stopped(heap));
   heap->paused_mutator_count--;
-  atomic_store_explicit(&heap->collecting, 0, memory_order_relaxed);
+  gc_atomic_store_relaxed(&heap->collecting, 0);
   GC_ASSERT(!mutators_are_stopping(heap));
   pthread_cond_broadcast(&heap->mutator_cond);
 }
@@ -662,8 +660,7 @@ determine_collection_kind(struct gc_heap *heap,
   enum gc_collection_kind gc_kind;
   double yield = heap_last_gc_yield(heap);
   double fragmentation = heap_fragmentation(heap);
-  ssize_t pending = atomic_load_explicit(&nofl_space->pending_unavailable_bytes,
-                                         memory_order_acquire);
+  ssize_t pending = gc_atomic_load(&nofl_space->pending_unavailable_bytes);
 
   if (heap->count == 0) {
     DEBUG("first collection is always major\n");
@@ -833,14 +830,12 @@ enqueue_relocatable_roots(struct gc_heap *heap,
 
 static void
 resolve_ephemerons_lazily(struct gc_heap *heap) {
-  atomic_store_explicit(&heap->check_pending_ephemerons, 0,
-                        memory_order_release);
+  gc_atomic_store(&heap->check_pending_ephemerons, 0);
 }
 
 static void
 resolve_ephemerons_eagerly(struct gc_heap *heap) {
-  atomic_store_explicit(&heap->check_pending_ephemerons, 1,
-                        memory_order_release);
+  gc_atomic_store(&heap->check_pending_ephemerons, 1);
   gc_scan_pending_ephemerons(heap->pending_ephemerons, heap, 0, 1);
 }
 

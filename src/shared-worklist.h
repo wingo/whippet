@@ -6,6 +6,7 @@
 #include "assert.h"
 #include "debug.h"
 #include "gc-align.h"
+#include "gc-atomics.h"
 #include "gc-inline.h"
 #include "gc-platform.h"
 #include "spin.h"
@@ -76,16 +77,14 @@ shared_worklist_buf_destroy(struct shared_worklist_buf *buf) {
 
 static inline struct gc_ref
 shared_worklist_buf_get(struct shared_worklist_buf *buf, size_t i) {
-  return gc_ref(atomic_load_explicit(&buf->data[i & (buf->size - 1)],
-                                     memory_order_relaxed));
+  return gc_ref(gc_atomic_load_relaxed(&buf->data[i & (buf->size - 1)]));
 }
 
 static inline void
 shared_worklist_buf_put(struct shared_worklist_buf *buf, size_t i,
                         struct gc_ref ref) {
-  return atomic_store_explicit(&buf->data[i & (buf->size - 1)],
-                               gc_ref_value(ref),
-                               memory_order_relaxed);
+  return gc_atomic_store_relaxed(&buf->data[i & (buf->size - 1)],
+                                 gc_ref_value(ref));
 }
 
 static inline int
@@ -117,13 +116,13 @@ struct shared_worklist {
                                    shared_worklist_buf_min_log_size) + 1];
 };
 
-#define LOAD_RELAXED(loc) atomic_load_explicit(loc, memory_order_relaxed)
-#define STORE_RELAXED(loc, o) atomic_store_explicit(loc, o, memory_order_relaxed)
+#define LOAD_RELAXED(loc) gc_atomic_load_relaxed(loc)
+#define STORE_RELAXED(loc, o) gc_atomic_store_relaxed(loc, o)
 
-#define LOAD_ACQUIRE(loc) atomic_load_explicit(loc, memory_order_acquire)
-#define STORE_RELEASE(loc, o) atomic_store_explicit(loc, o, memory_order_release)
+#define LOAD_ACQUIRE(loc) gc_atomic_load(loc)
+#define STORE_RELEASE(loc, o) gc_atomic_store(loc, o)
 
-#define LOAD_CONSUME(loc) atomic_load_explicit(loc, memory_order_consume)
+#define LOAD_CONSUME(loc) LOAD_ACQUIRE(loc);
 
 static int
 shared_worklist_init(struct shared_worklist *q) {
