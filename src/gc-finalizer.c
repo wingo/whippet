@@ -136,22 +136,21 @@ static void finalizer_list_push(struct gc_finalizer **loc,
   struct gc_finalizer *tail = gc_atomic_load(loc);
   do {
     head->next = tail;
-  } while (!atomic_compare_exchange_weak(loc, &tail, head));
+  } while (!gc_atomic_cmpxchg_weak(loc, &tail, head));
 }
 
 static struct gc_finalizer* finalizer_list_pop(struct gc_finalizer **loc) {
   struct gc_finalizer *head = gc_atomic_load(loc);
   do {
     if (!head) return NULL;
-  } while (!atomic_compare_exchange_weak(loc, &head, head->next));
+  } while (!gc_atomic_cmpxchg_weak(loc, &head, head->next));
   head->next = NULL;
   return head;
 }
 
 static void add_finalizer_to_table(struct gc_finalizer_table *table,
                                    struct gc_finalizer *f) {
-  size_t count = atomic_fetch_add_explicit(&table->finalizer_count, 1,
-                                           memory_order_relaxed);
+  size_t count = gc_atomic_fetch_add_relaxed(&table->finalizer_count, 1);
   struct gc_finalizer **loc = &table->buckets[count % BUCKET_COUNT];
   finalizer_list_push(loc, f);
 }
