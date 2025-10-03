@@ -172,7 +172,7 @@ ephemeron_list_try_push(struct gc_ephemeron **loc,
                         struct gc_ephemeron **tail,
                         struct gc_ephemeron** (*get_next)(struct gc_ephemeron*)) {
   *get_next(head) = *tail;
-  return atomic_compare_exchange_weak(loc, tail, head);
+  return gc_atomic_cmpxchg_weak(loc, tail, head);
 }
 
 static void
@@ -192,7 +192,7 @@ ephemeron_list_pop(struct gc_ephemeron **loc,
     // Precondition: the result of get_next on an ephemeron is never
     // updated concurrently; OK to load non-atomically.
     struct gc_ephemeron *tail = *get_next(head);
-    if (atomic_compare_exchange_weak(loc, &head, tail))
+    if (gc_atomic_cmpxchg_weak(loc, &head, tail))
       break;
   }
   return head;
@@ -216,7 +216,7 @@ ephemeron_list_follow(struct gc_ephemeron **loc,
         // update LOC.
         (head == new_head)
         // Otherwise if we succeed in updating LOC, we're done.
-        || atomic_compare_exchange_strong(loc, &head, new_head)
+        || gc_atomic_cmpxchg_strong(loc, &head, new_head)
         // Someone else managed to advance LOC; that's fine too.
         || (head == new_head))
       return new_head;
@@ -298,11 +298,11 @@ struct gc_ref gc_ephemeron_swap_value_internal(struct gc_ephemeron *e,
 {
   GC_ASSERT(!gc_ref_is_null(ref));
 
-  uintptr_t prev = atomic_load(&e->value.value);
+  uintptr_t prev = gc_atomic_load(&e->value.value);
   do {
     if (!prev)
       break;
-  } while (!atomic_compare_exchange_weak(&e->value.value, &prev, ref.value));
+  } while (!gc_atomic_cmpxchg_weak(&e->value.value, &prev, ref.value));
 
   return gc_ref(prev);
 }
@@ -435,8 +435,8 @@ add_pending_ephemeron(struct gc_pending_ephemerons *state,
 static void maybe_resolve_ephemeron(struct gc_pending_ephemerons *state,
                                     struct gc_ephemeron *e) {
   uint8_t expected = EPHEMERON_STATE_PENDING;
-  if (atomic_compare_exchange_strong(&e->state, &expected,
-                                     EPHEMERON_STATE_RESOLVED))
+  if (gc_atomic_cmpxchg_strong(&e->state, &expected,
+                               EPHEMERON_STATE_RESOLVED))
     push_resolved(&state->resolved, e);
 }
 
@@ -464,8 +464,7 @@ void gc_trace_ephemeron(struct gc_ephemeron *e,
   unsigned epoch = gc_heap_ephemeron_trace_epoch(heap);
   uint8_t expected = EPHEMERON_STATE_TRACED;
   // TRACED[_] -> CLAIMED[_].
-  if (!atomic_compare_exchange_strong(&e->state, &expected,
-                                      EPHEMERON_STATE_CLAIMED))
+  if (!gc_atomic_cmpxchg_strong(&e->state, &expected, EPHEMERON_STATE_CLAIMED))
     return;
 
 
@@ -545,7 +544,7 @@ gc_scan_pending_ephemerons(struct gc_pending_ephemerons *state,
 struct gc_ephemeron*
 gc_pop_resolved_ephemerons(struct gc_heap *heap) {
   struct gc_pending_ephemerons *state = gc_heap_pending_ephemerons(heap);
-  return atomic_exchange(&state->resolved, NULL);
+  return gc_atomic_swap(&state->resolved, NULL);
 }    
 
 void
