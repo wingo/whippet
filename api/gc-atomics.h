@@ -9,7 +9,11 @@
            uint16_t*  : ((_Atomic uint16_t*) (loc)),                    \
            uint32_t*  : ((_Atomic uint32_t*) (loc)),                    \
            uint64_t*  : ((_Atomic uint64_t*) (loc)),                    \
-           void**     : ((_Atomic void**) (loc)),                       \
+           int8_t*    : ((_Atomic int8_t*) (loc)),                      \
+           int16_t*   : ((_Atomic int16_t*) (loc)),                     \
+           int32_t*   : ((_Atomic int32_t*) (loc)),                     \
+           int64_t*   : ((_Atomic int64_t*) (loc)),                     \
+           void**     : ((_Atomic (void*)*) (loc)),                     \
            default    : (loc))
 
 #define gc_atomic(verb, loc, ...) \
@@ -44,19 +48,19 @@
 #define gc_atomic_swap(loc, val)                                        \
   gc_atomic(exchange_explicit, loc, val, memory_order_acq_rel)
 
-#define gc_atomic_swap_relaxed(loc, val)                                        \
+#define gc_atomic_swap_relaxed(loc, val)                                \
   gc_atomic(exchange_explicit, loc, val, memory_order_relaxed)
 
 #define gc_atomic_fetch_add(loc, val)                                   \
   gc_atomic(fetch_add_explicit, loc, val, memory_order_acq_rel)
 
-#define gc_atomic_fetch_add_relaxed(loc, val)                                   \
+#define gc_atomic_fetch_add_relaxed(loc, val)                           \
   gc_atomic(fetch_add_explicit, loc, val, memory_order_relaxed)
 
 #define gc_atomic_fetch_sub(loc, val)                                   \
   gc_atomic(fetch_sub_explicit, loc, val, memory_order_acq_rel)
 
-#define gc_atomic_fetch_sub_relaxed(loc, val)                                   \
+#define gc_atomic_fetch_sub_relaxed(loc, val)                           \
   gc_atomic(fetch_sub_explicit, loc, val, memory_order_relaxed)
 
 #endif // GC_ATOMICS_H
