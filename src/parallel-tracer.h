@@ -110,7 +110,7 @@ static int
 gc_tracer_init(struct gc_tracer *tracer, struct gc_heap *heap,
                size_t parallelism) {
   tracer->heap = heap;
-  atomic_init(&tracer->active_tracers, 0);
+  tracer->active_tracers = 0;
   tracer->epoch = 0;
   tracer->trace_roots_only = 0;
   pthread_mutex_init(&tracer->lock, NULL);
