@@ -116,13 +116,13 @@ struct shared_worklist {
                                    shared_worklist_buf_min_log_size) + 1];
 };
 
-#define LOAD_RELAXED(loc) gc_atomic_load_relaxed(loc)
-#define STORE_RELAXED(loc, o) gc_atomic_store_relaxed(loc, o)
+#define LOAD_RELAXED(loc) atomic_load_explicit(loc, memory_order_relaxed)
+#define STORE_RELAXED(loc, o) atomic_store_explicit(loc, o, memory_order_relaxed)
 
-#define LOAD_ACQUIRE(loc) gc_atomic_load(loc)
-#define STORE_RELEASE(loc, o) gc_atomic_store(loc, o)
+#define LOAD_ACQUIRE(loc) atomic_load_explicit(loc, memory_order_acquire)
+#define STORE_RELEASE(loc, o) atomic_store(loc, o, memory_order_release)
 
-#define LOAD_CONSUME(loc) LOAD_ACQUIRE(loc);
+#define LOAD_CONSUME(loc) atomic_load_explicit(loc, memory_order_consume);
 
 static int
 shared_worklist_init(struct shared_worklist *q) {

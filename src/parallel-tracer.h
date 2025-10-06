@@ -52,7 +52,7 @@ gc_trace_worker_data(struct gc_trace_worker *worker) {
 
 struct gc_tracer {
   struct gc_heap *heap;
-  atomic_size_t active_tracers;
+  size_t active_tracers;
   size_t worker_count;
   long epoch;
   pthread_mutex_t lock;
@@ -378,7 +378,7 @@ gc_tracer_trace_roots(struct gc_tracer *tracer) {
   tracer->trace_roots_only = 0;
   GC_TRACEPOINT(trace_roots_end);
   
-  GC_ASSERT_EQ(atomic_load(&tracer->active_tracers), 0);
+  GC_ASSERT_EQ(gc_atomic_load(&tracer->active_tracers), 0);
   LOG("roots-only trace finished\n");
 }
 
