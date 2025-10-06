@@ -40,7 +40,7 @@ static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
   GC_CRASH();
 }
 
-static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(size_t) {
+static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(size_t obj_size) {
   return GC_OLD_GENERATION_CHECK_NONE;
 }
 static inline uint8_t gc_old_generation_check_alloc_table_tag_mask(void) {
@@ -50,7 +50,7 @@ static inline uint8_t gc_old_generation_check_alloc_table_young_tag(void) {
   GC_CRASH();
 }
 
-static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t) {
+static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) {
   return GC_WRITE_BARRIER_NONE;
 }
 static inline size_t gc_write_barrier_field_table_alignment(void) {
