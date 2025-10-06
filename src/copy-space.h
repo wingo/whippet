@@ -512,9 +512,11 @@ copy_space_allocate(struct copy_space_allocator *alloc,
   // a small allocation.
 
 done:
-  struct gc_ref ret = gc_ref(alloc->hp);
-  alloc->hp += size;
-  return ret;
+  {
+    struct gc_ref ret = gc_ref(alloc->hp);
+    alloc->hp += size;
+    return ret;
+  }
 }
 
 static struct copy_space_block*
