@@ -151,8 +151,8 @@ gc_atomic_forward_retry_busy(struct gc_atomic_forward *fwd) {
 static inline void
 gc_atomic_forward_acquire(struct gc_atomic_forward *fwd) {
   GC_ASSERT(fwd->state == GC_FORWARDING_STATE_NOT_FORWARDED);
-  if (atomic_compare_exchange_strong(tag_word(fwd->ref), &fwd->data,
-                                     gcobj_busy))
+  if (gc_atomic_cmpxchg_strong(tag_word(fwd->ref), &fwd->data,
+                               gcobj_busy))
     fwd->state = GC_FORWARDING_STATE_ACQUIRED;
   else if (fwd->data == gcobj_busy)
     fwd->state = GC_FORWARDING_STATE_BUSY;
