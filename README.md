@@ -44,16 +44,15 @@ See the [documentation](./doc/README.md).
 
 ## Status and roadmap
 
-As of August 2025, Whippet is feature-complete, in the sense that it is
+As of October 2025, Whippet is feature-complete, in the sense that it is
 ready to replace [Guile](https://gnu.org/s/guile)'s use of the
 Boehm-Demers-Weiser collector; see the [`wip-whippet` integration
 branch](https://cgit.git.savannah.gnu.org/cgit/guile.git/tree/?h=wip-whippet).
 We hope to incrementally merge this branch of Guile over to the main
 Guile branch over the next months.
 
-In the future, Whippet's internal collectors need to add support for
-MacOS and Windows, to fix some usage of the C11 atomics API that clang
-doesn't like, to test on AArch64, and
+In the near future, Whippet's internal collectors need to add support
+for MacOS and Windows, and to test on AArch64.
 
 There are all kinds of new collector designs that it would be fun to
 experiment with, but we are mostly in a getting-into-production phase at
