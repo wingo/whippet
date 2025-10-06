@@ -656,7 +656,7 @@ static enum gc_collection_kind
 determine_collection_kind(struct gc_heap *heap,
                           enum gc_collection_kind requested) {
   struct nofl_space *nofl_space = heap_nofl_space(heap);
-  enum gc_collection_kind previous_gc_kind = atomic_load(&heap->gc_kind);
+  enum gc_collection_kind previous_gc_kind = gc_atomic_load(&heap->gc_kind);
   enum gc_collection_kind gc_kind;
   double yield = heap_last_gc_yield(heap);
   double fragmentation = heap_fragmentation(heap);
@@ -733,7 +733,7 @@ determine_collection_kind(struct gc_heap *heap,
           yield * 100., clamped * 100.);
   }
 
-  atomic_store(&heap->gc_kind, gc_kind);
+  gc_atomic_store(&heap->gc_kind, gc_kind);
   return gc_kind;
 }
 
