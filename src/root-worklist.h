@@ -57,7 +57,7 @@ root_worklist_size(struct root_worklist *q) {
 
 static inline struct gc_root
 root_worklist_pop(struct root_worklist *q) {
-  size_t idx = atomic_fetch_add(&q->read, 1);
+  size_t idx = gc_atomic_fetch_add(&q->read, 1);
   if (idx < q->write)
     return q->buf[idx];
   return (struct gc_root){ GC_ROOT_KIND_NONE, };

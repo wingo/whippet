@@ -247,7 +247,7 @@ large_object_space_mark(struct large_object_space *space, struct gc_ref ref) {
   } while (!gc_atomic_cmpxchg_weak(loc, &mark, space->marked));
 
   size_t pages = node->key.size >> space->page_size_log2;
-  atomic_fetch_add(&space->live_pages_at_last_collection, pages);
+  gc_atomic_fetch_add(&space->live_pages_at_last_collection, pages);
 
   return 1;
 }

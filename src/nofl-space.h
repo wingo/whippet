@@ -636,12 +636,12 @@ nofl_allocator_release_full_block(struct nofl_allocator *alloc,
   GC_ASSERT(nofl_allocator_has_block(alloc));
   struct nofl_block_ref block = alloc->block;
   GC_ASSERT(alloc->alloc == alloc->sweep);
-  atomic_fetch_add(&space->allocated_granules_since_last_collection,
-                   block.summary->hole_granules);
-  atomic_fetch_add(&space->survivor_granules_at_last_collection,
-                   NOFL_GRANULES_PER_BLOCK - block.summary->hole_granules);
-  atomic_fetch_add(&space->fragmentation_granules_since_last_collection,
-                   block.summary->fragmentation_granules);
+  gc_atomic_fetch_add(&space->allocated_granules_since_last_collection,
+                      block.summary->hole_granules);
+  gc_atomic_fetch_add(&space->survivor_granules_at_last_collection,
+                      NOFL_GRANULES_PER_BLOCK - block.summary->hole_granules);
+  gc_atomic_fetch_add(&space->fragmentation_granules_since_last_collection,
+                      block.summary->fragmentation_granules);
 
   if (nofl_should_promote_block(space, block))
     nofl_block_list_push(&space->promoted, block);
@@ -662,8 +662,8 @@ nofl_allocator_release_full_evacuation_target(struct nofl_allocator *alloc,
   // FIXME: Check how this affects statistics.
   GC_ASSERT_EQ(block.summary->hole_count, 1);
   GC_ASSERT_EQ(block.summary->hole_granules, NOFL_GRANULES_PER_BLOCK);
-  atomic_fetch_add(&space->old_generation_granules,
-                   NOFL_GRANULES_PER_BLOCK);
+  gc_atomic_fetch_add(&space->old_generation_granules,
+                      NOFL_GRANULES_PER_BLOCK);
   if (hole_size) {
     hole_size >>= NOFL_GRANULE_SIZE_LOG_2;
     block.summary->holes_with_fragmentation = 1;
@@ -982,8 +982,8 @@ nofl_allocate_slow(struct nofl_allocator *alloc, struct nofl_space *space,
     nofl_allocate_second_chance(alloc, space, granules);
   if (!gc_ref_is_null(second_chance)) {
     gc_update_alloc_table(second_chance, size, kind);
-    atomic_fetch_add(&space->second_chance_granules_since_last_collection,
-                     granules);
+    gc_atomic_fetch_add(&space->second_chance_granules_since_last_collection,
+                        granules);
     return second_chance;
   }
 
@@ -1409,8 +1409,8 @@ nofl_space_promote_blocks(struct nofl_space *space) {
     block.summary->fragmentation_granules = 0;
     struct nofl_allocator alloc = { block.addr, block.addr, block };
     nofl_allocator_finish_sweeping_in_block(&alloc, space->current_mark, 0);
-    atomic_fetch_add(&space->old_generation_granules,
-                     NOFL_GRANULES_PER_BLOCK - block.summary->hole_granules);
+    gc_atomic_fetch_add(&space->old_generation_granules,
+                        NOFL_GRANULES_PER_BLOCK - block.summary->hole_granules);
     nofl_block_list_push(&space->old, block);
   }
 }
@@ -1639,20 +1639,20 @@ nofl_space_finish_gc(struct nofl_space *space,
 
 static ssize_t
 nofl_space_request_release_memory(struct nofl_space *space, size_t bytes) {
-  return atomic_fetch_add(&space->pending_unavailable_bytes, bytes) + bytes;
+  return gc_atomic_fetch_add(&space->pending_unavailable_bytes, bytes) + bytes;
 }
 
 static ssize_t
 nofl_space_maybe_reacquire_memory(struct nofl_space *space, size_t bytes) {
   ssize_t pending =
-    atomic_fetch_sub(&space->pending_unavailable_bytes, bytes) - bytes;
+    gc_atomic_fetch_sub(&space->pending_unavailable_bytes, bytes) - bytes;
   struct gc_lock lock = nofl_space_lock(space);
   while (pending + NOFL_BLOCK_SIZE <= 0) {
     struct nofl_block_ref block = nofl_pop_unavailable_block(space, &lock);
     if (nofl_block_is_null(block)) break;
     if (!nofl_push_evacuation_target_if_needed(space, block))
       nofl_push_empty_block(space, block, &lock);
-    pending = atomic_fetch_add(&space->pending_unavailable_bytes, NOFL_BLOCK_SIZE)
+    pending = gc_atomic_fetch_add(&space->pending_unavailable_bytes, NOFL_BLOCK_SIZE)
       + NOFL_BLOCK_SIZE;
   }
   gc_lock_release(&lock);
@@ -1750,7 +1750,7 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
 
   int claimed =
     nofl_metadata_byte_is_young_or_has_mark(byte, space->survivor_mark)
-    && atomic_compare_exchange_strong(metadata, &byte, busy_byte);
+    && gc_atomic_cmpxchg_strong(metadata, &byte, busy_byte);
 
   if (claimed) {
     // It's up to us to shade the object.
@@ -2009,8 +2009,8 @@ nofl_space_shrink(struct nofl_space *space, size_t bytes) {
     if (nofl_block_is_null(block))
       break;
     nofl_push_unavailable_block(space, block, &lock);
-    pending = atomic_fetch_sub(&space->pending_unavailable_bytes,
-                               NOFL_BLOCK_SIZE);
+    pending = gc_atomic_fetch_sub(&space->pending_unavailable_bytes,
+                                  NOFL_BLOCK_SIZE);
     pending -= NOFL_BLOCK_SIZE;
   }
   
@@ -2028,8 +2028,8 @@ nofl_space_shrink(struct nofl_space *space, size_t bytes) {
         nofl_block_list_pop(&space->evacuation_targets);
       GC_ASSERT(!nofl_block_is_null(block));
       nofl_push_unavailable_block(space, block, &lock);
-      pending = atomic_fetch_sub(&space->pending_unavailable_bytes,
-                                 NOFL_BLOCK_SIZE);
+      pending = gc_atomic_fetch_sub(&space->pending_unavailable_bytes,
+                                    NOFL_BLOCK_SIZE);
       pending -= NOFL_BLOCK_SIZE;
     }
   }

@@ -1061,7 +1061,7 @@ allocate_large(struct gc_mutator *mut, size_t size,
     if (!trigger_collection(mut, GC_COLLECTION_COMPACTING, size))
       return heap->allocation_failure(heap, size);
   }
-  atomic_fetch_add(&heap->large_object_pages, npages);
+  gc_atomic_fetch_add(&heap->large_object_pages, npages);
 
   void *ret = large_object_space_alloc(lospace, npages, kind);
 
