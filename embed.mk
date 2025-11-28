@@ -37,20 +37,22 @@ GC_DEPFLAGS =
 GC_COMPILE  = $(GC_V)$(GC_CC) $(GC_CFLAGS) $(GC_CPPFLAGS) $(GC_DEPFLAGS) -o $@
 GC_LINK     = $(GC_V)$(GC_CC) $(GC_LDFLAGS) -o $@
 GC_PLATFORM = gnu-linux
-GC_OBJDIR   =
+GC_OBJDIR   ?=
 GC_EMBEDDER_CPPFLAGS += -DGC_EMBEDDER=\"$(abspath $(GC_EMBEDDER_H))\"
 
-$(GC_OBJDIR)gc-platform.o: $(GC_BASE)src/gc-platform-$(GC_PLATFORM).c
+$(GC_OBJDIR): ; mkdir -p $@
+
+$(GC_OBJDIR)gc-platform.o: $(GC_BASE)src/gc-platform-$(GC_PLATFORM).c | $(GC_OBJDIR)
 	$(GC_COMPILE) -c $<
-$(GC_OBJDIR)gc-stack.o: $(GC_BASE)src/gc-stack.c
+$(GC_OBJDIR)gc-stack.o: $(GC_BASE)src/gc-stack.c | $(GC_OBJDIR)
 	$(GC_COMPILE) -c $<
-$(GC_OBJDIR)gc-options.o: $(GC_BASE)src/gc-options.c
+$(GC_OBJDIR)gc-options.o: $(GC_BASE)src/gc-options.c | $(GC_OBJDIR)
 	$(GC_COMPILE) -c $<
-$(GC_OBJDIR)gc-tracepoint.o: $(GC_BASE)src/gc-tracepoint.c
+$(GC_OBJDIR)gc-tracepoint.o: $(GC_BASE)src/gc-tracepoint.c | $(GC_OBJDIR)
 	$(GC_COMPILE) -c $<
-$(GC_OBJDIR)gc-ephemeron.o: $(GC_BASE)src/gc-ephemeron.c
+$(GC_OBJDIR)gc-ephemeron.o: $(GC_BASE)src/gc-ephemeron.c | $(GC_OBJDIR)
 	$(GC_COMPILE) $(GC_EMBEDDER_CPPFLAGS) -c $<
-$(GC_OBJDIR)gc-finalizer.o: $(GC_BASE)src/gc-finalizer.c
+$(GC_OBJDIR)gc-finalizer.o: $(GC_BASE)src/gc-finalizer.c | $(GC_OBJDIR)
 	$(GC_COMPILE) $(GC_EMBEDDER_CPPFLAGS) -c $<
 
 GC_STEM_bdw   	   = bdw
@@ -108,7 +110,7 @@ GC_CPPFLAGS         += -DGC_ATTRS=\"$(abspath $(GC_ATTRS_H))\"
 GC_IMPL_CFLAGS 	    = $(call gc_impl_cflags,$(GC_COLLECTOR))
 GC_LIBS             = $(call gc_libs,$(GC_COLLECTOR)) -lpthread $(GC_TRACEPOINT_LIBS)
 
-$(GC_OBJDIR)gc-impl.o: $(GC_BASE)src/$(call gc_impl,$(GC_COLLECTOR))
+$(GC_OBJDIR)gc-impl.o: $(GC_BASE)src/$(call gc_impl,$(GC_COLLECTOR)) | $(GC_OBJDIR)
 	$(GC_COMPILE) $(GC_IMPL_CFLAGS) $(GC_EMBEDDER_CPPFLAGS) -c $<
 
 GC_OBJS=$(foreach O,gc-platform.o gc-stack.o gc-options.o gc-tracepoint.o gc-ephemeron.o gc-finalizer.o gc-impl.o,$(GC_OBJDIR)$(O))
