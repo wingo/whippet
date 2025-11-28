@@ -28,11 +28,11 @@ GC_TRACEPOINT_CPPFLAGS = $(if $(GC_USE_LTTNG_$(GC_USE_LTTNG)),$(GC_LTTNG_CPPFLAG
 GC_TRACEPOINT_LIBS = $(GC_LTTNG_LIBS)
 
 GC_V        = $(v_$(V))
-GC_CC       = gcc
-GC_AR       = ar
+GC_CC       ?= gcc
+GC_AR       ?= $(subst clang,llvm,$(GC_CC))-ar
 GC_CFLAGS   = -Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(GC_BUILD_CFLAGS)
 GC_CPPFLAGS = -I$(GC_BASE)api $(GC_TRACEPOINT_CPPFLAGS) $(GC_BUILD_CPPFLAGS)
-GC_LDFLAGS  = -lpthread -flto=auto $(GC_TRACEPOINT_LIBS)
+GC_LDFLAGS  = -flto=auto
 GC_DEPFLAGS = 
 GC_COMPILE  = $(GC_V)$(GC_CC) $(GC_CFLAGS) $(GC_CPPFLAGS) $(GC_DEPFLAGS) -o $@
 GC_LINK     = $(GC_V)$(GC_CC) $(GC_LDFLAGS) -o $@
@@ -106,7 +106,7 @@ GC_CPPFLAGS         += $(call gc_cppflags,$(GC_COLLECTOR))
 GC_ATTRS_H          = $(GC_BASE)api/$(call gc_attrs,$(GC_COLLECTOR))
 GC_CPPFLAGS         += -DGC_ATTRS=\"$(abspath $(GC_ATTRS_H))\"
 GC_IMPL_CFLAGS 	    = $(call gc_impl_cflags,$(GC_COLLECTOR))
-GC_LIBS             = $(call gc_libs,$(GC_COLLECTOR))
+GC_LIBS             = $(call gc_libs,$(GC_COLLECTOR)) -lpthread $(GC_TRACEPOINT_LIBS)
 
 $(GC_OBJDIR)gc-impl.o: $(GC_BASE)src/$(call gc_impl,$(GC_COLLECTOR))
 	$(GC_COMPILE) $(GC_IMPL_CFLAGS) $(GC_EMBEDDER_CPPFLAGS) -c $<
