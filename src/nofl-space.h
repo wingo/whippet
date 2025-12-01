@@ -1738,6 +1738,19 @@ clear_logged_bits_in_evacuated_object(uint8_t head, uint8_t *metadata,
 }
 
 
+static inline void
+nofl_store_forwarding_pointer(struct gc_ref old_ref, struct gc_ref new_ref)
+{
+  uintptr_t *first_word = gc_ref_heap_object(old_ref);
+  *first_word = gc_ref_value(new_ref);
+}
+
+static inline struct gc_ref
+nofl_load_forwarding_pointer(struct gc_ref old_ref) {
+  uintptr_t *first_word = gc_ref_heap_object(old_ref);
+  return gc_ref(*first_word);
+}
+
 static inline int
 nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
                     struct gc_edge edge,
@@ -1768,7 +1781,7 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
       // commit.
       memcpy(gc_ref_heap_object(new_ref), gc_ref_heap_object(old_ref),
              object_granules * NOFL_GRANULE_SIZE);
-      gc_object_forward_nonatomic(old_ref, new_ref);
+      nofl_store_forwarding_pointer(old_ref, new_ref);
       gc_atomic_store(metadata, forwarded_byte);
 
       // Now update extent metadata, and indicate to the caller that
@@ -1796,9 +1809,7 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
   }
 
   if (byte == forwarded_byte) {
-    struct gc_ref new_ref = gc_ref(gc_object_forwarded_nonatomic(old_ref));
-    GC_ASSERT(!gc_ref_is_null(new_ref));
-    gc_edge_update(edge, new_ref);
+    gc_edge_update(edge, nofl_load_forwarding_pointer(old_ref));
   }
 
   return 0;
@@ -1850,7 +1861,7 @@ nofl_space_forward_or_mark_if_traced(struct nofl_space *space,
   }
 
   if (byte == forwarded_byte) {
-    gc_edge_update(edge, gc_ref(gc_object_forwarded_nonatomic(ref)));
+    gc_edge_update(edge, nofl_load_forwarding_pointer(ref));
     return 1;
   }
 
