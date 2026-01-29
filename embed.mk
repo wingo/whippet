@@ -40,7 +40,7 @@ GC_PLATFORM = gnu-linux
 GC_OBJDIR   ?=
 GC_EMBEDDER_CPPFLAGS += -DGC_EMBEDDER=\"$(abspath $(GC_EMBEDDER_H))\"
 
-$(GC_OBJDIR): ; mkdir -p $@
+$(GC_OBJDIR): ; $(GC_V)mkdir -p $@
 
 $(GC_OBJDIR)gc-platform.o: $(GC_BASE)src/gc-platform-$(GC_PLATFORM).c | $(GC_OBJDIR)
 	$(GC_COMPILE) -c $<
