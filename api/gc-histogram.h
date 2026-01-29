@@ -10,7 +10,7 @@ static inline size_t gc_histogram_bucket(uint64_t max_value_bits,
                                          uint64_t val) {
   uint64_t major = val < (1ULL << precision)
     ? 0ULL
-    : 64ULL - __builtin_clzl(val) - precision;
+    : 64ULL - ((unsigned long long) __builtin_clzll(val)) - precision;
   uint64_t minor = val < (1 << precision)
     ? val
     : (val >> (major - 1ULL)) & ((1ULL << precision) - 1ULL);
@@ -52,11 +52,11 @@ static inline uint64_t gc_histogram_bucket_min_val(uint64_t precision,
   static inline uint64_t name##_min(struct name *h) {                   \
     for (size_t bucket = 0; bucket < name##_size(); bucket++)           \
       if (h->buckets[bucket]) return name##_bucket_min_val(bucket);     \
-    return -1;                                                          \
+    return UINT64_MAX;                                                  \
   }                                                                     \
   static inline uint64_t name##_max(struct name *h) {                   \
-    if (h->buckets[name##_size()-1]) return -1LL;                       \
-    for (ssize_t bucket = name##_size() - 1; bucket >= 0; bucket--)     \
+    if (h->buckets[name##_size()-1]) return UINT64_MAX;                 \
+    for (size_t bucket = name##_size()-1; bucket != SIZE_MAX; bucket--) \
       if (h->buckets[bucket]) return name##_bucket_min_val(bucket+1);   \
     return 0;                                                           \
   }                                                                     \
@@ -67,13 +67,13 @@ static inline uint64_t gc_histogram_bucket_min_val(uint64_t precision,
     return sum;                                                         \
   }                                                                     \
   static inline uint64_t name##_percentile(struct name *h, double p) {  \
-    uint64_t n = name##_count(h) * p;                                   \
+    uint64_t n = (uint64_t) ((double) name##_count(h) * p);             \
     uint64_t sum = 0;                                                   \
     for (size_t bucket = 0; bucket + 1 < name##_size(); bucket++) {     \
       sum += h->buckets[bucket];                                        \
       if (sum >= n) return name##_bucket_min_val(bucket+1);             \
     }                                                                   \
-    return -1ULL;                                                       \
+    return UINT64_MAX;                                                  \
   }                                                                     \
   static inline uint64_t name##_median(struct name *h) {                \
     return name##_percentile(h, 0.5);                                   \

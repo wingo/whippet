@@ -33,18 +33,18 @@ struct gc_basic_stats {
 static inline uint64_t gc_basic_stats_now(void) {
   struct timeval tv;
   if (gettimeofday(&tv, NULL) != 0) GC_CRASH();
-  uint64_t ret = tv.tv_sec;
+  uint64_t ret = (uint64_t) tv.tv_sec;
   ret *= 1000 * 1000;
-  ret += tv.tv_usec;
+  ret += (uint64_t) tv.tv_usec;
   return ret;
 }
 
 static inline uint64_t gc_basic_stats_cpu_time(void) {
   struct timespec ts;
   clock_gettime (CLOCK_PROCESS_CPUTIME_ID, &ts);
-  uint64_t ret = ts.tv_sec;
+  uint64_t ret = (uint64_t) ts.tv_sec;
   ret *= 1000 * 1000;
-  ret += ts.tv_nsec / 1000;
+  ret += (uint64_t) ts.tv_nsec / 1000;
   return ret;
 }
 
@@ -175,8 +175,9 @@ static inline void gc_basic_stats_print(struct gc_basic_stats *stats, FILE *f) {
           pause_max / ms, pause_max % ms);
   double MB = 1e6;
   fprintf(f, "Heap size is %.3f MB (max %.3f MB); peak live data %.3f MB.\n",
-          stats->heap_size / MB, stats->max_heap_size / MB,
-          stats->max_live_data_size / MB);
+          ((double) stats->heap_size) / MB,
+          ((double) stats->max_heap_size) / MB,
+          ((double) stats->max_live_data_size) / MB);
 }
 
 #endif // GC_BASIC_STATS_H_
