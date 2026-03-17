@@ -43,10 +43,24 @@ LTTNG_LIBS := $(if $(USE_LTTNG_$(USE_LTTNG)), $(shell pkg-config --libs lttng-us
 TRACEPOINT_CPPFLAGS = $(if $(USE_LTTNG_$(USE_LTTNG)),$(LTTNG_CPPFLAGS) -DGC_TRACEPOINT_LTTNG=1,)
 TRACEPOINT_LIBS = $(LTTNG_LIBS)
 
+LTO_CFLAGS_GCC_0 :=
+LTO_CFLAGS_GCC_1 := -flto -fno-fat-lto-objects
+LTO_LDFLAGS_GCC_0 :=
+LTO_LDFLAGS_GCC_1 := -flto=auto
+
+LTO_CFLAGS_CLANG_0 :=
+LTO_CFLAGS_CLANG_1 := -flto=thin
+LTO_LDFLAGS_CLANG_0 :=
+LTO_LDFLAGS_CLANG_1 := -flto=thin
+
 CC       = gcc
-CFLAGS   = -Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused -Wno-gnu-folding-constant $(BUILD_CFLAGS)
+GCC      = $(if $(findstring gcc,$(shell $(CC) --version)),1,0)
+CLANG    = $(if $(findstring clang,$(shell $(CC) --version)),1,0)
+LTO_CFLAGS = $(LTO_CFLAGS_GCC_$(GCC)) $(LTO_CFLAGS_CLANG_$(CLANG))
+LTO_LDFLAGS = $(LTO_LDFLAGS_GCC_$(GCC)) $(LTO_LDFLAGS_CLANG_$(CLANG))
+CFLAGS   = -Wall $(LTO_CFLAGS) -fno-strict-aliasing -fvisibility=hidden -Wno-unused -Wno-gnu-folding-constant $(BUILD_CFLAGS)
 CPPFLAGS = -Iapi $(TRACEPOINT_CPPFLAGS) $(BUILD_CPPFLAGS)
-LDFLAGS  = -lpthread -flto=auto $(TRACEPOINT_LIBS)
+LDFLAGS  = -lpthread $(LTO_LDFLAGS) $(TRACEPOINT_LIBS)
 DEPFLAGS = -MMD -MP -MF $(@:obj/%.o=.deps/%.d)
 COMPILE  = $(CC) $(CFLAGS) $(CPPFLAGS) $(DEPFLAGS) -o $@
 LINK     = $(CC) $(LDFLAGS) -o $@

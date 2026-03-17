@@ -8,8 +8,8 @@ BUILD_CPPFLAGS_opt      = -DNDEBUG
 BUILD_CPPFLAGS_optdebug = -DGC_DEBUG=1
 BUILD_CPPFLAGS_debug    = -DGC_DEBUG=1
 
-BUILD_CFLAGS_opt      	= -O2 -g
-BUILD_CFLAGS_optdebug 	= -O2 -g
+BUILD_CFLAGS_opt      	= -O1 -g
+BUILD_CFLAGS_optdebug 	= -O1 -g
 BUILD_CFLAGS_debug    	= -O0 -g
 
 GC_BUILD_CPPFLAGS = $(BUILD_CPPFLAGS_$(or $(GC_BUILD),$(DEFAULT_BUILD)))
@@ -18,6 +18,16 @@ GC_BUILD_CFLAGS = $(BUILD_CFLAGS_$(or $(GC_BUILD),$(DEFAULT_BUILD)))
 V ?= 1
 v_0 = @
 v_1 =
+
+GC_LTO_CFLAGS_GCC_0 :=
+GC_LTO_CFLAGS_GCC_1 := -flto -fno-fat-lto-objects
+GC_LTO_LDFLAGS_GCC_0 :=
+GC_LTO_LDFLAGS_GCC_1 := -flto=auto
+
+GC_LTO_CFLAGS_CLANG_0 :=
+GC_LTO_CFLAGS_CLANG_1 := -flto=thin
+GC_LTO_LDFLAGS_CLANG_0 :=
+GC_LTO_LDFLAGS_CLANG_1 := -flto=thin
 
 GC_USE_LTTNG_0 :=
 GC_USE_LTTNG_1 := 1
@@ -29,10 +39,14 @@ GC_TRACEPOINT_LIBS = $(GC_LTTNG_LIBS)
 
 GC_V        = $(v_$(V))
 GC_CC       ?= gcc
+GC_GCC      = $(if $(findstring gcc,$(shell $(GC_CC) --version)),1,0)
+GC_CLANG    = $(if $(findstring clang,$(shell $(GC_CC) --version)),1,0)
+GC_LTO_CFLAGS = $(GC_LTO_CFLAGS_GCC_$(GC_GCC)) $(GC_LTO_CFLAGS_CLANG_$(GC_CLANG))
+GC_LTO_LDFLAGS = $(GC_LTO_LDFLAGS_GCC_$(GC_GCC)) $(GC_LTO_LDFLAGS_CLANG_$(GC_CLANG))
 GC_AR       ?= $(subst clang,llvm,$(GC_CC))-ar
-GC_CFLAGS   = -Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(GC_BUILD_CFLAGS)
+GC_CFLAGS   = -Wall $(GC_LTO_CFLAGS) -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(GC_BUILD_CFLAGS)
 GC_CPPFLAGS = -I$(GC_BASE)api $(GC_TRACEPOINT_CPPFLAGS) $(GC_BUILD_CPPFLAGS)
-GC_LDFLAGS  = -flto=auto
+GC_LDFLAGS  = $(GC_LTO_LDFLAGS)
 GC_DEPFLAGS = 
 GC_COMPILE  = $(GC_V)$(GC_CC) $(GC_CFLAGS) $(GC_CPPFLAGS) $(GC_DEPFLAGS) -o $@
 GC_LINK     = $(GC_V)$(GC_CC) $(GC_LDFLAGS) -o $@
