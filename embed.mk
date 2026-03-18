@@ -8,8 +8,8 @@ BUILD_CPPFLAGS_opt      = -DNDEBUG
 BUILD_CPPFLAGS_optdebug = -DGC_DEBUG=1
 BUILD_CPPFLAGS_debug    = -DGC_DEBUG=1
 
-BUILD_CFLAGS_opt      	= -O1 -g
-BUILD_CFLAGS_optdebug 	= -O1 -g
+BUILD_CFLAGS_opt      	= -O2 -g
+BUILD_CFLAGS_optdebug 	= -O2 -g
 BUILD_CFLAGS_debug    	= -O0 -g
 
 GC_BUILD_CPPFLAGS = $(BUILD_CPPFLAGS_$(or $(GC_BUILD),$(DEFAULT_BUILD)))
